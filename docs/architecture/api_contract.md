@@ -206,7 +206,7 @@ Campos obligatorios:
 
 Campos opcionales:
 
-- `merchant`: string;
+- `merchant`: string o `null`; puede omitirse o enviarse explícitamente como `null`, y en ambos casos se persiste y devuelve como `null`;
 - `description`: string;
 - `categoryId`: string o `null`;
 - `receiptId`: string;
@@ -219,6 +219,8 @@ El `categoryId` de nivel superior corresponde a `Expense.category_id` y represen
 En los items, `totalPrice` corresponde a `ExpenseItem.total_amount`. Se conserva `totalPrice` como nombre del contrato HTTP existente y `total_amount` como convención del modelo persistente.
 
 El backend determinará `createdBy` a partir del miembro asociado al contexto actual; el cliente no podrá utilizar este campo para cambiar libremente el autor del registro.
+
+`merchant` es opcional de extremo a extremo. Su ausencia se representa como `null`, nunca mediante una cadena vacía ni un nombre artificial.
 
 La correspondencia con el modelo de datos será:
 
@@ -240,6 +242,10 @@ splits          ↔ ExpenseDistribution[]
 `receiptId` será opcional. Cuando exista, el backend validará que el receipt `PROCESSED` pertenezca al contexto y lo asociará al gasto creado.
 
 El cliente no podrá enviar `id`, `householdId`, `createdBy`, `status`, `source`, `createdAt` ni `updatedAt`. El backend resolverá `household_id`, `created_by` y `source` desde el contexto controlado, creará el Expense directamente como `CONFIRMED` y generará las filas de `ExpenseDistribution` a partir de `splits`.
+
+Los montos de las distribuciones se calcularán en centavos mediante restos mayores: parte entera inferior de cada asignación exacta, centavos residuales por parte fraccionaria descendente y desempate por `memberId` ascendente. Los porcentajes deberán sumar exactamente `100.00` y los montos resultantes deberán sumar exactamente `totalAmount`. No se utilizarán resultados financieros definitivos basados en punto flotante.
+
+La persistencia de Expense, items y distribuciones será una única operación atómica mediante la RPC PostgreSQL específica `public.fn_create_expense`. El repository realizará una sola llamada RPC; no ejecutará inserts PostgREST independientes.
 
 Response:
 
@@ -399,7 +405,7 @@ Request parcial:
 }
 ```
 
-Todos los campos son opcionales, pero deberá enviarse al menos uno. `categoryId` y `description` podrán enviarse como `null` para retirar su valor. `items`, cuando se proporcione, reemplazará completamente los `ExpenseItem` existentes. `splits`, cuando se proporcione, reemplazará completamente las filas `ExpenseDistribution` y el backend recalculará sus montos determinísticamente.
+Todos los campos son opcionales, pero deberá enviarse al menos uno. `merchant`, `categoryId` y `description` podrán enviarse como `null` para retirar su valor. `items`, cuando se proporcione, reemplazará completamente los `ExpenseItem` existentes. `splits`, cuando se proporcione, reemplazará completamente las filas `ExpenseDistribution` y el backend recalculará sus montos mediante la misma regla de restos mayores definida para POST.
 
 Si cambia `totalAmount`, también deberá enviarse `splits` para recalcular la distribución. Si `items` no se envía, los existentes se conservarán y su suma se validará contra el nuevo total. Si se envía, `SUM(items[].totalPrice) <= totalAmount`; una infracción rechazará toda la operación con `422 VALIDATION_ERROR`.
 

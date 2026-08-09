@@ -227,6 +227,12 @@ Listar gastos.
 Actualizar gasto.
 Eliminar gasto.
 
+`merchant` será opcional y su ausencia se persistirá como `NULL`. Los tipos de Expense deberán representarlo como `string | null`; no se utilizarán cadenas artificiales.
+
+La creación calculará `ExpenseDistribution.amount` mediante restos mayores en centavos, con porcentajes que sumen exactamente `100.00`, asignación inicial inferior, residuos por mayor parte fraccionaria y desempate por `memberId` ascendente. El resultado deberá sumar exactamente `Expense.total_amount` y no dependerá de aritmética financiera definitiva de punto flotante.
+
+La escritura de Expense, ExpenseItems y ExpenseDistributions se realizará atómicamente mediante una única llamada del repository a `public.fn_create_expense`, implementada como RPC PostgreSQL `SECURITY INVOKER`. No se realizarán inserts PostgREST independientes ni se introducirá una abstracción genérica de movimientos.
+
 `POST /api/expenses` creará directamente Expense `CONFIRMED` después de la confirmación; el MVP no implementará un flujo que cree Expense `PENDING`. Se conservará su semántica documental de eliminación física, pero no será un caso obligatorio de implementación o prueba.
 Incomes
 Crear ingreso.

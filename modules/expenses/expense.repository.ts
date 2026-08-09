@@ -19,7 +19,7 @@ interface ExpenseRow {
   created_by: string;
   paid_by: string;
   category_id: string | null;
-  merchant: string;
+  merchant: string | null;
   total_amount: DatabaseNumeric;
   currency: string;
   expense_date: string;
@@ -33,7 +33,7 @@ interface ExpenseRow {
 interface ExpenseListRow {
   id: string;
   category_id: string | null;
-  merchant: string;
+  merchant: string | null;
   total_amount: DatabaseNumeric;
   expense_date: string;
 }

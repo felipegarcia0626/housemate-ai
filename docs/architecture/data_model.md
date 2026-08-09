@@ -258,6 +258,8 @@ merchant
 
 Nombre del establecimiento donde se realizó la compra.
 
+Es opcional. Cuando el usuario no informe un comercio o este no pueda determinarse, se almacenará `NULL`. No se utilizarán cadenas vacías ni valores artificiales como `"Desconocido"` o `"Sin comercio"` para representar su ausencia.
+
 Ejemplo:
 
 D1
@@ -667,6 +669,21 @@ SUM(ExpenseDistribution.amount)
 =
 
 Expense.total_amount
+
+Los montos de `ExpenseDistribution` se calcularán mediante el método de restos mayores en centavos:
+
+1. Los porcentajes se validarán individualmente y deberán sumar exactamente `100.00`.
+2. `Expense.total_amount` se convertirá a centavos enteros.
+3. Para cada integrante se calculará la asignación exacta `total_centavos × porcentaje / 100` usando aritmética decimal exacta.
+4. La asignación inicial será la parte entera inferior de cada resultado.
+5. Los centavos residuales se asignarán, uno por uno, en orden descendente de parte fraccionaria.
+6. Los empates se resolverán por `HouseholdMember.id` (`memberId`) en orden ascendente.
+
+El resultado se persistirá con dos decimales y deberá sumar exactamente `Expense.total_amount`. Los cálculos financieros definitivos no utilizarán resultados intermedios de punto flotante.
+
+Ejemplo: para `10.01` con porcentajes `50.00 / 50.00`, las asignaciones exactas son `500.5 / 500.5` centavos. Después de asignar `500 / 500`, el centavo residual corresponde al `memberId` menor. Los montos finales serán `5.01 / 5.00` y sumarán `10.01`.
+
+Para tres partes iguales se representarán los porcentajes con la escala persistente aprobada, por ejemplo `33.33 / 33.33 / 33.34`; no se almacenarán porcentajes periódicos con precisión superior a `NUMERIC(5,2)`.
 
 ## 17.3 Porcentajes
 
@@ -1104,7 +1121,7 @@ Constraints adicionales:
 | `created_by` | `UUID` | NOT NULL | — | FK compuesta con `household_id` |
 | `paid_by` | `UUID` | NOT NULL | — | FK compuesta con `household_id` |
 | `category_id` | `UUID` | NULL | — | FK |
-| `merchant` | `TEXT` | NOT NULL | — | — |
+| `merchant` | `TEXT` | NULL | — | — |
 | `total_amount` | `NUMERIC(14,2)` | NOT NULL | — | `CHECK (total_amount > 0)` |
 | `currency` | `VARCHAR(3)` | NOT NULL | `'COP'` | `CHECK (currency = 'COP')` |
 | `expense_date` | `DATE` | NOT NULL | — | — |
@@ -1115,6 +1132,8 @@ Constraints adicionales:
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | trigger de actualización |
 
 `uq_tb_expenses_household_id UNIQUE (household_id, id)` permite validar físicamente que un Receipt y su Expense pertenezcan al mismo hogar.
+
+La migración inicial `0001_initial_persistence.sql`, ya aplicada, conserva temporalmente `merchant TEXT NOT NULL`. Una nueva migración versionada deberá ejecutar el cambio a nullable antes de implementar o habilitar `createExpense`; la migración inicial no se modificará retroactivamente.
 
 ### 28.2.8 `public.tb_expense_items`
 
@@ -1364,7 +1383,43 @@ Un CHECK ordinario no puede agregar varias filas ni seguir ambas relaciones. La 
 
 No se crearán triggers para invariantes que ya quedan resueltas mediante FK, CHECK o índices únicos, ni para ejecutar transiciones de negocio propias de Fase 2.
 
-## 28.7 Seed determinista
+## 28.7 Escritura atómica del agregado Expense
+
+La creación de `Expense`, sus `ExpenseItem` opcionales y sus `ExpenseDistribution` se realizará mediante una única función PostgreSQL invocada como RPC por `expense.repository.ts`. No se utilizarán inserciones PostgREST independientes ni un estado `PENDING` transitorio.
+
+Contrato físico aprobado:
+
+```text
+public.fn_create_expense(
+  p_household_id UUID,
+  p_created_by UUID,
+  p_paid_by UUID,
+  p_category_id UUID,
+  p_receipt_id UUID,
+  p_merchant TEXT,
+  p_total_amount NUMERIC(14,2),
+  p_expense_date DATE,
+  p_description TEXT,
+  p_source public.expense_source,
+  p_items JSONB,
+  p_distributions JSONB
+) RETURNS UUID
+```
+
+- `p_category_id`, `p_receipt_id`, `p_merchant` y `p_description` aceptan `NULL`.
+- `p_items` contiene cero o más objetos con `name`, `quantity`, `unitPrice`, `totalAmount` y `categoryId`; los campos opcionales se representan con `NULL`.
+- `p_distributions` contiene uno o más objetos con `householdMemberId`, `amount` y `percentage`. `amount` llega ya calculado mediante la regla determinista de restos mayores.
+- La función asigna `currency = 'COP'`, `status = 'CONFIRMED'` y genera los identificadores y timestamps mediante los defaults físicos existentes.
+- La función inserta el Expense, los items y las distribuciones dentro de la transacción única de la llamada RPC y devuelve el UUID del Expense creado.
+- Cuando `p_receipt_id` se proporciona, la función valida que el Receipt pertenezca al mismo hogar y tenga estado `PROCESSED`, y actualiza `Receipt.expense_id` con el Expense recién creado dentro de la misma transacción. Un Receipt inexistente, ajeno al hogar o con cualquier estado distinto de `PROCESSED` rechazará toda la RPC sin persistir cambios parciales.
+- La asociación opcional del Receipt forma parte de la misma unidad atómica que Expense, ExpenseItems y ExpenseDistributions; no se realizará mediante una llamada PostgREST posterior.
+- La función será `SECURITY INVOKER`, utilizará nombres de objetos calificados con `public` y no constituirá una abstracción genérica de movimientos financieros.
+- El service realizará las validaciones de dominio y el cálculo determinista antes de invocar al repository. La función y los constraints/triggers diferidos existentes serán la última barrera de integridad.
+- `service_role` recibirá únicamente los permisos de escritura y ejecución necesarios para esta función. La RPC no será accesible desde el cliente ni desde el agente.
+
+La función se incorporará mediante una migración versionada posterior; esta especificación no modifica migraciones ya aplicadas.
+
+## 28.8 Seed determinista
 
 El seed se ejecutará dentro de una única transacción y en el orden descrito. Usará `INSERT ... ON CONFLICT (id) DO UPDATE` con los mismos valores definidos aquí, por lo que podrá ejecutarse varias veces sin duplicar filas y restaurará los datos base deterministas.
 
@@ -1422,7 +1477,7 @@ Este catálogo mínimo permite probar gastos, categoría residual, ingresos sin 
 
 El trigger diferido de porcentajes se evalúa al cerrar la transacción, después de insertar ambos integrantes. El seed no crea gastos, ingresos, receipts, propuestas ni eventos ficticios.
 
-## 28.8 Pruebas SQL de Fase 1
+## 28.9 Pruebas SQL de Fase 1
 
 La Fase 1 no incorporará un test runner ni dependencias nuevas. Las comprobaciones se implementarán posteriormente como scripts SQL bajo `tests/` y se ejecutarán contra PostgreSQL/Supabase mediante el SQL Editor o `psql` cuando exista una conexión disponible.
 
@@ -1459,7 +1514,7 @@ Las siguientes reglas no se probarán como invariantes SQL en Fase 1 porque corr
 
 Las pruebas SQL requieren una instancia PostgreSQL/Supabase disponible. Las comprobaciones estáticas de TypeScript, lint, formato y build no sustituyen la ejecución real de las migraciones.
 
-## 28.9 Compatibilidad y alcance
+## 28.10 Compatibilidad y alcance
 
 Esta especificación mantiene:
 

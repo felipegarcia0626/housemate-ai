@@ -32,7 +32,7 @@ export interface Expense {
   createdBy: string;
   paidByMemberId: string;
   category: ExpenseCategory | null;
-  merchant: string;
+  merchant: string | null;
   totalAmount: number;
   currency: "COP";
   expenseDate: string;
@@ -47,7 +47,7 @@ export interface Expense {
 
 export interface ExpenseListItem {
   id: string;
-  merchant: string;
+  merchant: string | null;
   totalAmount: number;
   expenseDate: string;
   category: ExpenseCategory | null;

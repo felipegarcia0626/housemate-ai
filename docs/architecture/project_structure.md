@@ -152,6 +152,10 @@ Eliminar gastos.
 Validar información relacionada con gastos.
 Calcular el balance de compensación mediante gastos confirmados, `paid_by` y `ExpenseDistribution`.
 
+`expense.service.ts` validará la entrada y calculará los montos de distribución mediante restos mayores en centavos. `expense.repository.ts` realizará una única llamada a la RPC PostgreSQL específica `public.fn_create_expense` para persistir atómicamente Expense, ExpenseItems y ExpenseDistributions. No ejecutará inserts PostgREST independientes ni existirá una abstracción genérica de movimientos financieros.
+
+`merchant` será `string | null` en los tipos de Expense y se persistirá como `NULL` cuando no esté disponible.
+
 La lógica financiera relevante deberá permanecer dentro del módulo o de servicios de dominio relacionados.
 
 # 7. Módulo incomes

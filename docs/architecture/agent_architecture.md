@@ -134,6 +134,8 @@ La herramienta será responsable de validar la información y persistir el gasto
 
 `categoryId` representa la categoría general del gasto y corresponde a `Expense.category_id`. Cada item podrá incluir su propio `categoryId`, correspondiente a `ExpenseItem.category_id`. Un gasto simple no necesitará items para conservar su categoría general, y ambos niveles de categoría podrán coexistir.
 
+`merchant` es opcional. Cuando no esté disponible, la tool lo omitirá y el backend persistirá `Expense.merchant = NULL`; el agente no inventará un comercio ni enviará una cadena vacía para completar el campo.
+
 El agente no deberá construir directamente una operación SQL.
 
 get_expense
@@ -302,7 +304,7 @@ En esta sección, `ExpenseResponse`, `ExpenseListItem`, `IncomeResponse`, `Categ
 Input:
 
 ```text
-merchant?: string
+merchant?: string | null
 description?: string
 totalAmount: number
 expenseDate: string (YYYY-MM-DD)
@@ -315,6 +317,8 @@ pendingProposalId: string
 ```
 
 Requiere una propuesta persistida y confirmación explícita. Invoca el servicio equivalente a `POST /api/expenses`; el backend resuelve hogar, creador, source y estado. Output: `{ expense: ExpenseResponse }`, con los nombres camelCase del contrato HTTP. Puede fallar por datos inválidos, suma de items superior al total, porcentajes distintos de 100%, miembros/categorías/receipt ajenos al contexto o propuesta no disponible.
+
+El cálculo definitivo de `splits[].amount` pertenece al backend y utiliza restos mayores en centavos con desempate por `memberId` ascendente. El agente no redondea ni ajusta distribuciones. La tool atraviesa Service → Repository y el repository persiste Expense, items y distribuciones mediante una única RPC transaccional; ninguna tool accede directamente a ella ni a PostgreSQL.
 
 ### get_expenses
 
@@ -338,7 +342,7 @@ Input:
 
 ```text
 id: string
-merchant?: string
+merchant?: string | null
 description?: string | null
 totalAmount?: number
 expenseDate?: string
