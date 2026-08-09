@@ -675,6 +675,4 @@ El principio principal es:
 
 Organizar el código según responsabilidades reales del sistema, no según patrones arquitectónicos aplicados de forma preventiva.
 
-Con esto queda definido **dónde vivirá cada cosa**, pero todavía no hemos empezado a programar.
-
-El siguiente paso que considero más útil es **:contentReference[oaicite:0]{index=0}**, y ahí sí pasaríamos a
+La implementación actual ya incluye la persistencia inicial, sus migraciones y pruebas SQL, además de la lectura y creación de Expense dentro de `modules/expenses`. Las capacidades restantes se incorporarán en las ubicaciones definidas por esta estructura conforme avance el plan de implementación.

@@ -63,12 +63,49 @@ export interface ExpenseReadFilters {
   maxAmount?: number;
 }
 
+export interface ExpenseCreateItemInput {
+  name: string;
+  quantity?: number | null;
+  unitPrice?: number | null;
+  totalAmount: number;
+  categoryId?: string | null;
+}
+
+export interface ExpenseCreateSplitInput {
+  householdMemberId: string;
+  percentage: number;
+}
+
+export interface ExpenseCreateInput {
+  createdBy: string;
+  paidByMemberId: string;
+  categoryId?: string | null;
+  receiptId?: string | null;
+  merchant?: string | null;
+  totalAmount: number;
+  expenseDate: string;
+  description?: string | null;
+  source: ExpenseSource;
+  items?: ExpenseCreateItemInput[];
+  splits: ExpenseCreateSplitInput[];
+}
+
+export interface ExpenseCalculatedDistribution {
+  householdMemberId: string;
+  amount: number;
+  percentage: number;
+}
+
 export interface ExpenseServiceContext {
   householdId: string;
 }
 
 export type ExpenseDomainErrorCode =
-  "VALIDATION_ERROR" | "NOT_FOUND" | "HOUSEHOLD_MISMATCH";
+  | "VALIDATION_ERROR"
+  | "NOT_FOUND"
+  | "HOUSEHOLD_MISMATCH"
+  | "PERSISTENCE_ERROR"
+  | "CREATED_NOT_HYDRATED";
 
 export class ExpenseDomainError extends Error {
   readonly code: ExpenseDomainErrorCode;
@@ -77,5 +114,18 @@ export class ExpenseDomainError extends Error {
     super(message);
     this.name = "ExpenseDomainError";
     this.code = code;
+  }
+}
+
+export class ExpenseCreatedNotHydratedError extends ExpenseDomainError {
+  readonly expenseId: string;
+
+  constructor(expenseId: string) {
+    super(
+      "CREATED_NOT_HYDRATED",
+      "Expense was created but could not be loaded.",
+    );
+    this.name = "ExpenseCreatedNotHydratedError";
+    this.expenseId = expenseId;
   }
 }

@@ -128,7 +128,7 @@ items?
 splits
 ```
 
-La herramienta será responsable de validar la información y persistir el gasto.
+La herramienta interpretará y orquestará la solicitud confirmada, y delegará la validación y la lógica de negocio al Expense Service. La persistencia permanecerá en el flujo `Tool → Service → Repository → RPC → PostgreSQL`; la tool no persistirá directamente ni accederá a la RPC o a PostgreSQL.
 
 `created_by` identifica al miembro que registra el gasto y se obtiene del contexto controlado; no forma parte del input de la tool. `paid_by` identifica al miembro que realizó el pago. Corresponden, respectivamente, a `createdBy` resuelto por backend y `paidByMemberId` en la tool/API.
 

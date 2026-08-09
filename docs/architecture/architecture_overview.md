@@ -67,9 +67,7 @@ El dominio decide.
 
 ## PA-005
 
-Toda operación importante del negocio deberá ejecutarse mediante herramientas (Tools).
-
-Nunca directamente desde el modelo.
+Toda operación de negocio iniciada por el agente o el modelo deberá ejecutarse mediante herramientas (Tools), nunca directamente desde el modelo. Las Tools son la interfaz controlada del agente; no constituyen una capa obligatoria para Web/PWA, que podrá invocar directamente los casos de uso controlados del backend según PA-003.
 
 ---
 

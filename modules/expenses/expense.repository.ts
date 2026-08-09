@@ -2,7 +2,9 @@ import { getSupabaseAdminClient } from "@/infrastructure/database/client";
 
 import type {
   Expense,
+  ExpenseCalculatedDistribution,
   ExpenseCategory,
+  ExpenseCreateItemInput,
   ExpenseDistribution,
   ExpenseItem,
   ExpenseListItem,
@@ -10,6 +12,33 @@ import type {
   ExpenseSource,
   ExpenseStatus,
 } from "./expense.types";
+
+export type ExpenseRepositoryErrorKind = "INTEGRITY" | "TECHNICAL";
+
+export class ExpenseRepositoryError extends Error {
+  readonly kind: ExpenseRepositoryErrorKind;
+
+  constructor(kind: ExpenseRepositoryErrorKind, cause: unknown) {
+    super("Unable to persist Expense.", { cause });
+    this.name = "ExpenseRepositoryError";
+    this.kind = kind;
+  }
+}
+
+export interface ExpenseCreatePersistenceInput {
+  householdId: string;
+  createdBy: string;
+  paidByMemberId: string;
+  categoryId: string | null;
+  receiptId: string | null;
+  merchant: string | null;
+  totalAmount: number;
+  expenseDate: string;
+  description: string | null;
+  source: ExpenseSource;
+  items: ExpenseCreateItemInput[];
+  distributions: ExpenseCalculatedDistribution[];
+}
 
 type DatabaseNumeric = number | string;
 
@@ -62,8 +91,36 @@ interface CategoryRow {
   name: string;
 }
 
+export interface ExpenseReceiptForCreation {
+  id: string;
+  householdId: string;
+  processingStatus: string;
+  expenseId: string | null;
+}
+
+interface ExpenseReceiptForCreationRow {
+  id: string;
+  household_id: string;
+  processing_status: string;
+  expense_id: string | null;
+}
+
 function dataAccessError(operation: string, cause: unknown): Error {
   return new Error(`Unable to ${operation}.`, { cause });
+}
+
+function getPersistenceErrorKind(error: unknown): ExpenseRepositoryErrorKind {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    ["22023", "22P02", "23503", "23505", "23514"].includes(error.code)
+  ) {
+    return "INTEGRITY";
+  }
+
+  return "TECHNICAL";
 }
 
 function toNumber(value: DatabaseNumeric): number {
@@ -248,6 +305,118 @@ export async function isHouseholdMemberInHousehold(
   }
 
   return data !== null;
+}
+
+export async function getHouseholdMemberIds(
+  householdId: string,
+  householdMemberIds: readonly string[],
+): Promise<Set<string>> {
+  const uniqueIds = [...new Set(householdMemberIds)];
+
+  if (uniqueIds.length === 0) {
+    return new Set();
+  }
+
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_household_members")
+    .select("id")
+    .eq("household_id", householdId)
+    .in("id", uniqueIds);
+
+  if (error) {
+    throw dataAccessError("validate household members", error);
+  }
+
+  return new Set((data ?? []).map((row) => (row.id as string).toLowerCase()));
+}
+
+export async function getExistingCategoryIds(
+  categoryIds: readonly string[],
+): Promise<Set<string>> {
+  const uniqueIds = [...new Set(categoryIds)];
+
+  if (uniqueIds.length === 0) {
+    return new Set();
+  }
+
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_categories")
+    .select("id")
+    .in("id", uniqueIds);
+
+  if (error) {
+    throw dataAccessError("validate expense categories", error);
+  }
+
+  return new Set((data ?? []).map((row) => (row.id as string).toLowerCase()));
+}
+
+export async function findReceiptForExpenseCreation(
+  receiptId: string,
+): Promise<ExpenseReceiptForCreation | null> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_receipts")
+    .select("id,household_id,processing_status,expense_id")
+    .eq("id", receiptId)
+    .maybeSingle();
+
+  if (error) {
+    throw dataAccessError("validate expense receipt", error);
+  }
+
+  if (data === null) {
+    return null;
+  }
+
+  const row = data as ExpenseReceiptForCreationRow;
+
+  return {
+    id: row.id,
+    householdId: row.household_id,
+    processingStatus: row.processing_status,
+    expenseId: row.expense_id,
+  };
+}
+
+export async function createExpense(
+  input: ExpenseCreatePersistenceInput,
+): Promise<string> {
+  const { data, error } = await getSupabaseAdminClient().rpc(
+    "fn_create_expense",
+    {
+      p_household_id: input.householdId,
+      p_created_by: input.createdBy,
+      p_paid_by: input.paidByMemberId,
+      p_category_id: input.categoryId,
+      p_receipt_id: input.receiptId,
+      p_merchant: input.merchant,
+      p_total_amount: input.totalAmount,
+      p_expense_date: input.expenseDate,
+      p_description: input.description,
+      p_source: input.source,
+      p_items: input.items.map((item) => ({
+        name: item.name,
+        quantity: item.quantity ?? null,
+        unitPrice: item.unitPrice ?? null,
+        totalAmount: item.totalAmount,
+        categoryId: item.categoryId ?? null,
+      })),
+      p_distributions: input.distributions,
+    },
+  );
+
+  if (error) {
+    throw new ExpenseRepositoryError(getPersistenceErrorKind(error), error);
+  }
+
+  if (typeof data !== "string") {
+    throw new ExpenseRepositoryError(
+      "TECHNICAL",
+      new Error("Unexpected fn_create_expense result"),
+    );
+  }
+
+  return data;
 }
 
 async function getExpenseIdsForMember(memberId: string): Promise<string[]> {

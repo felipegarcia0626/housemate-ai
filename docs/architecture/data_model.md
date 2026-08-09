@@ -1133,7 +1133,7 @@ Constraints adicionales:
 
 `uq_tb_expenses_household_id UNIQUE (household_id, id)` permite validar físicamente que un Receipt y su Expense pertenezcan al mismo hogar.
 
-La migración inicial `0001_initial_persistence.sql`, ya aplicada, conserva temporalmente `merchant TEXT NOT NULL`. Una nueva migración versionada deberá ejecutar el cambio a nullable antes de implementar o habilitar `createExpense`; la migración inicial no se modificará retroactivamente.
+La migración versionada `0003_expense_write_access.sql` cambió `merchant` a `TEXT NULL`. La migración inicial `0001_initial_persistence.sql` conserva históricamente su definición original `merchant TEXT NOT NULL` y no fue modificada retroactivamente.
 
 ### 28.2.8 `public.tb_expense_items`
 
@@ -1417,7 +1417,7 @@ public.fn_create_expense(
 - El service realizará las validaciones de dominio y el cálculo determinista antes de invocar al repository. La función y los constraints/triggers diferidos existentes serán la última barrera de integridad.
 - `service_role` recibirá únicamente los permisos de escritura y ejecución necesarios para esta función. La RPC no será accesible desde el cliente ni desde el agente.
 
-La función se incorporará mediante una migración versionada posterior; esta especificación no modifica migraciones ya aplicadas.
+La función fue creada mediante la migración versionada `0003_expense_write_access.sql`; las migraciones anteriores no fueron modificadas retroactivamente.
 
 ## 28.8 Seed determinista
 
@@ -1479,7 +1479,7 @@ El trigger diferido de porcentajes se evalúa al cerrar la transacción, despué
 
 ## 28.9 Pruebas SQL de Fase 1
 
-La Fase 1 no incorporará un test runner ni dependencias nuevas. Las comprobaciones se implementarán posteriormente como scripts SQL bajo `tests/` y se ejecutarán contra PostgreSQL/Supabase mediante el SQL Editor o `psql` cuando exista una conexión disponible.
+La Fase 1 no incorporó un test runner ni dependencias nuevas. Las comprobaciones existen como `tests/phase-1-integrity.sql` y `tests/phase-1-seed-idempotency.sql`; ambos scripts fueron ejecutados y validados contra PostgreSQL/Supabase mediante `psql`.
 
 El script de integridad deberá ejecutarse dentro de `BEGIN ... ROLLBACK` y comprobar:
 
