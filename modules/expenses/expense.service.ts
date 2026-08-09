@@ -7,20 +7,26 @@ import {
   isHouseholdMemberInHousehold,
   listConfirmedExpenses,
   ExpenseRepositoryError,
+  updateExpense as updateExpenseInRepository,
 } from "./expense.repository";
 import {
   ExpenseCreatedNotHydratedError,
   ExpenseDomainError,
+  ExpenseUpdatedNotHydratedError,
   type ExpenseCalculatedDistribution,
   type Expense,
   type ExpenseCreateInput,
+  type ExpenseCreateSplitInput,
   type ExpenseListItem,
   type ExpenseReadFilters,
   type ExpenseServiceContext,
+  type ExpenseUpdateInput,
 } from "./expense.types";
 import {
+  toExpenseAmountCents,
   validateExpenseCreateInput,
   validateExpenseReadFilters,
+  validateExpenseUpdateInput,
   validateUuid,
 } from "./expense.validation";
 
@@ -41,11 +47,11 @@ function centsToAmount(cents: bigint): number {
 
 function calculateDistributions(
   totalCents: bigint,
-  input: ExpenseCreateInput,
+  splits: readonly ExpenseCreateSplitInput[],
   percentageBasisPoints: readonly bigint[],
 ): ExpenseCalculatedDistribution[] {
   const percentageDenominator = BigInt(10_000);
-  const allocations = input.splits.map((split, index) => {
+  const allocations = splits.map((split, index) => {
     const exactNumerator = totalCents * percentageBasisPoints[index];
 
     return {
@@ -165,7 +171,7 @@ async function createValidatedExpense(
 
   const distributions = calculateDistributions(
     totalCents,
-    input,
+    input.splits,
     splitPercentageBasisPoints,
   );
   const expenseId = await createExpenseInRepository({
@@ -216,6 +222,179 @@ export async function createExpense(
         "VALIDATION_ERROR",
         "Expense data is no longer valid for creation.",
       );
+    }
+
+    throw persistenceError();
+  }
+}
+
+async function updateValidatedExpense(
+  context: ExpenseServiceContext,
+  expenseId: string,
+  input: ExpenseUpdateInput,
+): Promise<Expense> {
+  validateContext(context);
+  validateUuid(expenseId, "expenseId");
+  const validated = validateExpenseUpdateInput(input);
+  const currentExpense = await findExpenseById(context.householdId, expenseId);
+
+  if (currentExpense === null) {
+    throw new ExpenseDomainError(
+      "NOT_FOUND",
+      "Expense was not found in the current household.",
+    );
+  }
+
+  if (currentExpense.status !== "CONFIRMED") {
+    throw new ExpenseDomainError(
+      "VALIDATION_ERROR",
+      "Only confirmed Expenses can be updated.",
+    );
+  }
+
+  const currentTotalCents = toExpenseAmountCents(
+    currentExpense.totalAmount,
+    "currentExpense.totalAmount",
+  );
+  const effectiveTotalCents = validated.totalCents ?? currentTotalCents;
+  const totalAmountChanged =
+    validated.totalCents !== undefined &&
+    validated.totalCents !== currentTotalCents;
+
+  if (totalAmountChanged && input.splits === undefined) {
+    throw new ExpenseDomainError(
+      "VALIDATION_ERROR",
+      "splits must be provided when totalAmount changes.",
+    );
+  }
+
+  const effectiveItemsTotalCents =
+    validated.itemsTotalCents ??
+    currentExpense.items.reduce(
+      (total, item, index) =>
+        total +
+        toExpenseAmountCents(
+          item.totalAmount,
+          `currentExpense.items[${index}].totalAmount`,
+        ),
+      BigInt(0),
+    );
+
+  if (effectiveItemsTotalCents > effectiveTotalCents) {
+    throw new ExpenseDomainError(
+      "VALIDATION_ERROR",
+      "The sum of item totals cannot exceed totalAmount.",
+    );
+  }
+
+  const memberIds = [
+    input.paidByMemberId,
+    ...(input.splits?.map((split) => split.householdMemberId) ?? []),
+  ].filter((memberId): memberId is string => memberId !== undefined);
+  const existingMemberIds = await getHouseholdMemberIds(
+    context.householdId,
+    memberIds,
+  );
+
+  if (
+    memberIds.some((memberId) => !existingMemberIds.has(memberId.toLowerCase()))
+  ) {
+    throw new ExpenseDomainError(
+      "HOUSEHOLD_MISMATCH",
+      "One or more selected members do not belong to the current household.",
+    );
+  }
+
+  const categoryIds = [
+    validated.categoryIdIsSet ? input.categoryId : undefined,
+    ...(validated.items?.map((item) => item.categoryId) ?? []),
+  ].filter((categoryId): categoryId is string => categoryId != null);
+  const existingCategoryIds = await getExistingCategoryIds(categoryIds);
+
+  if (
+    categoryIds.some(
+      (categoryId) => !existingCategoryIds.has(categoryId.toLowerCase()),
+    )
+  ) {
+    throw new ExpenseDomainError(
+      "NOT_FOUND",
+      "One or more selected categories were not found.",
+    );
+  }
+
+  const distributions =
+    input.splits === undefined ||
+    validated.splitPercentageBasisPoints === undefined
+      ? null
+      : calculateDistributions(
+          effectiveTotalCents,
+          input.splits,
+          validated.splitPercentageBasisPoints,
+        );
+  const updatedExpenseId = await updateExpenseInRepository({
+    householdId: context.householdId,
+    expenseId,
+    merchantIsSet: validated.merchantIsSet,
+    merchant: validated.merchantIsSet ? (input.merchant ?? null) : null,
+    descriptionIsSet: validated.descriptionIsSet,
+    description: validated.descriptionIsSet
+      ? (input.description ?? null)
+      : null,
+    totalAmount: validated.totalCents === undefined ? null : input.totalAmount!,
+    expenseDate: input.expenseDate ?? null,
+    paidByMemberId: input.paidByMemberId ?? null,
+    categoryIdIsSet: validated.categoryIdIsSet,
+    categoryId: validated.categoryIdIsSet ? (input.categoryId ?? null) : null,
+    items: validated.items ?? null,
+    distributions,
+  });
+
+  try {
+    const updatedExpense = await findExpenseById(
+      context.householdId,
+      updatedExpenseId,
+    );
+
+    if (updatedExpense === null) {
+      throw new ExpenseUpdatedNotHydratedError(updatedExpenseId);
+    }
+
+    return updatedExpense;
+  } catch (error) {
+    if (error instanceof ExpenseUpdatedNotHydratedError) {
+      throw error;
+    }
+
+    throw new ExpenseUpdatedNotHydratedError(updatedExpenseId);
+  }
+}
+
+export async function updateExpense(
+  context: ExpenseServiceContext,
+  expenseId: string,
+  input: ExpenseUpdateInput,
+): Promise<Expense> {
+  try {
+    return await updateValidatedExpense(context, expenseId, input);
+  } catch (error) {
+    if (error instanceof ExpenseDomainError) {
+      throw error;
+    }
+
+    if (error instanceof ExpenseRepositoryError) {
+      if (error.kind === "NOT_FOUND") {
+        throw new ExpenseDomainError(
+          "NOT_FOUND",
+          "Expense was not found in the current household.",
+        );
+      }
+
+      if (error.kind === "INTEGRITY") {
+        throw new ExpenseDomainError(
+          "VALIDATION_ERROR",
+          "Expense data is no longer valid for update.",
+        );
+      }
     }
 
     throw persistenceError();

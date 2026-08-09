@@ -355,6 +355,8 @@ pendingProposalId: string
 
 Requiere confirmación explícita de la propuesta exacta. Invoca el servicio equivalente a `PATCH /api/expenses/{id}`. Output: `{ expense: ExpenseResponse }`. Aplican las reglas de reemplazo de items/distribuciones, campos inmutables y validaciones del contrato HTTP. Puede fallar por recurso inexistente, gasto cancelado, contexto incorrecto, datos inválidos o propuesta no disponible.
 
+Si la actualización fue confirmada por PostgreSQL pero el Expense no pudo cargarse después, la tool recibirá `UPDATED_NOT_HYDRATED` con el `expenseId` confirmado y no deberá tratarlo como un fallo de escritura ni reintentar automáticamente la modificación.
+
 ### delete_expense
 
 Input: `{ id: string; pendingProposalId: string }`. Requiere confirmación explícita. Invoca el servicio equivalente a `DELETE /api/expenses/{id}`. Output interno: `{ id: string; result: "DELETED" | "CANCELLED" | "ALREADY_CANCELLED" }`; el endpoint HTTP continúa devolviendo `204`. Puede fallar por recurso inexistente, contexto incorrecto o propuesta no disponible.

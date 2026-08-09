@@ -11,9 +11,11 @@ import type {
   ExpenseReadFilters,
   ExpenseSource,
   ExpenseStatus,
+  ExpenseUpdateItemInput,
 } from "./expense.types";
 
-export type ExpenseRepositoryErrorKind = "INTEGRITY" | "TECHNICAL";
+export type ExpenseRepositoryErrorKind =
+  "INTEGRITY" | "NOT_FOUND" | "TECHNICAL";
 
 export class ExpenseRepositoryError extends Error {
   readonly kind: ExpenseRepositoryErrorKind;
@@ -38,6 +40,22 @@ export interface ExpenseCreatePersistenceInput {
   source: ExpenseSource;
   items: ExpenseCreateItemInput[];
   distributions: ExpenseCalculatedDistribution[];
+}
+
+export interface ExpenseUpdatePersistenceInput {
+  householdId: string;
+  expenseId: string;
+  merchantIsSet: boolean;
+  merchant: string | null;
+  descriptionIsSet: boolean;
+  description: string | null;
+  totalAmount: number | null;
+  expenseDate: string | null;
+  paidByMemberId: string | null;
+  categoryIdIsSet: boolean;
+  categoryId: string | null;
+  items: ExpenseUpdateItemInput[] | null;
+  distributions: ExpenseCalculatedDistribution[] | null;
 }
 
 type DatabaseNumeric = number | string;
@@ -110,6 +128,16 @@ function dataAccessError(operation: string, cause: unknown): Error {
 }
 
 function getPersistenceErrorKind(error: unknown): ExpenseRepositoryErrorKind {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    error.code === "P0002"
+  ) {
+    return "NOT_FOUND";
+  }
+
   if (
     typeof error === "object" &&
     error !== null &&
@@ -413,6 +441,51 @@ export async function createExpense(
     throw new ExpenseRepositoryError(
       "TECHNICAL",
       new Error("Unexpected fn_create_expense result"),
+    );
+  }
+
+  return data;
+}
+
+export async function updateExpense(
+  input: ExpenseUpdatePersistenceInput,
+): Promise<string> {
+  const { data, error } = await getSupabaseAdminClient().rpc(
+    "fn_update_expense",
+    {
+      p_household_id: input.householdId,
+      p_expense_id: input.expenseId,
+      p_set_merchant: input.merchantIsSet,
+      p_merchant: input.merchant,
+      p_set_description: input.descriptionIsSet,
+      p_description: input.description,
+      p_total_amount: input.totalAmount,
+      p_expense_date: input.expenseDate,
+      p_paid_by: input.paidByMemberId,
+      p_set_category_id: input.categoryIdIsSet,
+      p_category_id: input.categoryId,
+      p_items:
+        input.items === null
+          ? null
+          : input.items.map((item) => ({
+              name: item.name,
+              quantity: item.quantity ?? null,
+              unitPrice: item.unitPrice ?? null,
+              totalAmount: item.totalAmount,
+              categoryId: item.categoryId ?? null,
+            })),
+      p_distributions: input.distributions,
+    },
+  );
+
+  if (error) {
+    throw new ExpenseRepositoryError(getPersistenceErrorKind(error), error);
+  }
+
+  if (typeof data !== "string") {
+    throw new ExpenseRepositoryError(
+      "TECHNICAL",
+      new Error("Unexpected fn_update_expense result"),
     );
   }
 

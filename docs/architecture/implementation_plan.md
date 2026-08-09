@@ -233,6 +233,8 @@ La creación calculará `ExpenseDistribution.amount` mediante restos mayores en 
 
 La escritura de Expense, ExpenseItems y ExpenseDistributions se realizará atómicamente mediante una única llamada del repository a `public.fn_create_expense`, implementada como RPC PostgreSQL `SECURITY INVOKER`. No se realizarán inserts PostgREST independientes ni se introducirá una abstracción genérica de movimientos.
 
+La actualización parcial de Expense utilizará una única llamada del repository a `public.fn_update_expense`, también `SECURITY INVOKER`. La RPC bloqueará el Expense por `id + household_id`, actualizará únicamente los campos presentes y reemplazará items o distribuciones dentro de la misma transacción cuando se proporcionen. `receiptId` permanecerá inmutable y no participará en esta operación.
+
 `POST /api/expenses` creará directamente Expense `CONFIRMED` después de la confirmación; el MVP no implementará un flujo que cree Expense `PENDING`. Se conservará su semántica documental de eliminación física, pero no será un caso obligatorio de implementación o prueba.
 Incomes
 Crear ingreso.

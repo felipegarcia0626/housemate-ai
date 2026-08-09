@@ -1385,6 +1385,8 @@ No se crearán triggers para invariantes que ya quedan resueltas mediante FK, CH
 
 ## 28.7 Escritura atómica del agregado Expense
 
+### 28.7.1 Creación
+
 La creación de `Expense`, sus `ExpenseItem` opcionales y sus `ExpenseDistribution` se realizará mediante una única función PostgreSQL invocada como RPC por `expense.repository.ts`. No se utilizarán inserciones PostgREST independientes ni un estado `PENDING` transitorio.
 
 Contrato físico aprobado:
@@ -1418,6 +1420,39 @@ public.fn_create_expense(
 - `service_role` recibirá únicamente los permisos de escritura y ejecución necesarios para esta función. La RPC no será accesible desde el cliente ni desde el agente.
 
 La función fue creada mediante la migración versionada `0003_expense_write_access.sql`; las migraciones anteriores no fueron modificadas retroactivamente.
+
+### 28.7.2 Actualización
+
+La actualización parcial de un Expense `CONFIRMED` y el reemplazo opcional de sus items o distribuciones se realizarán mediante una única llamada del repository a la función PostgreSQL `public.fn_update_expense`. La función fue creada mediante la migración versionada `0004_expense_update_access.sql` y tiene este contrato físico:
+
+```text
+public.fn_update_expense(
+  p_household_id UUID,
+  p_expense_id UUID,
+  p_set_merchant BOOLEAN,
+  p_merchant TEXT,
+  p_set_description BOOLEAN,
+  p_description TEXT,
+  p_total_amount NUMERIC(14,2),
+  p_expense_date DATE,
+  p_paid_by UUID,
+  p_set_category_id BOOLEAN,
+  p_category_id UUID,
+  p_items JSONB,
+  p_distributions JSONB
+) RETURNS UUID
+```
+
+- Los flags `p_set_merchant`, `p_set_description` y `p_set_category_id` distinguen omisión de `NULL` explícito.
+- Un parámetro escalar nullable sin flag conserva el valor actual cuando es `NULL`.
+- `p_items IS NULL` conserva los items; un array, incluido `[]`, reemplaza completamente el conjunto actual.
+- `p_distributions IS NULL` conserva las distribuciones; cuando se proporciona debe ser un array no vacío que reemplaza completamente el conjunto actual.
+- La función bloquea el Expense mediante `SELECT ... FOR UPDATE` restringido por `p_expense_id + p_household_id`, rechaza inexistencia y cualquier estado distinto de `CONFIRMED`, y valida el estado efectivo después de obtener el bloqueo.
+- Un cambio real de `total_amount` exige `p_distributions`; sus porcentajes deben sumar `100.00` y sus montos deben sumar el total efectivo.
+- Los JSONB utilizan las mismas estructuras internas de `p_items` y `p_distributions` definidas para creación.
+- Los reemplazos se ejecutan mediante `DELETE + INSERT` dentro de la misma transacción de la RPC. No se realizan escrituras PostgREST independientes y `Receipt` no participa porque `receipt_id` es inmutable en PATCH.
+- La función es `SECURITY INVOKER`, deja las constraints y triggers diferidos como barrera final, y retorna el mismo UUID del Expense actualizado.
+- `service_role` recibe únicamente `UPDATE` sobre las columnas actualizables de `tb_expenses`, `DELETE` sobre items/distribuciones y `EXECUTE` sobre la función, además de los permisos de lectura e inserción previamente otorgados.
 
 ## 28.8 Seed determinista
 

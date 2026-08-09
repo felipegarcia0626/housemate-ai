@@ -436,6 +436,8 @@ Response `200`:
 }
 ```
 
+Si PostgreSQL confirma la actualización y devuelve el UUID, pero la lectura posterior del agregado falla o devuelve `null`, el backend devolverá el error sanitizado `UPDATED_NOT_HYDRATED` junto con `expenseId`. Este error significa que la actualización fue confirmada y no deberá presentarse ni reintentarse como si la escritura hubiera fallado.
+
 ## 7.5 Eliminar gasto
 
 DELETE /api/expenses/{id}

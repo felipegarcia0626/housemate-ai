@@ -90,6 +90,21 @@ export interface ExpenseCreateInput {
   splits: ExpenseCreateSplitInput[];
 }
 
+export type ExpenseUpdateItemInput = ExpenseCreateItemInput;
+
+export type ExpenseUpdateSplitInput = ExpenseCreateSplitInput;
+
+export interface ExpenseUpdateInput {
+  merchant?: string | null;
+  description?: string | null;
+  totalAmount?: number;
+  expenseDate?: string;
+  paidByMemberId?: string;
+  categoryId?: string | null;
+  items?: ExpenseUpdateItemInput[];
+  splits?: ExpenseUpdateSplitInput[];
+}
+
 export interface ExpenseCalculatedDistribution {
   householdMemberId: string;
   amount: number;
@@ -105,7 +120,8 @@ export type ExpenseDomainErrorCode =
   | "NOT_FOUND"
   | "HOUSEHOLD_MISMATCH"
   | "PERSISTENCE_ERROR"
-  | "CREATED_NOT_HYDRATED";
+  | "CREATED_NOT_HYDRATED"
+  | "UPDATED_NOT_HYDRATED";
 
 export class ExpenseDomainError extends Error {
   readonly code: ExpenseDomainErrorCode;
@@ -126,6 +142,19 @@ export class ExpenseCreatedNotHydratedError extends ExpenseDomainError {
       "Expense was created but could not be loaded.",
     );
     this.name = "ExpenseCreatedNotHydratedError";
+    this.expenseId = expenseId;
+  }
+}
+
+export class ExpenseUpdatedNotHydratedError extends ExpenseDomainError {
+  readonly expenseId: string;
+
+  constructor(expenseId: string) {
+    super(
+      "UPDATED_NOT_HYDRATED",
+      "Expense was updated but could not be loaded.",
+    );
+    this.name = "ExpenseUpdatedNotHydratedError";
     this.expenseId = expenseId;
   }
 }

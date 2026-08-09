@@ -154,6 +154,8 @@ Calcular el balance de compensación mediante gastos confirmados, `paid_by` y `E
 
 `expense.service.ts` validará la entrada y calculará los montos de distribución mediante restos mayores en centavos. `expense.repository.ts` realizará una única llamada a la RPC PostgreSQL específica `public.fn_create_expense` para persistir atómicamente Expense, ExpenseItems y ExpenseDistributions. No ejecutará inserts PostgREST independientes ni existirá una abstracción genérica de movimientos financieros.
 
+Para actualización, el mismo service aplicará la semántica PATCH y recalculará distribuciones cuando corresponda; el repository realizará una única llamada a `public.fn_update_expense`. La RPC bloqueará y actualizará el agregado de forma transaccional, sin escrituras PostgREST independientes y sin modificar Receipt.
+
 `merchant` será `string | null` en los tipos de Expense y se persistirá como `NULL` cuando no esté disponible.
 
 La lógica financiera relevante deberá permanecer dentro del módulo o de servicios de dominio relacionados.
