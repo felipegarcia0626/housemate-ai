@@ -45,6 +45,11 @@ export interface IncomeUpdatePersistenceInput extends IncomeUpdateInput {
   incomeId: string;
 }
 
+export interface IncomeDeletePersistenceInput {
+  householdId: string;
+  incomeId: string;
+}
+
 function getIncomePersistenceErrorKind(
   error: unknown,
 ): IncomeRepositoryErrorKind {
@@ -192,6 +197,34 @@ export async function updateIncome(
   }
 
   return mapIncome(data as IncomeRow);
+}
+
+export async function deleteIncome(
+  input: IncomeDeletePersistenceInput,
+): Promise<string> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_incomes")
+    .delete()
+    .eq("id", input.incomeId)
+    .eq("household_id", input.householdId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw new IncomeRepositoryError(
+      getIncomePersistenceErrorKind(error),
+      error,
+    );
+  }
+
+  if (data === null || data.id !== input.incomeId) {
+    throw new IncomeRepositoryError(
+      "NOT_FOUND",
+      new Error("Income was not found in the current household."),
+    );
+  }
+
+  return data.id;
 }
 
 export async function listIncomes(

@@ -49,6 +49,13 @@ export interface IncomeListResult {
   };
 }
 
+export type IncomeDeleteOutcome = "DELETED";
+
+export interface IncomeDeleteResult {
+  id: string;
+  result: IncomeDeleteOutcome;
+}
+
 export type IncomeDomainErrorCode =
   "VALIDATION_ERROR" | "NOT_FOUND" | "HOUSEHOLD_MISMATCH" | "PERSISTENCE_ERROR";
 

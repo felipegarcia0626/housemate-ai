@@ -1,5 +1,6 @@
 import {
   createIncome as createIncomeInRepository,
+  deleteIncome as deleteIncomeInRepository,
   IncomeRepositoryError,
   isIncomeCategoryAvailable,
   isIncomeMemberInHousehold,
@@ -12,6 +13,7 @@ import {
   type Income,
   type IncomeCreateInput,
   type IncomeCreateServiceContext,
+  type IncomeDeleteResult,
   type IncomeListFilters,
   type IncomeListResult,
   type IncomeServiceContext,
@@ -43,6 +45,13 @@ function updatePersistenceError(): IncomeDomainError {
   return new IncomeDomainError(
     "PERSISTENCE_ERROR",
     "Income could not be updated.",
+  );
+}
+
+function deletePersistenceError(): IncomeDomainError {
+  return new IncomeDomainError(
+    "PERSISTENCE_ERROR",
+    "Income could not be deleted.",
   );
 }
 
@@ -173,6 +182,36 @@ export async function updateIncome(
     }
 
     throw updatePersistenceError();
+  }
+}
+
+export async function deleteIncome(
+  context: IncomeServiceContext,
+  incomeId: string,
+): Promise<IncomeDeleteResult> {
+  try {
+    validateIncomeUuid(context.householdId, "context.householdId");
+    validateIncomeUuid(incomeId, "incomeId");
+
+    const deletedId = await deleteIncomeInRepository({
+      householdId: context.householdId,
+      incomeId,
+    });
+
+    return { id: deletedId, result: "DELETED" };
+  } catch (error) {
+    if (error instanceof IncomeDomainError) {
+      throw error;
+    }
+
+    if (error instanceof IncomeRepositoryError && error.kind === "NOT_FOUND") {
+      throw new IncomeDomainError(
+        "NOT_FOUND",
+        "Income was not found in the current household.",
+      );
+    }
+
+    throw deletePersistenceError();
   }
 }
 

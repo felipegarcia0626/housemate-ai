@@ -76,9 +76,11 @@ const observedIncomeQueries = [];
 let failIncomeRead = false;
 let failIncomeWrite = false;
 let failIncomeUpdate = false;
+let failIncomeDelete = false;
 let nextIncomeSequence = 50;
 const observedIncomeInserts = [];
 const observedIncomeUpdates = [];
+const observedIncomeDeletes = [];
 
 class FakeQuery {
   constructor(table) {
@@ -99,6 +101,11 @@ class FakeQuery {
 
   update(value) {
     this.updatedValue = value;
+    return this;
+  }
+
+  delete() {
+    this.isDelete = true;
     return this;
   }
 
@@ -150,6 +157,24 @@ class FakeQuery {
   }
 
   async maybeSingle() {
+    if (this.isDelete) {
+      observedIncomeDeletes.push({ filters: [...this.filters] });
+
+      if (failIncomeDelete) {
+        return { data: null, error: { message: "sensitive delete detail" } };
+      }
+
+      const row = this.apply()[0] ?? null;
+      if (row === null) {
+        return { data: null, error: null };
+      }
+
+      const rowIndex = incomes.findIndex((income) => income.id === row.id);
+      assert.notEqual(rowIndex, -1);
+      incomes.splice(rowIndex, 1);
+      return { data: { id: row.id }, error: null };
+    }
+
     if (this.updatedValue !== undefined) {
       observedIncomeUpdates.push({
         filters: [...this.filters],
@@ -276,9 +301,10 @@ async function expectDomainError(name, operation, expectedCode) {
 }
 
 async function main() {
-  const { createIncome, listIncomes, updateIncome } = loadTypeScriptModule(
-    path.join(root, "modules", "incomes", "income.service.ts"),
-  );
+  const { createIncome, deleteIncome, listIncomes, updateIncome } =
+    loadTypeScriptModule(
+      path.join(root, "modules", "incomes", "income.service.ts"),
+    );
 
   const result = await listIncomes({ householdId: householdA }, {});
   assert.deepEqual(
@@ -703,6 +729,85 @@ async function main() {
   console.log(
     "PASS real updateIncome validation, isolation, payload and error sanitization",
   );
+
+  const deletedIncomeId = createdWithoutCategory.id;
+  const deleted = await deleteIncome(
+    { householdId: householdA },
+    deletedIncomeId,
+  );
+  assert.deepEqual(deleted, { id: deletedIncomeId, result: "DELETED" });
+  assert.ok(!incomes.some((income) => income.id === deletedIncomeId));
+
+  await expectDomainError(
+    "invalid delete UUID",
+    () => deleteIncome({ householdId: householdA }, "invalid"),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "missing Income delete",
+    () =>
+      deleteIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000099",
+      ),
+    "NOT_FOUND",
+  );
+  await expectDomainError(
+    "foreign Income delete",
+    () =>
+      deleteIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000044",
+      ),
+    "NOT_FOUND",
+  );
+  assert.ok(
+    incomes.some(
+      (income) =>
+        income.id === "26000000-0000-4000-8000-000000000044" &&
+        income.household_id === householdB,
+    ),
+  );
+
+  failIncomeDelete = true;
+  const deletePersistenceError = await expectDomainError(
+    "delete repository failure",
+    () =>
+      deleteIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000043",
+      ),
+    "PERSISTENCE_ERROR",
+  );
+  assert.equal(deletePersistenceError.message, "Income could not be deleted.");
+  assert.ok(
+    !deletePersistenceError.message.includes("sensitive delete detail"),
+  );
+  failIncomeDelete = false;
+
+  assert.ok(observedIncomeDeletes.length >= 4);
+  for (const { filters } of observedIncomeDeletes) {
+    assert.equal(filters.length, 2, "Income delete must use only two filters");
+    assert.ok(
+      filters.some(
+        ({ operator, column }) => operator === "eq" && column === "id",
+      ),
+      "Every Income delete must filter by id",
+    );
+    assert.ok(
+      filters.some(
+        ({ operator, column, value }) =>
+          operator === "eq" &&
+          column === "household_id" &&
+          value === householdA,
+      ),
+      "Every Income delete must use the controlled household",
+    );
+  }
+  console.log(
+    "PASS real deleteIncome result, physical deletion, isolation and sanitized errors",
+  );
+  console.log("PASS Income read/create/update regressions remain operational");
 
   failIncomeRead = true;
   const persistenceError = await expectDomainError(

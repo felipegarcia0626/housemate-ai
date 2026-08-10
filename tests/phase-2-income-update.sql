@@ -224,11 +224,11 @@ BEGIN
     END IF;
   END LOOP;
 
-  IF has_table_privilege('service_role', 'public.tb_incomes', 'DELETE') THEN
-    RAISE EXCEPTION 'FAIL service_role has unexpected Income DELETE';
+  IF NOT has_table_privilege('service_role', 'public.tb_incomes', 'DELETE') THEN
+    RAISE EXCEPTION 'FAIL service_role lacks approved Income DELETE';
   END IF;
 
-  RAISE NOTICE 'PASS service_role has only approved Income UPDATE columns and no DELETE';
+  RAISE NOTICE 'PASS service_role has approved Income UPDATE columns and DELETE';
 END;
 $$;
 

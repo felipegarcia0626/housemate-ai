@@ -187,6 +187,8 @@ El incremento de lectura implementado limita `listIncomes` a los filtros `from`,
 
 Para actualización, `income.service.ts` aplica la semántica PATCH y valida integrante y categoría cuando se proporcionan. `income.repository.ts` actualiza una única fila mediante PostgREST con filtro obligatorio `id + household_id`, devuelve la representación hidratada y no permite modificar hogar, creador, identificador ni timestamps.
 
+Para eliminación, `income.service.ts` valida el contexto y el identificador. `income.repository.ts` elimina físicamente mediante una única operación PostgREST con filtro obligatorio `id + household_id`; devuelve `DELETED` y trata un ingreso inexistente o de otro hogar como `NOT_FOUND`, sin RPC ni soft delete.
+
 El módulo no contendrá items, pagadores, distribuciones ni reglas de reparto. No existirá una carpeta o abstracción genérica de movimientos financieros compartida con `expenses`.
 
 # 8. Módulo categories
