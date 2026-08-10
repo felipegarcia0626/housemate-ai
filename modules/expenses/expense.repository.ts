@@ -5,6 +5,7 @@ import type {
   ExpenseCalculatedDistribution,
   ExpenseCategory,
   ExpenseCreateItemInput,
+  ExpenseDeleteOutcome,
   ExpenseDistribution,
   ExpenseItem,
   ExpenseListItem,
@@ -56,6 +57,11 @@ export interface ExpenseUpdatePersistenceInput {
   categoryId: string | null;
   items: ExpenseUpdateItemInput[] | null;
   distributions: ExpenseCalculatedDistribution[] | null;
+}
+
+export interface ExpenseDeletePersistenceInput {
+  householdId: string;
+  expenseId: string;
 }
 
 type DatabaseNumeric = number | string;
@@ -486,6 +492,35 @@ export async function updateExpense(
     throw new ExpenseRepositoryError(
       "TECHNICAL",
       new Error("Unexpected fn_update_expense result"),
+    );
+  }
+
+  return data;
+}
+
+export async function deleteExpense(
+  input: ExpenseDeletePersistenceInput,
+): Promise<ExpenseDeleteOutcome> {
+  const { data, error } = await getSupabaseAdminClient().rpc(
+    "fn_delete_expense",
+    {
+      p_household_id: input.householdId,
+      p_expense_id: input.expenseId,
+    },
+  );
+
+  if (error) {
+    throw new ExpenseRepositoryError(getPersistenceErrorKind(error), error);
+  }
+
+  if (
+    data !== "DELETED" &&
+    data !== "CANCELLED" &&
+    data !== "ALREADY_CANCELLED"
+  ) {
+    throw new ExpenseRepositoryError(
+      "TECHNICAL",
+      new Error("Unexpected fn_delete_expense result"),
     );
   }
 

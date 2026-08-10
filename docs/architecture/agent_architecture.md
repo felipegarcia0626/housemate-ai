@@ -361,6 +361,8 @@ Si la actualización fue confirmada por PostgreSQL pero el Expense no pudo carga
 
 Input: `{ id: string; pendingProposalId: string }`. Requiere confirmación explícita. Invoca el servicio equivalente a `DELETE /api/expenses/{id}`. Output interno: `{ id: string; result: "DELETED" | "CANCELLED" | "ALREADY_CANCELLED" }`; el endpoint HTTP continúa devolviendo `204`. Puede fallar por recurso inexistente, contexto incorrecto o propuesta no disponible.
 
+La futura tool interpreta y orquesta la solicitud confirmada, pero delega la operación a `deleteExpense`. El flujo permanece Tool → Service → Repository → `fn_delete_expense` → PostgreSQL; la tool no decide la transición de estado, no elimina hijos o receipts y no accede directamente a la RPC.
+
 ### create_income
 
 Input:

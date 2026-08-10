@@ -1,5 +1,6 @@
 import {
   createExpense as createExpenseInRepository,
+  deleteExpense as deleteExpenseInRepository,
   findExpenseById,
   findReceiptForExpenseCreation,
   getExistingCategoryIds,
@@ -17,6 +18,7 @@ import {
   type Expense,
   type ExpenseCreateInput,
   type ExpenseCreateSplitInput,
+  type ExpenseDeleteResult,
   type ExpenseListItem,
   type ExpenseReadFilters,
   type ExpenseServiceContext,
@@ -393,6 +395,45 @@ export async function updateExpense(
         throw new ExpenseDomainError(
           "VALIDATION_ERROR",
           "Expense data is no longer valid for update.",
+        );
+      }
+    }
+
+    throw persistenceError();
+  }
+}
+
+export async function deleteExpense(
+  context: ExpenseServiceContext,
+  expenseId: string,
+): Promise<ExpenseDeleteResult> {
+  try {
+    validateContext(context);
+    validateUuid(expenseId, "expenseId");
+
+    const result = await deleteExpenseInRepository({
+      householdId: context.householdId,
+      expenseId,
+    });
+
+    return { id: expenseId, result };
+  } catch (error) {
+    if (error instanceof ExpenseDomainError) {
+      throw error;
+    }
+
+    if (error instanceof ExpenseRepositoryError) {
+      if (error.kind === "NOT_FOUND") {
+        throw new ExpenseDomainError(
+          "NOT_FOUND",
+          "Expense was not found in the current household.",
+        );
+      }
+
+      if (error.kind === "INTEGRITY") {
+        throw new ExpenseDomainError(
+          "VALIDATION_ERROR",
+          "Expense cannot be deleted while related data prevents deletion.",
         );
       }
     }

@@ -235,6 +235,8 @@ La escritura de Expense, ExpenseItems y ExpenseDistributions se realizará atóm
 
 La actualización parcial de Expense utilizará una única llamada del repository a `public.fn_update_expense`, también `SECURITY INVOKER`. La RPC bloqueará el Expense por `id + household_id`, actualizará únicamente los campos presentes y reemplazará items o distribuciones dentro de la misma transacción cuando se proporcionen. `receiptId` permanecerá inmutable y no participará en esta operación.
 
+La eliminación de Expense está implementada mediante una única llamada a `public.fn_delete_expense`, `SECURITY INVOKER`: la RPC bloquea por `id + household_id`, elimina físicamente `PENDING`, cambia `CONFIRMED` a `CANCELLED` y trata `CANCELLED` como una operación idempotente sin escritura. Receipt no se modifica y su FK `RESTRICT` protege cualquier eliminación física incompatible.
+
 `POST /api/expenses` creará directamente Expense `CONFIRMED` después de la confirmación; el MVP no implementará un flujo que cree Expense `PENDING`. Se conservará su semántica documental de eliminación física, pero no será un caso obligatorio de implementación o prueba.
 Incomes
 Crear ingreso.

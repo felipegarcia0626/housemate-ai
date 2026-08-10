@@ -156,6 +156,8 @@ Calcular el balance de compensación mediante gastos confirmados, `paid_by` y `E
 
 Para actualización, el mismo service aplicará la semántica PATCH y recalculará distribuciones cuando corresponda; el repository realizará una única llamada a `public.fn_update_expense`. La RPC bloqueará y actualizará el agregado de forma transaccional, sin escrituras PostgREST independientes y sin modificar Receipt.
 
+Para eliminación, `expense.service.ts` validará contexto e identificador y devolverá `DELETED`, `CANCELLED` o `ALREADY_CANCELLED`. `expense.repository.ts` realizará una única llamada a `public.fn_delete_expense`; la RPC decidirá la transición bajo bloqueo y no modificará Receipt.
+
 `merchant` será `string | null` en los tipos de Expense y se persistirá como `NULL` cuando no esté disponible.
 
 La lógica financiera relevante deberá permanecer dentro del módulo o de servicios de dominio relacionados.

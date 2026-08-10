@@ -1252,7 +1252,7 @@ La propuesta se elimina al confirmar o rechazar; no se persisten otros estados.
 
 `CASCADE` se limita a componentes inseparables de su agregado: items y distribuciones de un Expense, y miembros de una SharingRule. Los datos financieros, identidades, receipts y propuestas no se eliminan indirectamente al eliminar su hogar o miembro.
 
-Un Expense físicamente eliminable no podrá eliminarse mientras tenga un Receipt asociado. El flujo controlado deberá eliminar primero el Receipt y su archivo. Los Expense `CONFIRMED` no se eliminan físicamente: el service de Fase 2 cambia su estado a `CANCELLED`.
+Un Expense físicamente eliminable no podrá eliminarse mientras tenga un Receipt asociado. El flujo controlado deberá eliminar primero el Receipt y su archivo. Los Expense `CONFIRMED` no se eliminan físicamente: el caso de uso de Fase 2 delega en `fn_delete_expense` su cambio de estado a `CANCELLED`.
 
 ## 28.4 Unicidades e índices
 
@@ -1324,7 +1324,7 @@ Clasificación:
 | Integrante de ExpenseDistribution pertenece al hogar del Expense | A | constraint trigger diferido |
 | Participantes de SharingRule pertenecen al hogar de la regla | A | constraint trigger diferido |
 | Porcentajes de una SharingRule suman exactamente 100 | A | constraint trigger diferido |
-| `PENDING` se elimina, `CONFIRMED` pasa a `CANCELLED`, `CANCELLED` es idempotente | B | Expense service de Fase 2 |
+| `PENDING` se elimina, `CONFIRMED` pasa a `CANCELLED`, `CANCELLED` es idempotente | B | Regla operacional garantizada por el flujo Service → Repository → `fn_delete_expense`; PostgreSQL no impide una escritura directa que omita la RPC |
 | Income se elimina físicamente | B | Income service de Fase 2 |
 | Confirmar/rechazar consume la propuesta correcta de forma atómica | B | Agent/service y transacción de Fase 2; el índice evita propuestas simultáneas |
 | Reserva atómica de eventos antes de ejecutar el agente | B | WhatsApp repository/service de fase posterior; UNIQUE resuelve la carrera |
@@ -1453,6 +1453,27 @@ public.fn_update_expense(
 - Los reemplazos se ejecutan mediante `DELETE + INSERT` dentro de la misma transacción de la RPC. No se realizan escrituras PostgREST independientes y `Receipt` no participa porque `receipt_id` es inmutable en PATCH.
 - La función es `SECURITY INVOKER`, deja las constraints y triggers diferidos como barrera final, y retorna el mismo UUID del Expense actualizado.
 - `service_role` recibe únicamente `UPDATE` sobre las columnas actualizables de `tb_expenses`, `DELETE` sobre items/distribuciones y `EXECUTE` sobre la función, además de los permisos de lectura e inserción previamente otorgados.
+
+### 28.7.3 Eliminación y cancelación
+
+La eliminación lógica o física de Expense se realiza mediante una única llamada del repository a:
+
+```text
+public.fn_delete_expense(
+  p_household_id UUID,
+  p_expense_id UUID
+) RETURNS TEXT
+```
+
+La función fue creada mediante `0005_expense_delete_access.sql`, es `SECURITY INVOKER` y bloquea la fila mediante `SELECT ... FOR UPDATE` restringido simultáneamente por `p_household_id + p_expense_id`. La decisión usa el estado confirmado después de obtener el bloqueo:
+
+- `PENDING`: elimina físicamente el Expense y retorna `DELETED`; las FK existentes eliminan items y distribuciones mediante `ON DELETE CASCADE`.
+- `CONFIRMED`: actualiza únicamente `status = CANCELLED` y retorna `CANCELLED`; Expense, items, distribuciones y Receipt permanecen.
+- `CANCELLED`: no ejecuta escrituras y retorna `ALREADY_CANCELLED`, por lo que `updated_at` tampoco cambia.
+
+Un Expense `PENDING` con Receipt asociado continúa protegido por `ON DELETE RESTRICT`: la función no elimina ni desvincula Receipt y PostgreSQL revierte cualquier efecto parcial del DELETE. La RPC no contiene control transaccional explícito y toda la operación pertenece a la transacción de la llamada.
+
+`service_role` recibe solamente `DELETE` sobre `tb_expenses`, `UPDATE` sobre su columna `status` y `EXECUTE` sobre la función, además de los permisos previamente otorgados. `PUBLIC` no puede ejecutar la RPC y no se agregan permisos sobre `tb_receipts`.
 
 ## 28.8 Seed determinista
 

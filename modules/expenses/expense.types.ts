@@ -105,6 +105,14 @@ export interface ExpenseUpdateInput {
   splits?: ExpenseUpdateSplitInput[];
 }
 
+export type ExpenseDeleteOutcome =
+  "DELETED" | "CANCELLED" | "ALREADY_CANCELLED";
+
+export interface ExpenseDeleteResult {
+  id: string;
+  result: ExpenseDeleteOutcome;
+}
+
 export interface ExpenseCalculatedDistribution {
   householdMemberId: string;
   amount: number;

@@ -446,6 +446,14 @@ La eliminación deberá requerir una confirmación previa cuando la operación s
 
 Si el gasto está `PENDING`, el backend podrá eliminarlo físicamente. Si está `CONFIRMED`, cambiará su estado a `CANCELLED`. Si ya está `CANCELLED`, la operación será idempotente. Solo los gastos `CONFIRMED` participarán en balances, dashboard y consultas financieras. El flujo actual no crea Expense `PENDING`; esa rama queda reservada y no es un caso obligatorio del MVP.
 
+El caso de uso interno tendrá el contrato:
+
+```text
+deleteExpense(context, expenseId): Promise<ExpenseDeleteResult>
+```
+
+`ExpenseDeleteResult` contiene el mismo `id` solicitado y uno de estos resultados: `DELETED`, `CANCELLED` o `ALREADY_CANCELLED`. La decisión se ejecuta dentro de `public.fn_delete_expense` bajo bloqueo por Expense y hogar. Un recurso inexistente y uno perteneciente a otro hogar producen `NOT_FOUND` sin revelar información adicional. Un Expense `PENDING` con Receipt asociado no se elimina: la FK `RESTRICT` rechaza atómicamente la operación y el backend responde con un error de validación sanitizado.
+
 Response:
 
 204 No Content
