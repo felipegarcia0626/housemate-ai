@@ -259,6 +259,8 @@ Calcular resúmenes por categoría atribuyendo los items categorizados a su prop
 Si no existe una categoría general, la parte restante quedará sin categorizar. La suma atribuida a categorías para un gasto nunca podrá superar `Expense.total_amount`.
 
 El `byCategory` del dashboard incluirá únicamente gastos `CONFIRMED`; las categorías de Income no se mezclarán en esa colección.
+
+El core de Dashboard implementa `getDashboard(context, filters?)` dentro de `modules/dashboard`, con filtros inclusivos `from` y `to` y aislamiento obligatorio por el hogar controlado. Dos lecturas PostgREST independientes recuperan Income y Expenses `CONFIRMED` con sus items y categorías; el MVP no promete un snapshot transaccional único, no usa RPC y no persiste agregados. Un calculador puro acumula dinero en centavos con `bigint` para producir `totalIncome`, `totalSpent`, `netAmount`, `expenseCount`, `memberIncome` y `byCategory`. El remanente sin categoría se representa mediante `categoryId: null` y `categoryName: null`. Dashboard permanece separado de Balance, Sharing Rules y ExpenseDistribution.
 Sharing Rules
 Obtener reglas.
 Calcular distribución.

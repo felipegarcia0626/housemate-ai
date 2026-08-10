@@ -250,12 +250,17 @@ Ejemplo:
 
 modules/
 └── dashboard/
+├── dashboard.types.ts
+├── dashboard.validation.ts
+├── dashboard.repository.ts
 ├── dashboard.service.ts
-└── dashboard.types.ts
+└── dashboard-calculator.ts
 
 No deberá almacenar información financiera duplicada.
 
 Los valores deberán calcularse a partir de los datos existentes.
+
+El core implementado consulta Income y Expenses `CONFIRMED` mediante lecturas PostgREST independientes, siempre aisladas por el hogar controlado y con filtros inclusivos `from`/`to`. El calculador puro produce los seis agregados aprobados en centavos enteros; `byCategory` combina items categorizados, remanente de la categoría general y el bucket `null`/`null` sin persistir resultados. No garantiza un snapshot transaccional único y permanece separado de Balance, Sharing Rules y ExpenseDistribution.
 
 # 11. Módulo receipts
 
