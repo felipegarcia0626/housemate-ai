@@ -26,6 +26,14 @@ export interface IncomeCreateInput {
   categoryId?: string | null;
 }
 
+export interface IncomeUpdateInput {
+  memberId?: string;
+  amount?: number;
+  incomeDate?: string;
+  description?: string;
+  categoryId?: string | null;
+}
+
 export interface IncomeServiceContext {
   householdId: string;
 }

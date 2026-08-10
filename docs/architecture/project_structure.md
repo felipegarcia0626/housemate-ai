@@ -185,6 +185,8 @@ Validar el contexto de hogar, integrantes, monto, fecha y categoría opcional.
 
 El incremento de lectura implementado limita `listIncomes` a los filtros `from`, `to`, `memberId` y `categoryId`. El repository aplica siempre el hogar controlado y el orden `income_date DESC`, `created_at DESC`, `id ASC`; el service valida el contexto y los filtros, comprueba la pertenencia de `memberId` y suma `totalIncome` en centavos enteros sobre los registros devueltos.
 
+Para actualización, `income.service.ts` aplica la semántica PATCH y valida integrante y categoría cuando se proporcionan. `income.repository.ts` actualiza una única fila mediante PostgREST con filtro obligatorio `id + household_id`, devuelve la representación hidratada y no permite modificar hogar, creador, identificador ni timestamps.
+
 El módulo no contendrá items, pagadores, distribuciones ni reglas de reparto. No existirá una carpeta o abstracción genérica de movimientos financieros compartida con `expenses`.
 
 # 8. Módulo categories

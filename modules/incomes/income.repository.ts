@@ -4,6 +4,7 @@ import type {
   Income,
   IncomeCreateInput,
   IncomeListFilters,
+  IncomeUpdateInput,
 } from "./income.types";
 
 type DatabaseNumeric = number | string;
@@ -21,7 +22,7 @@ interface IncomeRow {
   updated_at: string;
 }
 
-export type IncomeRepositoryErrorKind = "INTEGRITY" | "TECHNICAL";
+export type IncomeRepositoryErrorKind = "INTEGRITY" | "NOT_FOUND" | "TECHNICAL";
 
 export class IncomeRepositoryError extends Error {
   readonly kind: IncomeRepositoryErrorKind;
@@ -37,6 +38,11 @@ export interface IncomeCreatePersistenceInput extends IncomeCreateInput {
   householdId: string;
   createdBy: string;
   categoryId: string | null;
+}
+
+export interface IncomeUpdatePersistenceInput extends IncomeUpdateInput {
+  householdId: string;
+  incomeId: string;
 }
 
 function getIncomePersistenceErrorKind(
@@ -134,6 +140,54 @@ export async function createIncome(
     throw new IncomeRepositoryError(
       "TECHNICAL",
       new Error("Income insert returned no representation."),
+    );
+  }
+
+  return mapIncome(data as IncomeRow);
+}
+
+export async function updateIncome(
+  input: IncomeUpdatePersistenceInput,
+): Promise<Income> {
+  const payload: Record<string, string | number | null> = {};
+
+  if (input.memberId !== undefined) {
+    payload.member_id = input.memberId;
+  }
+  if (input.amount !== undefined) {
+    payload.amount = input.amount;
+  }
+  if (input.incomeDate !== undefined) {
+    payload.income_date = input.incomeDate;
+  }
+  if (input.description !== undefined) {
+    payload.description = input.description;
+  }
+  if (input.categoryId !== undefined) {
+    payload.category_id = input.categoryId;
+  }
+
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_incomes")
+    .update(payload)
+    .eq("id", input.incomeId)
+    .eq("household_id", input.householdId)
+    .select(
+      "id,household_id,created_by,member_id,amount,income_date,description,category_id,created_at,updated_at",
+    )
+    .maybeSingle();
+
+  if (error) {
+    throw new IncomeRepositoryError(
+      getIncomePersistenceErrorKind(error),
+      error,
+    );
+  }
+
+  if (data === null) {
+    throw new IncomeRepositoryError(
+      "NOT_FOUND",
+      new Error("Income was not found in the current household."),
     );
   }
 

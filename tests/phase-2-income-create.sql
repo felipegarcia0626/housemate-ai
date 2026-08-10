@@ -194,16 +194,39 @@ SELECT pg_temp.expect_sqlstate(
 RESET ROLE;
 
 DO $$
+DECLARE
+  allowed_column TEXT;
+  protected_column TEXT;
 BEGIN
   IF NOT has_table_privilege('service_role', 'public.tb_incomes', 'INSERT')
      OR NOT has_table_privilege('service_role', 'public.tb_incomes', 'SELECT') THEN
     RAISE EXCEPTION 'FAIL service_role lacks required Income create privileges';
   END IF;
-  IF has_table_privilege('service_role', 'public.tb_incomes', 'UPDATE')
-     OR has_table_privilege('service_role', 'public.tb_incomes', 'DELETE') THEN
-    RAISE EXCEPTION 'FAIL service_role has unexpected Income update/delete privileges';
+
+  FOREACH allowed_column IN ARRAY ARRAY[
+    'member_id', 'amount', 'income_date', 'description', 'category_id'
+  ] LOOP
+    IF NOT has_column_privilege(
+      'service_role', 'public.tb_incomes', allowed_column, 'UPDATE'
+    ) THEN
+      RAISE EXCEPTION 'FAIL service_role lacks UPDATE on %', allowed_column;
+    END IF;
+  END LOOP;
+
+  FOREACH protected_column IN ARRAY ARRAY[
+    'id', 'household_id', 'created_by', 'created_at', 'updated_at'
+  ] LOOP
+    IF has_column_privilege(
+      'service_role', 'public.tb_incomes', protected_column, 'UPDATE'
+    ) THEN
+      RAISE EXCEPTION 'FAIL service_role has UPDATE on protected column %', protected_column;
+    END IF;
+  END LOOP;
+
+  IF has_table_privilege('service_role', 'public.tb_incomes', 'DELETE') THEN
+    RAISE EXCEPTION 'FAIL service_role has unexpected Income DELETE privilege';
   END IF;
-  RAISE NOTICE 'PASS service_role has only required Income create/read privileges';
+  RAISE NOTICE 'PASS service_role has required Income create/read and approved column UPDATE privileges';
 END;
 $$;
 

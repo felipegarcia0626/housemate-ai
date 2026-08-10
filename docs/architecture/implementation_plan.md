@@ -245,6 +245,8 @@ Actualizar ingreso.
 Eliminar ingreso físicamente.
 
 El primer incremento de lectura de Income implementa `listIncomes` dentro de `modules/incomes`, con aislamiento obligatorio por `household_id`, filtros opcionales `from`, `to`, `memberId` y `categoryId`, y orden determinista por `income_date DESC`, `created_at DESC`, `id ASC`. El service calcula `totalIncome` a partir de la misma lista mediante centavos enteros con `bigint`; no realiza una segunda consulta de agregación ni utiliza una RPC.
+
+La actualización parcial de Income está implementada mediante una única operación PostgREST restringida por `id + household_id`. El service valida únicamente los campos presentes, distingue `categoryId: null` de un campo omitido y conserva inmutables `id`, `household_id`, `created_by` y `created_at`. `updated_at` no puede proporcionarse directamente ni forma parte de las columnas concedidas mediante `GRANT UPDATE`; PostgreSQL lo actualiza automáticamente mediante `trg_tb_incomes_set_updated_at`.
 Categories
 Obtener categorías.
 Calcular resúmenes por categoría atribuyendo los items categorizados a su propia categoría y la parte restante de `Expense.total_amount` a `Expense.category_id` cuando exista.

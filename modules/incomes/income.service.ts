@@ -4,6 +4,8 @@ import {
   isIncomeCategoryAvailable,
   isIncomeMemberInHousehold,
   listIncomes as listIncomesInRepository,
+  type IncomeUpdatePersistenceInput,
+  updateIncome as updateIncomeInRepository,
 } from "./income.repository";
 import {
   IncomeDomainError,
@@ -13,11 +15,13 @@ import {
   type IncomeListFilters,
   type IncomeListResult,
   type IncomeServiceContext,
+  type IncomeUpdateInput,
 } from "./income.types";
 import {
   toIncomeAmountCents,
   validateIncomeCreateInput,
   validateIncomeListFilters,
+  validateIncomeUpdateInput,
   validateIncomeUuid,
 } from "./income.validation";
 
@@ -32,6 +36,13 @@ function createPersistenceError(): IncomeDomainError {
   return new IncomeDomainError(
     "PERSISTENCE_ERROR",
     "Income could not be created.",
+  );
+}
+
+function updatePersistenceError(): IncomeDomainError {
+  return new IncomeDomainError(
+    "PERSISTENCE_ERROR",
+    "Income could not be updated.",
   );
 }
 
@@ -84,6 +95,84 @@ export async function createIncome(
     }
 
     throw createPersistenceError();
+  }
+}
+
+export async function updateIncome(
+  context: IncomeServiceContext,
+  incomeId: string,
+  input: IncomeUpdateInput,
+): Promise<Income> {
+  try {
+    validateIncomeUuid(context.householdId, "context.householdId");
+    validateIncomeUuid(incomeId, "incomeId");
+    validateIncomeUpdateInput(input);
+
+    if (
+      input.memberId !== undefined &&
+      !(await isIncomeMemberInHousehold(context.householdId, input.memberId))
+    ) {
+      throw new IncomeDomainError(
+        "HOUSEHOLD_MISMATCH",
+        "The selected member does not belong to the current household.",
+      );
+    }
+
+    if (
+      input.categoryId !== undefined &&
+      input.categoryId !== null &&
+      !(await isIncomeCategoryAvailable(input.categoryId))
+    ) {
+      throw new IncomeDomainError(
+        "NOT_FOUND",
+        "The selected category was not found.",
+      );
+    }
+
+    const persistenceInput: IncomeUpdatePersistenceInput = {
+      householdId: context.householdId,
+      incomeId,
+    };
+
+    if (input.memberId !== undefined) {
+      persistenceInput.memberId = input.memberId;
+    }
+    if (input.amount !== undefined) {
+      persistenceInput.amount = input.amount;
+    }
+    if (input.incomeDate !== undefined) {
+      persistenceInput.incomeDate = input.incomeDate;
+    }
+    if (input.description !== undefined) {
+      persistenceInput.description = input.description;
+    }
+    if (input.categoryId !== undefined) {
+      persistenceInput.categoryId = input.categoryId;
+    }
+
+    return await updateIncomeInRepository(persistenceInput);
+  } catch (error) {
+    if (error instanceof IncomeDomainError) {
+      throw error;
+    }
+
+    if (error instanceof IncomeRepositoryError) {
+      if (error.kind === "NOT_FOUND") {
+        throw new IncomeDomainError(
+          "NOT_FOUND",
+          "Income was not found in the current household.",
+        );
+      }
+
+      if (error.kind === "INTEGRITY") {
+        throw new IncomeDomainError(
+          "VALIDATION_ERROR",
+          "Income data is no longer valid for update.",
+        );
+      }
+    }
+
+    throw updatePersistenceError();
   }
 }
 

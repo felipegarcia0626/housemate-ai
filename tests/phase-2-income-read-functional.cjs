@@ -75,8 +75,10 @@ const incomes = [
 const observedIncomeQueries = [];
 let failIncomeRead = false;
 let failIncomeWrite = false;
+let failIncomeUpdate = false;
 let nextIncomeSequence = 50;
 const observedIncomeInserts = [];
+const observedIncomeUpdates = [];
 
 class FakeQuery {
   constructor(table) {
@@ -92,6 +94,11 @@ class FakeQuery {
   insert(value) {
     this.insertedValue = value;
     observedIncomeInserts.push(value);
+    return this;
+  }
+
+  update(value) {
+    this.updatedValue = value;
     return this;
   }
 
@@ -143,6 +150,27 @@ class FakeQuery {
   }
 
   async maybeSingle() {
+    if (this.updatedValue !== undefined) {
+      observedIncomeUpdates.push({
+        filters: [...this.filters],
+        payload: { ...this.updatedValue },
+      });
+
+      if (failIncomeUpdate) {
+        return { data: null, error: { message: "sensitive update detail" } };
+      }
+
+      const row = this.apply()[0] ?? null;
+      if (row === null) {
+        return { data: null, error: null };
+      }
+
+      Object.assign(row, this.updatedValue, {
+        updated_at: "2026-08-09T16:00:00+00:00",
+      });
+      return { data: row, error: null };
+    }
+
     const rows = this.apply();
     return { data: rows[0] ?? null, error: null };
   }
@@ -248,7 +276,7 @@ async function expectDomainError(name, operation, expectedCode) {
 }
 
 async function main() {
-  const { createIncome, listIncomes } = loadTypeScriptModule(
+  const { createIncome, listIncomes, updateIncome } = loadTypeScriptModule(
     path.join(root, "modules", "incomes", "income.service.ts"),
   );
 
@@ -496,6 +524,185 @@ async function main() {
     !createPersistenceError.message.includes("sensitive insert detail"),
   );
   console.log("PASS real createIncome sanitizes Repository errors");
+
+  failIncomeWrite = false;
+  const updated = await updateIncome(
+    { householdId: householdA },
+    "26000000-0000-4000-8000-000000000041",
+    {
+      memberId: memberA2,
+      amount: 123.45,
+      incomeDate: "2026-08-09",
+      description: "Updated Income",
+      categoryId: null,
+    },
+  );
+  assert.deepEqual(updated, {
+    id: "26000000-0000-4000-8000-000000000041",
+    householdId: householdA,
+    createdBy: memberA1,
+    memberId: memberA2,
+    amount: 123.45,
+    incomeDate: "2026-08-09",
+    description: "Updated Income",
+    categoryId: null,
+    createdAt: "2026-08-03T12:00:00+00:00",
+    updatedAt: "2026-08-09T16:00:00+00:00",
+  });
+
+  const partiallyUpdated = await updateIncome(
+    { householdId: householdA },
+    "26000000-0000-4000-8000-000000000042",
+    {
+      description: "Partial Update",
+      householdId: householdB,
+      createdBy: memberB,
+      id: "26000000-0000-4000-8000-000000000044",
+    },
+  );
+  assert.equal(partiallyUpdated.description, "Partial Update");
+  assert.equal(partiallyUpdated.memberId, memberA2);
+  assert.equal(partiallyUpdated.amount, 20.02);
+  assert.equal(partiallyUpdated.categoryId, categoryFreelance);
+  console.log(
+    "PASS real updateIncome returns hydrated rows and preserves omitted fields",
+  );
+
+  await expectDomainError(
+    "empty update",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000041",
+        {},
+      ),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "invalid update UUID",
+    () => updateIncome({ householdId: householdA }, "invalid", { amount: 1 }),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "invalid update date",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000041",
+        { incomeDate: "2026-02-30" },
+      ),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "invalid update amount",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000041",
+        { amount: 0 },
+      ),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "excess update precision",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000041",
+        { amount: 1.001 },
+      ),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "missing Income update",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000099",
+        { description: "Missing" },
+      ),
+    "NOT_FOUND",
+  );
+  await expectDomainError(
+    "foreign Income update",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000044",
+        { description: "Hidden" },
+      ),
+    "NOT_FOUND",
+  );
+  await expectDomainError(
+    "foreign member update",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000041",
+        { memberId: memberB },
+      ),
+    "HOUSEHOLD_MISMATCH",
+  );
+  await expectDomainError(
+    "missing category update",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000041",
+        { categoryId: "26000000-0000-4000-8000-000000000099" },
+      ),
+    "NOT_FOUND",
+  );
+
+  failIncomeUpdate = true;
+  const updatePersistenceError = await expectDomainError(
+    "update repository failure",
+    () =>
+      updateIncome(
+        { householdId: householdA },
+        "26000000-0000-4000-8000-000000000041",
+        { description: "Repository failure" },
+      ),
+    "PERSISTENCE_ERROR",
+  );
+  assert.equal(updatePersistenceError.message, "Income could not be updated.");
+  assert.ok(
+    !updatePersistenceError.message.includes("sensitive update detail"),
+  );
+  failIncomeUpdate = false;
+
+  const allowedUpdateColumns = new Set([
+    "member_id",
+    "amount",
+    "income_date",
+    "description",
+    "category_id",
+  ]);
+  assert.ok(observedIncomeUpdates.length >= 5);
+  for (const { filters, payload } of observedIncomeUpdates) {
+    assert.ok(
+      filters.some(
+        ({ operator, column }) => operator === "eq" && column === "id",
+      ),
+      "Every Income update must filter by id",
+    );
+    assert.ok(
+      filters.some(
+        ({ operator, column, value }) =>
+          operator === "eq" &&
+          column === "household_id" &&
+          value === householdA,
+      ),
+      "Every Income update must use the controlled household",
+    );
+    assert.ok(
+      Object.keys(payload).every((column) => allowedUpdateColumns.has(column)),
+      "Income update payload contained an immutable column",
+    );
+  }
+  console.log(
+    "PASS real updateIncome validation, isolation, payload and error sanitization",
+  );
 
   failIncomeRead = true;
   const persistenceError = await expectDomainError(
