@@ -111,6 +111,8 @@ No deberá contener reglas financieras complejas.
 
 Las rutas deberán delegar las operaciones en los módulos correspondientes.
 
+El primer Route Handler implementado es `app/api/categories/route.ts`, que expone `GET /api/categories` y delega en `modules/categories/category.service.ts` sin acceder directamente a persistencia ni resolver contexto de hogar.
+
 Web/PWA podrá consumir directamente estas rutas para vistas y operaciones explícitas, sin contener lógica de negocio ni acceder a repositories.
 
 # 5. modules/
@@ -465,6 +467,8 @@ tests/
 └── integration/
 
 No será obligatorio crear pruebas para cada archivo.
+
+`tests/phase-3-category-api-functional.cjs` valida el contrato HTTP de Category mediante el Route Handler, Service y Repository reales con un cliente Supabase controlado, sin agregar un framework de pruebas.
 
 La prioridad será cubrir:
 

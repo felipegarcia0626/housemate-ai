@@ -317,6 +317,9 @@ POST /api/receipts/analyze
 
 GET /api/webhooks/whatsapp
 POST /api/webhooks/whatsapp
+
+El primer incremento implementado de Fase 3 expone `GET /api/categories` mediante un Route Handler que reutiliza `listCategories()`. Al tratarse del catálogo global, no resuelve contexto de hogar y no requiere migraciones ni cambios de persistencia.
+
 Actividades
 Implementar controllers.
 Implementar services.
