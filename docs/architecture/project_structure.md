@@ -209,6 +209,8 @@ Obtener categorías.
 
 Las categorías se cargarán mediante seed/configuración. El MVP no implementará CRUD de categorías.
 
+La lectura implementada utiliza `category.service.ts` y `category.repository.ts` para consultar mediante PostgREST el catálogo global preconfigurado. El resultado expone únicamente `id` y `name`, sin filtros de hogar, RPC ni permisos adicionales.
+
 No deberá contener lógica relacionada con la persistencia específica de Supabase fuera del repository correspondiente.
 
 # 9. Módulo sharing-rules

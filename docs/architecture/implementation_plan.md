@@ -251,6 +251,9 @@ La actualización parcial de Income está implementada mediante una única opera
 La eliminación de Income es física y se implementa mediante una única operación PostgREST restringida por `id + household_id`. El resultado exitoso es `DELETED`; un identificador inexistente o perteneciente a otro hogar produce `NOT_FOUND`. No utiliza RPC ni soft delete.
 Categories
 Obtener categorías.
+
+El incremento de lectura de Category consulta el catálogo global preconfigurado mediante una única operación PostgREST sobre `tb_categories` y expone únicamente `id` y `name`. Reutiliza el permiso `SELECT` concedido por la migración 0002, sin RPC, filtros de hogar ni permisos nuevos.
+
 Calcular resúmenes por categoría atribuyendo los items categorizados a su propia categoría y la parte restante de `Expense.total_amount` a `Expense.category_id` cuando exista.
 
 Si no existe una categoría general, la parte restante quedará sin categorizar. La suma atribuida a categorías para un gasto nunca podrá superar `Expense.total_amount`.

@@ -12,7 +12,10 @@ const memberAWithoutIncome = "26000000-0000-4000-8000-000000000024";
 const memberB = "26000000-0000-4000-8000-000000000023";
 const categorySalary = "26000000-0000-4000-8000-000000000031";
 const categoryFreelance = "26000000-0000-4000-8000-000000000032";
-const categories = [{ id: categorySalary }, { id: categoryFreelance }];
+const categories = [
+  { id: categorySalary, name: "Salary" },
+  { id: categoryFreelance, name: "Freelance" },
+];
 
 const members = [
   { id: memberA1, household_id: householdA },
@@ -77,10 +80,12 @@ let failIncomeRead = false;
 let failIncomeWrite = false;
 let failIncomeUpdate = false;
 let failIncomeDelete = false;
+let failCategoryRead = false;
 let nextIncomeSequence = 50;
 const observedIncomeInserts = [];
 const observedIncomeUpdates = [];
 const observedIncomeDeletes = [];
+const observedCategoryQueries = [];
 
 class FakeQuery {
   constructor(table) {
@@ -89,7 +94,8 @@ class FakeQuery {
     this.orders = [];
   }
 
-  select() {
+  select(columns) {
+    this.selectedColumns = columns;
     return this;
   }
 
@@ -225,7 +231,20 @@ class FakeQuery {
       observedIncomeQueries.push([...this.filters]);
     }
 
-    const result = failIncomeRead
+    if (this.table === "tb_categories") {
+      observedCategoryQueries.push({
+        filters: [...this.filters],
+        selectedColumns: this.selectedColumns,
+        isDelete: this.isDelete === true,
+        insertedValue: this.insertedValue,
+        updatedValue: this.updatedValue,
+      });
+    }
+
+    const readFailed =
+      (this.table === "tb_incomes" && failIncomeRead) ||
+      (this.table === "tb_categories" && failCategoryRead);
+    const result = readFailed
       ? { data: null, error: { message: "sensitive database detail" } }
       : { data: this.apply(), error: null };
     return Promise.resolve(result).then(resolve, reject);
@@ -833,6 +852,52 @@ async function main() {
   }
   console.log(
     "PASS every real Repository Income query includes household isolation",
+  );
+
+  failIncomeRead = false;
+  const { listCategories } = loadTypeScriptModule(
+    path.join(root, "modules", "categories", "category.service.ts"),
+  );
+
+  const categoryResult = await listCategories();
+  assert.deepEqual(categoryResult, [
+    { id: categorySalary, name: "Salary" },
+    { id: categoryFreelance, name: "Freelance" },
+  ]);
+
+  const savedCategories = categories.splice(0, categories.length);
+  const emptyCategories = await listCategories();
+  assert.deepEqual(emptyCategories, []);
+  categories.push(...savedCategories);
+
+  failCategoryRead = true;
+  const categoryPersistenceError = await expectDomainError(
+    "Category repository failure",
+    () => listCategories(),
+    "PERSISTENCE_ERROR",
+  );
+  assert.equal(
+    categoryPersistenceError.message,
+    "Categories could not be loaded.",
+  );
+  assert.ok(
+    !categoryPersistenceError.message.includes("sensitive database detail"),
+  );
+  failCategoryRead = false;
+
+  assert.equal(observedCategoryQueries.length, 3);
+  for (const query of observedCategoryQueries) {
+    assert.equal(query.selectedColumns, "id,name");
+    assert.deepEqual(query.filters, []);
+    assert.equal(query.isDelete, false);
+    assert.equal(query.insertedValue, undefined);
+    assert.equal(query.updatedValue, undefined);
+  }
+  console.log(
+    "PASS real Category Service/Repository mapping, empty result and sanitized errors",
+  );
+  console.log(
+    "PASS Category reads only tb_categories id/name without filters or writes",
   );
 }
 
