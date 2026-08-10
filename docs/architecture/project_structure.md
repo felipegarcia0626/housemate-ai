@@ -181,6 +181,8 @@ Actualizar ingresos.
 Eliminar ingresos físicamente.
 Validar el contexto de hogar, integrantes, monto, fecha y categoría opcional.
 
+El incremento de lectura implementado limita `listIncomes` a los filtros `from`, `to`, `memberId` y `categoryId`. El repository aplica siempre el hogar controlado y el orden `income_date DESC`, `created_at DESC`, `id ASC`; el service valida el contexto y los filtros, comprueba la pertenencia de `memberId` y suma `totalIncome` en centavos enteros sobre los registros devueltos.
+
 El módulo no contendrá items, pagadores, distribuciones ni reglas de reparto. No existirá una carpeta o abstracción genérica de movimientos financieros compartida con `expenses`.
 
 # 8. Módulo categories

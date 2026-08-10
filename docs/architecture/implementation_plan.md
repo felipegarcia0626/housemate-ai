@@ -241,6 +241,8 @@ Crear ingreso.
 Consultar ingresos.
 Actualizar ingreso.
 Eliminar ingreso físicamente.
+
+El primer incremento de lectura de Income implementa `listIncomes` dentro de `modules/incomes`, con aislamiento obligatorio por `household_id`, filtros opcionales `from`, `to`, `memberId` y `categoryId`, y orden determinista por `income_date DESC`, `created_at DESC`, `id ASC`. El service calcula `totalIncome` a partir de la misma lista mediante centavos enteros con `bigint`; no realiza una segunda consulta de agregación ni utiliza una RPC.
 Categories
 Obtener categorías.
 Calcular resúmenes por categoría atribuyendo los items categorizados a su propia categoría y la parte restante de `Expense.total_amount` a `Expense.category_id` cuando exista.
