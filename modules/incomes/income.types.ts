@@ -18,8 +18,20 @@ export interface IncomeListFilters {
   categoryId?: string;
 }
 
+export interface IncomeCreateInput {
+  memberId: string;
+  amount: number;
+  incomeDate: string;
+  description: string;
+  categoryId?: string | null;
+}
+
 export interface IncomeServiceContext {
   householdId: string;
+}
+
+export interface IncomeCreateServiceContext extends IncomeServiceContext {
+  memberId: string;
 }
 
 export interface IncomeListResult {
@@ -30,7 +42,7 @@ export interface IncomeListResult {
 }
 
 export type IncomeDomainErrorCode =
-  "VALIDATION_ERROR" | "HOUSEHOLD_MISMATCH" | "PERSISTENCE_ERROR";
+  "VALIDATION_ERROR" | "NOT_FOUND" | "HOUSEHOLD_MISMATCH" | "PERSISTENCE_ERROR";
 
 export class IncomeDomainError extends Error {
   readonly code: IncomeDomainErrorCode;

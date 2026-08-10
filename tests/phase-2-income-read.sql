@@ -150,12 +150,11 @@ BEGIN
   IF NOT has_table_privilege('service_role', 'public.tb_incomes', 'SELECT') THEN
     RAISE EXCEPTION 'FAIL service_role lacks SELECT on tb_incomes';
   END IF;
-  IF has_table_privilege('service_role', 'public.tb_incomes', 'INSERT')
-     OR has_table_privilege('service_role', 'public.tb_incomes', 'UPDATE')
+  IF has_table_privilege('service_role', 'public.tb_incomes', 'UPDATE')
      OR has_table_privilege('service_role', 'public.tb_incomes', 'DELETE') THEN
-    RAISE EXCEPTION 'FAIL service_role has unexpected Income write privileges';
+    RAISE EXCEPTION 'FAIL service_role has unexpected Income update/delete privileges';
   END IF;
-  RAISE NOTICE 'PASS service_role has read-only access to tb_incomes';
+  RAISE NOTICE 'PASS service_role retains Income read access without update/delete';
 END;
 $$;
 

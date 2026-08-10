@@ -1,4 +1,8 @@
-import { IncomeDomainError, type IncomeListFilters } from "./income.types";
+import {
+  IncomeDomainError,
+  type IncomeCreateInput,
+  type IncomeListFilters,
+} from "./income.types";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -54,6 +58,28 @@ export function validateIncomeListFilters(filters: IncomeListFilters): void {
 
   if (filters.categoryId !== undefined) {
     validateIncomeUuid(filters.categoryId, "categoryId");
+  }
+}
+
+export function validateIncomeCreateInput(input: IncomeCreateInput): void {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    validationError("input must be an object.");
+  }
+
+  validateIncomeUuid(input.memberId, "memberId");
+  validateIncomeIsoDate(input.incomeDate, "incomeDate");
+
+  const amountCents = toIncomeAmountCents(input.amount, "amount");
+  if (amountCents <= BigInt(0)) {
+    validationError("amount must be greater than zero.");
+  }
+
+  if (typeof input.description !== "string") {
+    validationError("description must be a string.");
+  }
+
+  if (input.categoryId !== undefined && input.categoryId !== null) {
+    validateIncomeUuid(input.categoryId, "categoryId");
   }
 }
 

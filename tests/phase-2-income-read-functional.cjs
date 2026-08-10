@@ -12,6 +12,7 @@ const memberAWithoutIncome = "26000000-0000-4000-8000-000000000024";
 const memberB = "26000000-0000-4000-8000-000000000023";
 const categorySalary = "26000000-0000-4000-8000-000000000031";
 const categoryFreelance = "26000000-0000-4000-8000-000000000032";
+const categories = [{ id: categorySalary }, { id: categoryFreelance }];
 
 const members = [
   { id: memberA1, household_id: householdA },
@@ -73,6 +74,9 @@ const incomes = [
 
 const observedIncomeQueries = [];
 let failIncomeRead = false;
+let failIncomeWrite = false;
+let nextIncomeSequence = 50;
+const observedIncomeInserts = [];
 
 class FakeQuery {
   constructor(table) {
@@ -82,6 +86,12 @@ class FakeQuery {
   }
 
   select() {
+    return this;
+  }
+
+  insert(value) {
+    this.insertedValue = value;
+    observedIncomeInserts.push(value);
     return this;
   }
 
@@ -106,7 +116,12 @@ class FakeQuery {
   }
 
   apply() {
-    const source = this.table === "tb_incomes" ? incomes : members;
+    const source =
+      this.table === "tb_incomes"
+        ? incomes
+        : this.table === "tb_household_members"
+          ? members
+          : categories;
     let rows = source.filter((row) =>
       this.filters.every(({ operator, column, value }) => {
         if (operator === "eq") return row[column] === value;
@@ -132,6 +147,26 @@ class FakeQuery {
     return { data: rows[0] ?? null, error: null };
   }
 
+  async single() {
+    if (failIncomeWrite) {
+      return { data: null, error: { message: "sensitive insert detail" } };
+    }
+
+    assert.equal(this.table, "tb_incomes");
+    assert.ok(this.insertedValue);
+    const sequence = String(nextIncomeSequence).padStart(2, "0");
+    nextIncomeSequence += 1;
+    const row = {
+      id: `26000000-0000-4000-8000-0000000000${sequence}`,
+      ...this.insertedValue,
+      amount: String(this.insertedValue.amount),
+      created_at: "2026-08-09T15:00:00+00:00",
+      updated_at: "2026-08-09T15:00:00+00:00",
+    };
+    incomes.push(row);
+    return { data: row, error: null };
+  }
+
   then(resolve, reject) {
     if (this.table === "tb_incomes") {
       observedIncomeQueries.push([...this.filters]);
@@ -147,7 +182,9 @@ class FakeQuery {
 const fakeClient = {
   from(table) {
     assert.ok(
-      table === "tb_incomes" || table === "tb_household_members",
+      table === "tb_incomes" ||
+        table === "tb_household_members" ||
+        table === "tb_categories",
       `Unexpected table: ${table}`,
     );
     return new FakeQuery(table);
@@ -211,7 +248,7 @@ async function expectDomainError(name, operation, expectedCode) {
 }
 
 async function main() {
-  const { listIncomes } = loadTypeScriptModule(
+  const { createIncome, listIncomes } = loadTypeScriptModule(
     path.join(root, "modules", "incomes", "income.service.ts"),
   );
 
@@ -301,6 +338,164 @@ async function main() {
     "HOUSEHOLD_MISMATCH",
   );
   console.log("PASS real Service validation and household mismatch errors");
+
+  const created = await createIncome(
+    { householdId: householdA, memberId: memberA1 },
+    {
+      memberId: memberA2,
+      amount: 45.67,
+      incomeDate: "2026-08-09",
+      description: "Created Income",
+      categoryId: categorySalary,
+    },
+  );
+  assert.equal(created.householdId, householdA);
+  assert.equal(created.createdBy, memberA1);
+  assert.equal(created.memberId, memberA2);
+  assert.equal(created.amount, 45.67);
+  assert.equal(created.incomeDate, "2026-08-09");
+  assert.equal(created.description, "Created Income");
+  assert.equal(created.categoryId, categorySalary);
+  assert.equal(typeof created.id, "string");
+  assert.equal(observedIncomeInserts.at(-1).created_by, memberA1);
+  assert.equal(observedIncomeInserts.at(-1).household_id, householdA);
+
+  const createdWithoutCategory = await createIncome(
+    { householdId: householdA, memberId: memberA2 },
+    {
+      memberId: memberA1,
+      amount: 0.01,
+      incomeDate: "2026-08-09",
+      description: "No category",
+    },
+  );
+  assert.equal(createdWithoutCategory.categoryId, null);
+  assert.equal(createdWithoutCategory.createdBy, memberA2);
+  console.log(
+    "PASS real createIncome derives createdBy and returns mapped rows",
+  );
+
+  await expectDomainError(
+    "invalid create amount",
+    () =>
+      createIncome(
+        { householdId: householdA, memberId: memberA1 },
+        {
+          memberId: memberA1,
+          amount: 0,
+          incomeDate: "2026-08-09",
+          description: "Invalid",
+        },
+      ),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "invalid create date",
+    () =>
+      createIncome(
+        { householdId: householdA, memberId: memberA1 },
+        {
+          memberId: memberA1,
+          amount: 1,
+          incomeDate: "2026-02-30",
+          description: "Invalid",
+        },
+      ),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "missing create description",
+    () =>
+      createIncome(
+        { householdId: householdA, memberId: memberA1 },
+        {
+          memberId: memberA1,
+          amount: 1,
+          incomeDate: "2026-08-09",
+        },
+      ),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "foreign Income member",
+    () =>
+      createIncome(
+        { householdId: householdA, memberId: memberA1 },
+        {
+          memberId: memberB,
+          amount: 1,
+          incomeDate: "2026-08-09",
+          description: "Invalid",
+        },
+      ),
+    "HOUSEHOLD_MISMATCH",
+  );
+  await expectDomainError(
+    "foreign creator context",
+    () =>
+      createIncome(
+        { householdId: householdA, memberId: memberB },
+        {
+          memberId: memberA1,
+          amount: 1,
+          incomeDate: "2026-08-09",
+          description: "Invalid",
+        },
+      ),
+    "HOUSEHOLD_MISMATCH",
+  );
+  await expectDomainError(
+    "missing Income member",
+    () =>
+      createIncome(
+        { householdId: householdA, memberId: memberA1 },
+        {
+          memberId: "26000000-0000-4000-8000-000000000099",
+          amount: 1,
+          incomeDate: "2026-08-09",
+          description: "Invalid",
+        },
+      ),
+    "HOUSEHOLD_MISMATCH",
+  );
+  await expectDomainError(
+    "missing category",
+    () =>
+      createIncome(
+        { householdId: householdA, memberId: memberA1 },
+        {
+          memberId: memberA1,
+          amount: 1,
+          incomeDate: "2026-08-09",
+          description: "Invalid",
+          categoryId: "26000000-0000-4000-8000-000000000099",
+        },
+      ),
+    "NOT_FOUND",
+  );
+  console.log(
+    "PASS real createIncome validation, isolation and category checks",
+  );
+
+  failIncomeWrite = true;
+  const createPersistenceError = await expectDomainError(
+    "create repository failure",
+    () =>
+      createIncome(
+        { householdId: householdA, memberId: memberA1 },
+        {
+          memberId: memberA1,
+          amount: 1,
+          incomeDate: "2026-08-09",
+          description: "Repository failure",
+        },
+      ),
+    "PERSISTENCE_ERROR",
+  );
+  assert.ok(
+    !createPersistenceError.message.includes("sensitive insert detail"),
+  );
+  console.log("PASS real createIncome sanitizes Repository errors");
 
   failIncomeRead = true;
   const persistenceError = await expectDomainError(

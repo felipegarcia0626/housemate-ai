@@ -1,6 +1,10 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
 
-import type { Income, IncomeListFilters } from "./income.types";
+import type {
+  Income,
+  IncomeCreateInput,
+  IncomeListFilters,
+} from "./income.types";
 
 type DatabaseNumeric = number | string;
 
@@ -17,11 +21,38 @@ interface IncomeRow {
   updated_at: string;
 }
 
+export type IncomeRepositoryErrorKind = "INTEGRITY" | "TECHNICAL";
+
 export class IncomeRepositoryError extends Error {
-  constructor(cause: unknown) {
-    super("Unable to read Incomes.", { cause });
+  readonly kind: IncomeRepositoryErrorKind;
+
+  constructor(kind: IncomeRepositoryErrorKind, cause: unknown) {
+    super("Unable to access Incomes.", { cause });
     this.name = "IncomeRepositoryError";
+    this.kind = kind;
   }
+}
+
+export interface IncomeCreatePersistenceInput extends IncomeCreateInput {
+  householdId: string;
+  createdBy: string;
+  categoryId: string | null;
+}
+
+function getIncomePersistenceErrorKind(
+  error: unknown,
+): IncomeRepositoryErrorKind {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    ["22023", "22P02", "23503", "23505", "23514"].includes(error.code)
+  ) {
+    return "INTEGRITY";
+  }
+
+  return "TECHNICAL";
 }
 
 function mapIncome(row: IncomeRow): Income {
@@ -51,10 +82,62 @@ export async function isIncomeMemberInHousehold(
     .maybeSingle();
 
   if (error) {
-    throw new IncomeRepositoryError(error);
+    throw new IncomeRepositoryError("TECHNICAL", error);
   }
 
   return data !== null;
+}
+
+export async function isIncomeCategoryAvailable(
+  categoryId: string,
+): Promise<boolean> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_categories")
+    .select("id")
+    .eq("id", categoryId)
+    .maybeSingle();
+
+  if (error) {
+    throw new IncomeRepositoryError("TECHNICAL", error);
+  }
+
+  return data !== null;
+}
+
+export async function createIncome(
+  input: IncomeCreatePersistenceInput,
+): Promise<Income> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_incomes")
+    .insert({
+      household_id: input.householdId,
+      created_by: input.createdBy,
+      member_id: input.memberId,
+      amount: input.amount,
+      income_date: input.incomeDate,
+      description: input.description,
+      category_id: input.categoryId,
+    })
+    .select(
+      "id,household_id,created_by,member_id,amount,income_date,description,category_id,created_at,updated_at",
+    )
+    .single();
+
+  if (error) {
+    throw new IncomeRepositoryError(
+      getIncomePersistenceErrorKind(error),
+      error,
+    );
+  }
+
+  if (data === null) {
+    throw new IncomeRepositoryError(
+      "TECHNICAL",
+      new Error("Income insert returned no representation."),
+    );
+  }
+
+  return mapIncome(data as IncomeRow);
 }
 
 export async function listIncomes(
@@ -90,7 +173,7 @@ export async function listIncomes(
   const { data, error } = await query;
 
   if (error) {
-    throw new IncomeRepositoryError(error);
+    throw new IncomeRepositoryError("TECHNICAL", error);
   }
 
   return ((data ?? []) as IncomeRow[]).map(mapIncome);
