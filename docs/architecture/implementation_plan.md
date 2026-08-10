@@ -263,6 +263,8 @@ Sharing Rules
 Obtener reglas.
 Calcular distribución.
 
+La lectura de Sharing Rules filtra el catálogo por el hogar controlado y devuelve sus porcentajes. `calculateSplit` valida integrantes y calcula montos sin persistirlos ni seleccionar una regla automáticamente. `modules/sharing-rules/split-calculator.ts` es la única fuente del algoritmo de restos mayores y también es reutilizada por Expense; Balance no forma parte de este incremento.
+
 Categorías y reglas se cargarán mediante seed/configuración. No se implementará CRUD para ellas durante el MVP.
 Balance dentro de Expenses
 Implementar `balance.service.ts` dentro de `modules/expenses`.

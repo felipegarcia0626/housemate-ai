@@ -238,6 +238,8 @@ Las reglas serán preconfiguradas; el módulo no implementará CRUD durante el M
 
 Los cálculos deberán ser determinísticos.
 
+La lectura implementada filtra reglas y participaciones por el hogar controlado. `calculateSplit` produce una distribución sin persistirla ni elegir reglas automáticamente, y `split-calculator.ts` centraliza el mismo algoritmo de restos mayores utilizado por Expense. Balance permanece separado y consume distribuciones ya persistidas.
+
 # 10. Módulo dashboard
 
 Responsable de preparar información agregada para el dashboard.

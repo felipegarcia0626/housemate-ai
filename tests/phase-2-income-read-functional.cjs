@@ -16,6 +16,35 @@ const categories = [
   { id: categorySalary, name: "Salary" },
   { id: categoryFreelance, name: "Freelance" },
 ];
+const sharingRules = [
+  {
+    id: "26000000-0000-4000-8000-000000000061",
+    household_id: householdA,
+    name: "50 / 50",
+  },
+  {
+    id: "26000000-0000-4000-8000-000000000062",
+    household_id: householdB,
+    name: "100",
+  },
+];
+const sharingRuleMembers = [
+  {
+    sharing_rule_id: sharingRules[0].id,
+    household_member_id: memberA1,
+    percentage: "50.00",
+  },
+  {
+    sharing_rule_id: sharingRules[0].id,
+    household_member_id: memberA2,
+    percentage: "50.00",
+  },
+  {
+    sharing_rule_id: sharingRules[1].id,
+    household_member_id: memberB,
+    percentage: "100.00",
+  },
+];
 
 const members = [
   { id: memberA1, household_id: householdA },
@@ -81,6 +110,7 @@ let failIncomeWrite = false;
 let failIncomeUpdate = false;
 let failIncomeDelete = false;
 let failCategoryRead = false;
+let failSharingRuleRead = false;
 let nextIncomeSequence = 50;
 const observedIncomeInserts = [];
 const observedIncomeUpdates = [];
@@ -130,6 +160,11 @@ class FakeQuery {
     return this;
   }
 
+  in(column, values) {
+    this.filters.push({ operator: "in", column, value: values });
+    return this;
+  }
+
   order(column, options) {
     this.orders.push({ column, ascending: options.ascending });
     return this;
@@ -141,10 +176,15 @@ class FakeQuery {
         ? incomes
         : this.table === "tb_household_members"
           ? members
-          : categories;
+          : this.table === "tb_categories"
+            ? categories
+            : this.table === "tb_sharing_rules"
+              ? sharingRules
+              : sharingRuleMembers;
     let rows = source.filter((row) =>
       this.filters.every(({ operator, column, value }) => {
         if (operator === "eq") return row[column] === value;
+        if (operator === "in") return value.includes(row[column]);
         if (operator === "gte") return row[column] >= value;
         return row[column] <= value;
       }),
@@ -244,9 +284,15 @@ class FakeQuery {
     const readFailed =
       (this.table === "tb_incomes" && failIncomeRead) ||
       (this.table === "tb_categories" && failCategoryRead);
-    const result = readFailed
-      ? { data: null, error: { message: "sensitive database detail" } }
-      : { data: this.apply(), error: null };
+    const sharingFailed =
+      (this.table === "tb_sharing_rules" ||
+        this.table === "tb_sharing_rule_members" ||
+        this.table === "tb_household_members") &&
+      failSharingRuleRead;
+    const result =
+      readFailed || sharingFailed
+        ? { data: null, error: { message: "sensitive database detail" } }
+        : { data: this.apply(), error: null };
     return Promise.resolve(result).then(resolve, reject);
   }
 }
@@ -256,7 +302,9 @@ const fakeClient = {
     assert.ok(
       table === "tb_incomes" ||
         table === "tb_household_members" ||
-        table === "tb_categories",
+        table === "tb_categories" ||
+        table === "tb_sharing_rules" ||
+        table === "tb_sharing_rule_members",
       `Unexpected table: ${table}`,
     );
     return new FakeQuery(table);
@@ -898,6 +946,184 @@ async function main() {
   );
   console.log(
     "PASS Category reads only tb_categories id/name without filters or writes",
+  );
+
+  const { calculateSplit, listSharingRules } = loadTypeScriptModule(
+    path.join(root, "modules", "sharing-rules", "sharing-rule.service.ts"),
+  );
+  assert.deepEqual(await listSharingRules({ householdId: householdA }), [
+    {
+      id: sharingRules[0].id,
+      name: "50 / 50",
+      type: "PERCENTAGE",
+      splits: [
+        { memberId: memberA1, percentage: 50 },
+        { memberId: memberA2, percentage: 50 },
+      ],
+    },
+  ]);
+  assert.deepEqual(
+    await listSharingRules({
+      householdId: "26000000-0000-4000-8000-000000000099",
+    }),
+    [],
+  );
+  const split = await calculateSplit(
+    { householdId: householdA },
+    {
+      amount: 10.01,
+      splits: [
+        { memberId: memberA2, percentage: 50 },
+        { memberId: memberA1, percentage: 50 },
+      ],
+    },
+  );
+  assert.deepEqual(split, {
+    amount: 10.01,
+    splits: [
+      { memberId: memberA2, percentage: 50, amount: 5 },
+      { memberId: memberA1, percentage: 50, amount: 5.01 },
+    ],
+  });
+  const splitInForwardOrder = await calculateSplit(
+    { householdId: householdA },
+    {
+      amount: 10.01,
+      splits: [
+        { memberId: memberA1, percentage: 50 },
+        { memberId: memberA2, percentage: 50 },
+      ],
+    },
+  );
+  assert.deepEqual(
+    Object.fromEntries(
+      splitInForwardOrder.splits.map((item) => [item.memberId, item.amount]),
+    ),
+    Object.fromEntries(
+      split.splits.map((item) => [item.memberId, item.amount]),
+    ),
+  );
+  const thirds = await calculateSplit(
+    { householdId: householdA },
+    {
+      amount: 100,
+      splits: [
+        { memberId: memberA1, percentage: 33.33 },
+        { memberId: memberA2, percentage: 33.33 },
+        { memberId: memberAWithoutIncome, percentage: 33.34 },
+      ],
+    },
+  );
+  assert.deepEqual(thirds.splits, [
+    { memberId: memberA1, percentage: 33.33, amount: 33.33 },
+    { memberId: memberA2, percentage: 33.33, amount: 33.33 },
+    {
+      memberId: memberAWithoutIncome,
+      percentage: 33.34,
+      amount: 33.34,
+    },
+  ]);
+  for (const [label, input] of [
+    [
+      "zero split amount",
+      { amount: 0, splits: [{ memberId: memberA1, percentage: 100 }] },
+    ],
+    [
+      "imprecise split amount",
+      { amount: 1.001, splits: [{ memberId: memberA1, percentage: 100 }] },
+    ],
+    [
+      "duplicate split member",
+      {
+        amount: 1,
+        splits: [
+          { memberId: memberA1, percentage: 50 },
+          { memberId: memberA1, percentage: 50 },
+        ],
+      },
+    ],
+    [
+      "invalid split percentage",
+      { amount: 1, splits: [{ memberId: memberA1, percentage: 100.001 }] },
+    ],
+    [
+      "household override in split input",
+      {
+        householdId: householdB,
+        amount: 1,
+        splits: [{ memberId: memberA1, percentage: 100 }],
+      },
+    ],
+  ]) {
+    await expectDomainError(
+      label,
+      () => calculateSplit({ householdId: householdA }, input),
+      "VALIDATION_ERROR",
+    );
+  }
+  await expectDomainError(
+    "invalid split sum",
+    () =>
+      calculateSplit(
+        { householdId: householdA },
+        { amount: 1, splits: [{ memberId: memberA1, percentage: 90 }] },
+      ),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "foreign split member",
+    () =>
+      calculateSplit(
+        { householdId: householdA },
+        {
+          amount: 1,
+          splits: [
+            { memberId: memberA1, percentage: 50 },
+            { memberId: memberB, percentage: 50 },
+          ],
+        },
+      ),
+    "HOUSEHOLD_MISMATCH",
+  );
+  await expectDomainError(
+    "missing split member",
+    () =>
+      calculateSplit(
+        { householdId: householdA },
+        {
+          amount: 1,
+          splits: [
+            {
+              memberId: "26000000-0000-4000-8000-000000000099",
+              percentage: 100,
+            },
+          ],
+        },
+      ),
+    "HOUSEHOLD_MISMATCH",
+  );
+  failSharingRuleRead = true;
+  const sharingError = await expectDomainError(
+    "sharing repository failure",
+    () => listSharingRules({ householdId: householdA }),
+    "PERSISTENCE_ERROR",
+  );
+  assert.ok(!sharingError.message.includes("sensitive database detail"));
+  const sharingCalculationError = await expectDomainError(
+    "sharing member lookup failure",
+    () =>
+      calculateSplit(
+        { householdId: householdA },
+        { amount: 1, splits: [{ memberId: memberA1, percentage: 100 }] },
+      ),
+    "PERSISTENCE_ERROR",
+  );
+  assert.ok(
+    !sharingCalculationError.message.includes("sensitive database detail"),
+  );
+  failSharingRuleRead = false;
+  console.log(
+    "PASS Sharing Rules read isolation, mapping, calculation and sanitized errors",
   );
 }
 

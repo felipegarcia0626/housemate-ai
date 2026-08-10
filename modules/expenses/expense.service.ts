@@ -31,6 +31,7 @@ import {
   validateExpenseUpdateInput,
   validateUuid,
 } from "./expense.validation";
+import { calculateSplitAmounts } from "@/modules/sharing-rules/split-calculator";
 
 function validateContext(context: ExpenseServiceContext): void {
   validateUuid(context.householdId, "context.householdId");
@@ -43,58 +44,23 @@ function persistenceError(): ExpenseDomainError {
   );
 }
 
-function centsToAmount(cents: bigint): number {
-  return Number(cents) / 100;
-}
-
 function calculateDistributions(
   totalCents: bigint,
   splits: readonly ExpenseCreateSplitInput[],
   percentageBasisPoints: readonly bigint[],
 ): ExpenseCalculatedDistribution[] {
-  const percentageDenominator = BigInt(10_000);
-  const allocations = splits.map((split, index) => {
-    const exactNumerator = totalCents * percentageBasisPoints[index];
-
-    return {
-      originalIndex: index,
-      householdMemberId: split.householdMemberId,
-      percentageBasisPoints: percentageBasisPoints[index],
-      amountCents: exactNumerator / percentageDenominator,
-      remainder: exactNumerator % percentageDenominator,
-    };
-  });
-  const initiallyAllocatedCents = allocations.reduce(
-    (total, allocation) => total + allocation.amountCents,
-    BigInt(0),
-  );
-  const residualCents = totalCents - initiallyAllocatedCents;
-  const allocationOrder = [...allocations].sort((left, right) => {
-    if (left.remainder !== right.remainder) {
-      return left.remainder > right.remainder ? -1 : 1;
-    }
-
-    const leftMemberId = left.householdMemberId.toLowerCase();
-    const rightMemberId = right.householdMemberId.toLowerCase();
-
-    if (leftMemberId === rightMemberId) {
-      return 0;
-    }
-
-    return leftMemberId < rightMemberId ? -1 : 1;
-  });
-
-  for (let index = 0; index < Number(residualCents); index += 1) {
-    allocationOrder[index].amountCents += BigInt(1);
-  }
-
-  return allocations
-    .sort((left, right) => left.originalIndex - right.originalIndex)
-    .map((allocation) => ({
-      householdMemberId: allocation.householdMemberId,
-      amount: centsToAmount(allocation.amountCents),
-      percentage: Number(allocation.percentageBasisPoints) / 100,
-    }));
+  return calculateSplitAmounts(
+    totalCents,
+    splits.map((split) => ({
+      memberId: split.householdMemberId,
+      percentage: split.percentage,
+    })),
+    percentageBasisPoints,
+  ).map((split) => ({
+    householdMemberId: split.memberId,
+    amount: split.amount,
+    percentage: split.percentage,
+  }));
 }
 
 async function createValidatedExpense(
