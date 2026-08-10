@@ -152,6 +152,8 @@ Eliminar gastos.
 Validar información relacionada con gastos.
 Calcular el balance de compensación mediante gastos confirmados, `paid_by` y `ExpenseDistribution`.
 
+El core implementado de Balance separa repository, validación, tipos, service y cálculo puro. El repository restringe miembros y Expenses `CONFIRMED` al hogar controlado y recupera las distribuciones persistidas; el cálculo usa centavos enteros, incluye integrantes sin actividad y no crea persistencia propia.
+
 `expense.service.ts` validará la entrada y calculará los montos de distribución mediante restos mayores en centavos. `expense.repository.ts` realizará una única llamada a la RPC PostgreSQL específica `public.fn_create_expense` para persistir atómicamente Expense, ExpenseItems y ExpenseDistributions. No ejecutará inserts PostgREST independientes ni existirá una abstracción genérica de movimientos financieros.
 
 Para actualización, el mismo service aplicará la semántica PATCH y recalculará distribuciones cuando corresponda; el repository realizará una única llamada a `public.fn_update_expense`. La RPC bloqueará y actualizará el agregado de forma transaccional, sin escrituras PostgREST independientes y sin modificar Receipt.

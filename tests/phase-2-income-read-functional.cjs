@@ -6,10 +6,13 @@ const ts = require("typescript");
 const root = path.resolve(__dirname, "..");
 const householdA = "26000000-0000-4000-8000-000000000001";
 const householdB = "26000000-0000-4000-8000-000000000002";
+const householdWithoutExpenses = "26000000-0000-4000-8000-000000000003";
+const householdWithoutMembers = "26000000-0000-4000-8000-000000000004";
 const memberA1 = "26000000-0000-4000-8000-000000000021";
 const memberA2 = "26000000-0000-4000-8000-000000000022";
 const memberAWithoutIncome = "26000000-0000-4000-8000-000000000024";
 const memberB = "26000000-0000-4000-8000-000000000023";
+const memberWithoutExpenses = "26000000-0000-4000-8000-000000000025";
 const categorySalary = "26000000-0000-4000-8000-000000000031";
 const categoryFreelance = "26000000-0000-4000-8000-000000000032";
 const categories = [
@@ -51,6 +54,67 @@ const members = [
   { id: memberA2, household_id: householdA },
   { id: memberAWithoutIncome, household_id: householdA },
   { id: memberB, household_id: householdB },
+  { id: memberWithoutExpenses, household_id: householdWithoutExpenses },
+];
+
+const balanceExpenses = [
+  {
+    id: "26000000-0000-4000-8000-000000000071",
+    household_id: householdA,
+    created_by: memberA2,
+    paid_by: memberA1,
+    total_amount: "100.01",
+    status: "CONFIRMED",
+    tb_expense_distributions: [
+      { household_member_id: memberA1, amount: "50.00" },
+      { household_member_id: memberA2, amount: "50.01" },
+    ],
+  },
+  {
+    id: "26000000-0000-4000-8000-000000000072",
+    household_id: householdA,
+    created_by: memberA1,
+    paid_by: memberA2,
+    total_amount: "20.02",
+    status: "CONFIRMED",
+    tb_expense_distributions: [
+      { household_member_id: memberA2, amount: "10.01" },
+      { household_member_id: memberA1, amount: "10.01" },
+    ],
+  },
+  {
+    id: "26000000-0000-4000-8000-000000000073",
+    household_id: householdA,
+    created_by: memberA1,
+    paid_by: memberAWithoutIncome,
+    total_amount: "999.99",
+    status: "PENDING",
+    tb_expense_distributions: [
+      { household_member_id: memberAWithoutIncome, amount: "999.99" },
+    ],
+  },
+  {
+    id: "26000000-0000-4000-8000-000000000074",
+    household_id: householdA,
+    created_by: memberA1,
+    paid_by: memberAWithoutIncome,
+    total_amount: "888.88",
+    status: "CANCELLED",
+    tb_expense_distributions: [
+      { household_member_id: memberAWithoutIncome, amount: "888.88" },
+    ],
+  },
+  {
+    id: "26000000-0000-4000-8000-000000000075",
+    household_id: householdB,
+    created_by: memberB,
+    paid_by: memberB,
+    total_amount: "777.77",
+    status: "CONFIRMED",
+    tb_expense_distributions: [
+      { household_member_id: memberB, amount: "777.77" },
+    ],
+  },
 ];
 
 const incomes = [
@@ -111,11 +175,13 @@ let failIncomeUpdate = false;
 let failIncomeDelete = false;
 let failCategoryRead = false;
 let failSharingRuleRead = false;
+let failBalanceRead = false;
 let nextIncomeSequence = 50;
 const observedIncomeInserts = [];
 const observedIncomeUpdates = [];
 const observedIncomeDeletes = [];
 const observedCategoryQueries = [];
+const observedBalanceQueries = [];
 
 class FakeQuery {
   constructor(table) {
@@ -180,7 +246,9 @@ class FakeQuery {
             ? categories
             : this.table === "tb_sharing_rules"
               ? sharingRules
-              : sharingRuleMembers;
+              : this.table === "tb_sharing_rule_members"
+                ? sharingRuleMembers
+                : balanceExpenses;
     let rows = source.filter((row) =>
       this.filters.every(({ operator, column, value }) => {
         if (operator === "eq") return row[column] === value;
@@ -281,6 +349,17 @@ class FakeQuery {
       });
     }
 
+    if (this.table === "tb_household_members" || this.table === "tb_expenses") {
+      observedBalanceQueries.push({
+        table: this.table,
+        filters: [...this.filters],
+        selectedColumns: this.selectedColumns,
+        isDelete: this.isDelete === true,
+        insertedValue: this.insertedValue,
+        updatedValue: this.updatedValue,
+      });
+    }
+
     const readFailed =
       (this.table === "tb_incomes" && failIncomeRead) ||
       (this.table === "tb_categories" && failCategoryRead);
@@ -289,8 +368,11 @@ class FakeQuery {
         this.table === "tb_sharing_rule_members" ||
         this.table === "tb_household_members") &&
       failSharingRuleRead;
+    const balanceFailed =
+      (this.table === "tb_household_members" || this.table === "tb_expenses") &&
+      failBalanceRead;
     const result =
-      readFailed || sharingFailed
+      readFailed || sharingFailed || balanceFailed
         ? { data: null, error: { message: "sensitive database detail" } }
         : { data: this.apply(), error: null };
     return Promise.resolve(result).then(resolve, reject);
@@ -304,7 +386,8 @@ const fakeClient = {
         table === "tb_household_members" ||
         table === "tb_categories" ||
         table === "tb_sharing_rules" ||
-        table === "tb_sharing_rule_members",
+        table === "tb_sharing_rule_members" ||
+        table === "tb_expenses",
       `Unexpected table: ${table}`,
     );
     return new FakeQuery(table);
@@ -1124,6 +1207,151 @@ async function main() {
   failSharingRuleRead = false;
   console.log(
     "PASS Sharing Rules read isolation, mapping, calculation and sanitized errors",
+  );
+
+  const { getBalance } = loadTypeScriptModule(
+    path.join(root, "modules", "expenses", "balance.service.ts"),
+  );
+  const { calculateBalance } = loadTypeScriptModule(
+    path.join(root, "modules", "expenses", "balance-calculator.ts"),
+  );
+  observedBalanceQueries.length = 0;
+  const balance = await getBalance({ householdId: householdA });
+  assert.deepEqual(balance, {
+    members: [
+      { memberId: memberA1, paid: 100.01, share: 60.01, balance: 40 },
+      { memberId: memberA2, paid: 20.02, share: 60.02, balance: -40 },
+      {
+        memberId: memberAWithoutIncome,
+        paid: 0,
+        share: 0,
+        balance: 0,
+      },
+    ],
+  });
+  assert.equal(observedBalanceQueries.length, 2);
+  assert.deepEqual(observedBalanceQueries[0], {
+    table: "tb_household_members",
+    filters: [{ operator: "eq", column: "household_id", value: householdA }],
+    selectedColumns: "id",
+    isDelete: false,
+    insertedValue: undefined,
+    updatedValue: undefined,
+  });
+  assert.deepEqual(observedBalanceQueries[1], {
+    table: "tb_expenses",
+    filters: [
+      { operator: "eq", column: "household_id", value: householdA },
+      { operator: "eq", column: "status", value: "CONFIRMED" },
+    ],
+    selectedColumns:
+      "paid_by,total_amount,tb_expense_distributions(household_member_id,amount)",
+    isDelete: false,
+    insertedValue: undefined,
+    updatedValue: undefined,
+  });
+
+  assert.deepEqual(
+    await getBalance({ householdId: householdWithoutExpenses }),
+    {
+      members: [
+        {
+          memberId: memberWithoutExpenses,
+          paid: 0,
+          share: 0,
+          balance: 0,
+        },
+      ],
+    },
+  );
+  assert.deepEqual(await getBalance({ householdId: householdWithoutMembers }), {
+    members: [],
+  });
+  assert.deepEqual(await getBalance({ householdId: householdB }), {
+    members: [{ memberId: memberB, paid: 777.77, share: 777.77, balance: 0 }],
+  });
+  assert.deepEqual(
+    calculateBalance(
+      [memberA1],
+      [
+        {
+          paidByMemberId: memberA1,
+          totalAmount: "999999999999.99",
+          distributions: [{ memberId: memberA1, amount: "999999999999.99" }],
+        },
+      ],
+    ),
+    [
+      {
+        memberId: memberA1,
+        paid: 999999999999.99,
+        share: 999999999999.99,
+        balance: 0,
+      },
+    ],
+  );
+
+  balanceExpenses.reverse();
+  for (const expense of balanceExpenses) {
+    expense.tb_expense_distributions.reverse();
+  }
+  assert.deepEqual(await getBalance({ householdId: householdA }), balance);
+  balanceExpenses.reverse();
+  for (const expense of balanceExpenses) {
+    expense.tb_expense_distributions.reverse();
+  }
+
+  await expectDomainError(
+    "invalid Balance household UUID",
+    () => getBalance({ householdId: "invalid" }),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "missing Balance context",
+    () => getBalance(undefined),
+    "VALIDATION_ERROR",
+  );
+  await expectDomainError(
+    "non-object Balance context",
+    () => getBalance([]),
+    "VALIDATION_ERROR",
+  );
+  const originalBalanceAmount = balanceExpenses[0].total_amount;
+  balanceExpenses[0].total_amount = "invalid-money";
+  const invalidMoneyError = await expectDomainError(
+    "invalid persisted Balance amount",
+    () => getBalance({ householdId: householdA }),
+    "PERSISTENCE_ERROR",
+  );
+  assert.ok(!invalidMoneyError.message.includes("invalid-money"));
+  balanceExpenses[0].total_amount = originalBalanceAmount;
+
+  failBalanceRead = true;
+  const balancePersistenceError = await expectDomainError(
+    "Balance repository failure",
+    () => getBalance({ householdId: householdA }),
+    "PERSISTENCE_ERROR",
+  );
+  assert.ok(
+    !balancePersistenceError.message.includes("sensitive database detail"),
+  );
+  failBalanceRead = false;
+
+  assert.ok(
+    observedBalanceQueries.every(
+      (query) =>
+        (query.table === "tb_household_members" ||
+          query.table === "tb_expenses") &&
+        query.isDelete === false &&
+        query.insertedValue === undefined &&
+        query.updatedValue === undefined,
+    ),
+  );
+  console.log(
+    "PASS real Balance Service/Repository/calculator, isolation and exact cents",
+  );
+  console.log(
+    "PASS Balance excludes Income, Sharing Rules, non-CONFIRMED Expenses and writes",
   );
 }
 

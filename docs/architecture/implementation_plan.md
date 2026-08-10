@@ -272,6 +272,8 @@ Calcular cuánto pagó cada miembro agrupando los gastos confirmados por `Expens
 Calcular cuánto corresponde a cada miembro mediante `ExpenseDistribution`.
 Exponer el resultado mediante `GET /api/balance`; el controller solo delegará al service.
 
+El core de Balance calcula `paid`, `share` y `balance = paid - share` en centavos enteros para todos los integrantes del hogar. Consulta únicamente Expenses `CONFIRMED` y sus `ExpenseDistribution` persistidas, siempre aisladas por el hogar controlado; no recalcula reglas ni almacena balances derivados.
+
 Los ingresos no participarán en el balance de compensación. Los resúmenes financieros calcularán `totalIncome`, `totalSpent` y `netAmount` en el backend sin almacenar estos agregados.
 Principio
 
