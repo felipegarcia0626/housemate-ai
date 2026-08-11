@@ -115,6 +115,8 @@ El primer Route Handler implementado es `app/api/categories/route.ts`, que expon
 
 Web/PWA podrá consumir directamente estas rutas para vistas y operaciones explícitas, sin contener lógica de negocio ni acceder a repositories.
 
+`app/api/_lib/http-context.ts` adapta las variables server-side del MVP al módulo `modules/context`, sin leer identidad desde requests ni acceder directamente a Supabase.
+
 # 5. modules/
 
 Contendrá los módulos funcionales del dominio.
@@ -122,6 +124,7 @@ Contendrá los módulos funcionales del dominio.
 Cada módulo representa una capacidad del negocio.
 
 modules/
+├── context/
 ├── expenses/
 ├── incomes/
 ├── categories/
@@ -130,6 +133,8 @@ modules/
 ├── receipts/
 ├── agent/
 └── whatsapp/
+
+`modules/context` valida la configuración server-side del hogar y actor Web/PWA y consulta exclusivamente hogares e integrantes para devolver contexto controlado. No implementa autenticación ni reemplaza las validaciones de los módulos financieros.
 
 # 6. Módulo expenses
 
@@ -469,6 +474,8 @@ tests/
 No será obligatorio crear pruebas para cada archivo.
 
 `tests/phase-3-category-api-functional.cjs` valida el contrato HTTP de Category mediante el Route Handler, Service y Repository reales con un cliente Supabase controlado, sin agregar un framework de pruebas.
+
+`tests/phase-3-http-context-functional.cjs` valida resolución server-side, formato, existencia, pertenencia, aislamiento y sanitización del contexto HTTP mediante Service y Repository reales con un cliente Supabase controlado.
 
 La prioridad será cubrir:
 

@@ -320,6 +320,8 @@ POST /api/webhooks/whatsapp
 
 El primer incremento implementado de Fase 3 expone `GET /api/categories` mediante un Route Handler que reutiliza `listCategories()`. Al tratarse del catálogo global, no resuelve contexto de hogar y no requiere migraciones ni cambios de persistencia.
 
+HTTP Controlled Context Foundation resuelve para Web/PWA el hogar y actor únicos del MVP desde configuración exclusivamente server-side. El módulo valida formato, existencia y pertenencia contra PostgreSQL antes de entregar `{ householdId }` o `{ householdId, memberId }` a futuros Route Handlers financieros; el cliente no puede proporcionar ni sobrescribir esos valores.
+
 Actividades
 Implementar controllers.
 Implementar services.
