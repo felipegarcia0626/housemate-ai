@@ -119,6 +119,8 @@ Web/PWA podrá consumir directamente estas rutas para vistas y operaciones expl�
 
 `app/api/expenses/route.ts` expone `GET /api/expenses`, construye únicamente los filtros HTTP documentados, obtiene el hogar mediante el adaptador de contexto controlado y delega el listado en `modules/expenses/expense.service.ts`.
 
+`app/api/incomes/route.ts` expone `GET /api/incomes`, obtiene el hogar mediante el mismo adaptador controlado, delega el listado y el resumen en `modules/incomes/income.service.ts` y proyecta únicamente los campos públicos aprobados.
+
 # 5. modules/
 
 Contendrá los módulos funcionales del dominio.
@@ -480,6 +482,8 @@ No será obligatorio crear pruebas para cada archivo.
 `tests/phase-3-http-context-functional.cjs` valida resolución server-side, formato, existencia, pertenencia, aislamiento y sanitización del contexto HTTP mediante Service y Repository reales con un cliente Supabase controlado.
 
 `tests/phase-3-expense-api-functional.cjs` valida el contrato, filtros, contexto controlado, aislamiento y sanitización de `GET /api/expenses` mediante Route Handler, Service y Repository reales con un cliente Supabase controlado.
+
+`tests/phase-3-income-api-functional.cjs` valida filtros, DTO público, resumen, contexto controlado, aislamiento y sanitización de `GET /api/incomes` mediante Route Handler, Service y Repository reales con un cliente Supabase controlado.
 
 La prioridad será cubrir:
 

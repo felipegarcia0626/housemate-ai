@@ -324,6 +324,8 @@ HTTP Controlled Context Foundation resuelve para Web/PWA el hogar y actor único
 
 El incremento cerrado `GET /api/expenses` adapta Expense Read al transporte HTTP mediante el contexto controlado del hogar. Implementa exclusivamente los filtros `from`, `to`, `categoryId`, `memberId`, `merchant`, `minAmount` y `maxAmount`, rechaza parámetros desconocidos o repetidos y delega validación, aislamiento y consulta en el Service existente.
 
+El incremento cerrado `GET /api/incomes` adapta Income Read mediante el mismo contexto controlado. Expone los filtros `from`, `to`, `memberId` y `categoryId`, conserva el resumen `totalIncome` calculado por el Service y proyecta explícitamente el DTO HTTP sin exponer hogar ni timestamps internos.
+
 Actividades
 Implementar controllers.
 Implementar services.

@@ -533,7 +533,7 @@ Response:
       "amount": 1500000,
       "incomeDate": "2026-08-08",
       "description": "Pago de honorarios",
-      "category": null
+      "categoryId": null
     }
   ],
   "summary": {
@@ -543,6 +543,8 @@ Response:
 ```
 
 El backend realizará la suma y devolverá exclusivamente ingresos del hogar asociado al contexto actual.
+
+Cada elemento de `data` expone únicamente `id`, `createdBy`, `memberId`, `amount`, `incomeDate`, `description` y `categoryId`. `categoryId` es `string | null`; este listado no hidrata un objeto de categoría. `householdId`, `createdAt` y `updatedAt` no forman parte del contrato público. `amount` y `summary.totalIncome` se serializan como números JSON.
 
 ## 8.3 Actualizar ingreso
 
