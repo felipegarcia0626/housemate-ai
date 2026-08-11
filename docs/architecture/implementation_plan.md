@@ -322,6 +322,8 @@ El primer incremento implementado de Fase 3 expone `GET /api/categories` mediant
 
 HTTP Controlled Context Foundation resuelve para Web/PWA el hogar y actor únicos del MVP desde configuración exclusivamente server-side. El módulo valida formato, existencia y pertenencia contra PostgreSQL antes de entregar `{ householdId }` o `{ householdId, memberId }` a futuros Route Handlers financieros; el cliente no puede proporcionar ni sobrescribir esos valores.
 
+El incremento cerrado `GET /api/expenses` adapta Expense Read al transporte HTTP mediante el contexto controlado del hogar. Implementa exclusivamente los filtros `from`, `to`, `categoryId`, `memberId`, `merchant`, `minAmount` y `maxAmount`, rechaza parámetros desconocidos o repetidos y delega validación, aislamiento y consulta en el Service existente.
+
 Actividades
 Implementar controllers.
 Implementar services.
