@@ -328,6 +328,8 @@ El incremento cerrado `GET /api/incomes` adapta Income Read mediante el mismo co
 
 El incremento cerrado `PATCH /api/incomes/{id}` utiliza la ruta dinámica `app/api/incomes/[id]/route.ts`, delega la actualización parcial en el Income Service existente mediante el contexto HTTP controlado, proyecta el DTO público y sanitiza los errores. Su cobertura funcional reside en `tests/phase-3-income-api-functional.cjs`.
 
+El incremento cerrado `GET /api/sharing-rules` utiliza el contexto HTTP controlado y delega la lectura aislada por hogar en `listSharingRules`. Proyecta el contrato existente sin filtros ni escrituras, y su cobertura funcional reside en `tests/phase-3-sharing-rule-api-functional.cjs`.
+
 Actividades
 Implementar controllers.
 Implementar services.
