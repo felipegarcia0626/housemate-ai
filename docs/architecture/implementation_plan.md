@@ -330,6 +330,8 @@ El incremento cerrado `PATCH /api/incomes/{id}` utiliza la ruta dinámica `app/a
 
 El incremento cerrado `GET /api/sharing-rules` utiliza el contexto HTTP controlado y delega la lectura aislada por hogar en `listSharingRules`. Proyecta el contrato existente sin filtros ni escrituras, y su cobertura funcional reside en `tests/phase-3-sharing-rule-api-functional.cjs`.
 
+El incremento cerrado `GET /api/balance` utiliza el contexto HTTP controlado y delega el cálculo exclusivamente en `getBalance`. Proyecta el resultado público de miembros sin filtros ni escrituras, y su cobertura funcional reside en `tests/phase-3-balance-api-functional.cjs`.
+
 Actividades
 Implementar controllers.
 Implementar services.

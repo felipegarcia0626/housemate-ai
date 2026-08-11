@@ -125,6 +125,8 @@ Web/PWA podrá consumir directamente estas rutas para vistas y operaciones expl�
 
 `app/api/sharing-rules/route.ts` expone `GET /api/sharing-rules`, obtiene el hogar mediante el contexto controlado, delega en `listSharingRules` y devuelve el DTO público de reglas y splits. La cobertura funcional se mantiene en `tests/phase-3-sharing-rule-api-functional.cjs`.
 
+`app/api/balance/route.ts` expone `GET /api/balance`, obtiene el hogar mediante el contexto controlado, delega en `getBalance` y devuelve el resultado público por miembro. La cobertura funcional se mantiene en `tests/phase-3-balance-api-functional.cjs`.
+
 # 5. modules/
 
 Contendrá los módulos funcionales del dominio.
