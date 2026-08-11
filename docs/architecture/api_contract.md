@@ -564,7 +564,23 @@ Request parcial, con al menos un campo:
 }
 ```
 
-Response `200`: el mismo objeto `data` definido para POST, con los valores actualizados.
+Response `200`:
+
+```json
+{
+  "data": {
+    "id": "income-id",
+    "createdBy": "member-id",
+    "memberId": "member-id",
+    "amount": 1500000,
+    "incomeDate": "2026-08-08",
+    "description": "Pago de honorarios",
+    "categoryId": "category-id"
+  }
+}
+```
+
+El DTO público contiene únicamente `id`, `createdBy`, `memberId`, `amount`, `incomeDate`, `description` y `categoryId`. `categoryId` es `string | null`; no se hidrata una categoría. `amount` se serializa como número JSON y ningún `bigint` atraviesa la frontera HTTP. `householdId`, `createdAt` y `updatedAt` son campos internos y no se exponen. La Route proyecta explícitamente este DTO.
 
 El backend validará nuevamente el monto, la fecha, la categoría opcional, la pertenencia del integrante y que el ingreso pertenezca al hogar actual. La operación actualizará `updated_at`.
 

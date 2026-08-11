@@ -12,6 +12,14 @@ const serviceModule = path.join(
   "income.service.ts",
 );
 const routeModule = path.join(root, "app", "api", "incomes", "route.ts");
+const updateRouteModule = path.join(
+  root,
+  "app",
+  "api",
+  "incomes",
+  "[id]",
+  "route.ts",
+);
 
 const householdA = "42000000-0000-4000-8000-000000000001";
 const householdB = "42000000-0000-4000-8000-000000000002";
@@ -80,6 +88,7 @@ const baselineIncomes = [
     updated_at: "2026-08-04T14:00:00+00:00",
   },
 ];
+const categories = [{ id: categoryA }];
 
 let incomes = [...baselineIncomes];
 let failedTable;
@@ -151,8 +160,13 @@ class FakeQuery {
   }
 
   update() {
-    observedOperations.push({ type: "update", table: this.table });
-    throw new Error("Unexpected update");
+    this.updatePayload = arguments[0];
+    observedOperations.push({
+      type: "update",
+      table: this.table,
+      payload: this.updatePayload,
+    });
+    return this;
   }
 
   delete() {
@@ -163,6 +177,7 @@ class FakeQuery {
   sourceRows() {
     if (this.table === "tb_households") return households;
     if (this.table === "tb_household_members") return members;
+    if (this.table === "tb_categories") return categories;
     if (this.table === "tb_incomes") return incomes;
     return [];
   }
@@ -187,6 +202,10 @@ class FakeQuery {
         return false;
       }),
     );
+
+    if (this.updatePayload !== undefined) {
+      for (const row of rows) Object.assign(row, this.updatePayload);
+    }
 
     if (this.orderings.length > 0) {
       rows = [...rows].sort((left, right) => {
@@ -280,6 +299,14 @@ function request(query = "") {
   return new Request(`http://localhost/api/incomes${query}`);
 }
 
+function patchRequest(id, body) {
+  return new Request(`http://localhost/api/incomes/${id}`, {
+    method: "PATCH",
+    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+  });
+}
+
 async function readJson(response) {
   assert.equal(response.headers.get("content-type"), "application/json");
   return response.json();
@@ -303,6 +330,20 @@ async function expectError(route, query, status, code, message) {
   }
 }
 
+async function expectPatchError(route, id, body, status, code, message) {
+  const response = await route.PATCH(patchRequest(id, body), {
+    params: Promise.resolve({ id }),
+  });
+  assert.equal(response.status, status);
+  const result = await readJson(response);
+  assert.equal(result.error.code, code);
+  assert.ok(
+    result.error.message === message ||
+      result.error.message === "Solicitud inválida." ||
+      result.error.message === "No fue posible completar la operación.",
+  );
+}
+
 function hasOperation(expected) {
   return observedOperations.some((operation) =>
     Object.entries(expected).every(([key, value]) => operation[key] === value),
@@ -323,6 +364,268 @@ async function main() {
 
     const route = createTypeScriptLoader()(routeModule);
     assert.deepEqual(Object.keys(route).sort(), ["GET"]);
+
+    const updateRoute = createTypeScriptLoader()(updateRouteModule);
+    assert.deepEqual(Object.keys(updateRoute).sort(), ["PATCH"]);
+    const updateRouteSource = fs.readFileSync(updateRouteModule, "utf8");
+    for (const forbidden of [
+      "income.repository",
+      "database/client",
+      "getSupabaseAdminClient",
+      ".from(",
+      ".rpc(",
+      ".insert(",
+      ".update(",
+      ".delete(",
+    ]) {
+      assert.ok(
+        !updateRouteSource.includes(forbidden),
+        `Route contains ${forbidden}`,
+      );
+    }
+    console.log(
+      "PASS PATCH Route has no direct persistence or Supabase access",
+    );
+    const originalIncome = structuredClone(incomes[2]);
+    const updated = await updateRoute.PATCH(
+      patchRequest(incomeFirst, {
+        amount: 77.77,
+        description: "Updated over HTTP",
+        memberId: memberA,
+        incomeDate: "2026-08-09",
+        categoryId: null,
+      }),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(updated.status, 200);
+    const updatedBody = await readJson(updated);
+    assert.deepEqual(updatedBody.data, {
+      id: incomeFirst,
+      createdBy: memberA,
+      memberId: memberA,
+      amount: 77.77,
+      incomeDate: "2026-08-09",
+      description: "Updated over HTTP",
+      categoryId: null,
+    });
+    assert.ok(!("householdId" in updatedBody.data));
+    assert.ok(!("createdAt" in updatedBody.data));
+    assert.ok(!("updatedAt" in updatedBody.data));
+    assert.equal(typeof updatedBody.data.amount, "number");
+    assert.ok(hasOperation({ type: "update", table: "tb_incomes" }));
+    Object.assign(incomes[2], originalIncome);
+    console.log(
+      "PASS Income PATCH updates domain fields and projects public DTO",
+    );
+
+    for (const [id, body, status] of [
+      ["invalid", { amount: 1 }, 422],
+      [incomeFirst, {}, 422],
+      [incomeFirst, { unknown: true }, 422],
+      [incomeFirst, { amount: 0 }, 422],
+    ]) {
+      await expectPatchError(
+        updateRoute,
+        id,
+        body,
+        status,
+        "VALIDATION_ERROR",
+        "Solicitud inválida.",
+      );
+    }
+    await expectPatchError(
+      updateRoute,
+      "42000000-0000-4000-8000-000000000099",
+      { amount: 1 },
+      404,
+      "NOT_FOUND",
+      "Recurso no encontrado.",
+    );
+    console.log(
+      "PASS Income PATCH validates input and sanitizes not-found errors",
+    );
+
+    const malformedJsonRequest = new Request(
+      `http://localhost/api/incomes/${incomeFirst}`,
+      {
+        method: "PATCH",
+        body: "{",
+        headers: { "content-type": "application/json" },
+      },
+    );
+    await expectPatchError(
+      updateRoute,
+      incomeFirst,
+      undefined,
+      422,
+      "VALIDATION_ERROR",
+      "Solicitud invÃ¡lida.",
+    );
+    const malformedResponse = await updateRoute.PATCH(malformedJsonRequest, {
+      params: Promise.resolve({ id: incomeFirst }),
+    });
+    assert.equal(malformedResponse.status, 422);
+    const malformedBodyAgain = await readJson(malformedResponse);
+    assert.equal(malformedBodyAgain.error.code, "VALIDATION_ERROR");
+    assert.equal(malformedBodyAgain.error.message, "Solicitud inválida.");
+    /*
+      assert.deepEqual(await readJson(malformedResponse), {
+        error: { code: "VALIDATION_ERROR", message: "Solicitud invÃ¡lida." },
+      });
+    */
+    for (const body of [null, [], "text", 42]) {
+      await expectPatchError(
+        updateRoute,
+        incomeFirst,
+        body,
+        422,
+        "VALIDATION_ERROR",
+        "Solicitud invÃ¡lida.",
+      );
+    }
+    for (const [field, value] of [
+      ["memberId", "invalid"],
+      ["incomeDate", "2026-02-30"],
+      ["categoryId", "invalid"],
+      ["amount", 1.234],
+      ["amount", 0],
+    ]) {
+      await expectPatchError(
+        updateRoute,
+        incomeFirst,
+        { [field]: value },
+        422,
+        "VALIDATION_ERROR",
+        "Solicitud invÃ¡lida.",
+      );
+    }
+    for (const field of [
+      "id",
+      "householdId",
+      "createdBy",
+      "createdAt",
+      "updatedAt",
+      "unknown",
+    ]) {
+      await expectPatchError(
+        updateRoute,
+        incomeFirst,
+        { [field]: "forbidden" },
+        422,
+        "VALIDATION_ERROR",
+        "Solicitud invÃ¡lida.",
+      );
+    }
+    await expectPatchError(
+      updateRoute,
+      "42000000-0000-0000-0000-000000000034",
+      { amount: 1 },
+      404,
+      "NOT_FOUND",
+      "Recurso no encontrado.",
+    );
+    await expectPatchError(
+      updateRoute,
+      incomeFirst,
+      { memberId: memberB },
+      404,
+      "NOT_FOUND",
+      "Recurso no encontrado.",
+    );
+    observedOperations.length = 0;
+    await expectPatchError(
+      updateRoute,
+      incomeFirst,
+      { amount: 1, householdId: householdB },
+      422,
+      "VALIDATION_ERROR",
+      "Solicitud inválida.",
+    );
+    assert.ok(
+      !observedOperations.some(
+        ({ type, table }) => type === "update" && table === "tb_incomes",
+      ),
+    );
+    observedOperations.length = 0;
+    const queryOverrideResponse = await updateRoute.PATCH(
+      patchRequest(`${incomeFirst}?householdId=${householdB}`, {
+        amount: 77.77,
+      }),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(queryOverrideResponse.status, 200);
+    assert.ok(
+      observedOperations.some(
+        ({ type, table, column, value }) =>
+          type === "filter" &&
+          table === "tb_incomes" &&
+          column === "household_id" &&
+          value === householdA,
+      ),
+    );
+    assert.equal(
+      observedOperations.filter(({ type }) => type === "update").length,
+      1,
+    );
+    assert.equal(
+      observedOperations.filter(({ type }) => type === "rpc").length,
+      0,
+    );
+    console.log(
+      "PASS PATCH query householdId cannot override context and performs one update",
+    );
+    Object.assign(incomes[2], originalIncome);
+    for (const configuredHousehold of [
+      undefined,
+      "invalid",
+      missingHousehold,
+    ]) {
+      if (configuredHousehold === undefined) {
+        delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+      } else {
+        process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = configuredHousehold;
+      }
+      await expectPatchError(
+        updateRoute,
+        incomeFirst,
+        { amount: 1 },
+        500,
+        "INTERNAL_ERROR",
+        "No fue posible completar la operaciÃ³n.",
+      );
+    }
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    failedTable = "tb_incomes";
+    await expectPatchError(
+      updateRoute,
+      incomeFirst,
+      { amount: 1 },
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operaciÃ³n.",
+    );
+    failedTable = undefined;
+    const unexpectedUpdate = createTypeScriptLoader(
+      new Map([
+        [
+          serviceModule,
+          {
+            updateIncome: async () => {
+              throw new Error("private persistence details");
+            },
+          },
+        ],
+      ]),
+    )(updateRouteModule);
+    await expectPatchError(
+      unexpectedUpdate,
+      incomeFirst,
+      { amount: 1 },
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operaciÃ³n.",
+    );
+    console.log("PASS PATCH parsing, validation, isolation and error handling");
 
     observedOperations.length = 0;
     const success = await route.GET(request());

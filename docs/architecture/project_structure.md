@@ -121,6 +121,8 @@ Web/PWA podrá consumir directamente estas rutas para vistas y operaciones expl�
 
 `app/api/incomes/route.ts` expone `GET /api/incomes`, obtiene el hogar mediante el mismo adaptador controlado, delega el listado y el resumen en `modules/incomes/income.service.ts` y proyecta únicamente los campos públicos aprobados.
 
+`app/api/incomes/[id]/route.ts` expone `PATCH /api/incomes/{id}`, obtiene el hogar mediante el contexto controlado, delega en `updateIncome` y proyecta únicamente el DTO público. La cobertura funcional se mantiene en `tests/phase-3-income-api-functional.cjs`.
+
 # 5. modules/
 
 Contendrá los módulos funcionales del dominio.
