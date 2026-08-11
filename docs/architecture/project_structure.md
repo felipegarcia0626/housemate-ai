@@ -127,6 +127,8 @@ Web/PWA podrá consumir directamente estas rutas para vistas y operaciones expl�
 
 `app/api/balance/route.ts` expone `GET /api/balance`, obtiene el hogar mediante el contexto controlado, delega en `getBalance` y devuelve el resultado público por miembro. La cobertura funcional se mantiene en `tests/phase-3-balance-api-functional.cjs`.
 
+`app/api/dashboard/summary/route.ts` expone `GET /api/dashboard/summary`, obtiene el hogar mediante el contexto controlado, delega en `getDashboard` y aplica únicamente los filtros documentados. La cobertura funcional se mantiene en `tests/phase-3-dashboard-api-functional.cjs`.
+
 # 5. modules/
 
 Contendrá los módulos funcionales del dominio.
