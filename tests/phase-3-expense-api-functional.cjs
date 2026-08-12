@@ -32,6 +32,7 @@ const expenseNewer = "41000000-0000-4000-8000-000000000031";
 const expenseOlder = "41000000-0000-4000-8000-000000000032";
 const expenseCancelled = "41000000-0000-4000-8000-000000000033";
 const expenseOtherHousehold = "41000000-0000-4000-8000-000000000034";
+const expensePending = "41000000-0000-4000-8000-000000000035";
 
 const households = [{ id: householdA }, { id: householdB }];
 const members = [
@@ -133,6 +134,22 @@ const baselineExpenses = [
     source: "WEB",
     created_at: "2026-08-12T12:00:00.000Z",
     updated_at: "2026-08-12T12:00:00.000Z",
+  },
+  {
+    id: expensePending,
+    household_id: householdA,
+    category_id: null,
+    merchant: "Pending market",
+    total_amount: "20.00",
+    expense_date: "2026-08-13",
+    status: "PENDING",
+    created_by: memberA,
+    paid_by: memberA,
+    currency: "COP",
+    description: "Pending expense",
+    source: "WEB",
+    created_at: "2026-08-13T12:00:00.000Z",
+    updated_at: "2026-08-13T12:00:00.000Z",
   },
 ];
 
@@ -299,6 +316,26 @@ const fakeClient = {
   rpc(name) {
     const args = arguments[1];
     observedOperations.push({ type: "rpc", name, args });
+    if (name === "fn_delete_expense") {
+      if (rpcError) return Promise.resolve({ data: null, error: rpcError });
+      const index = expenses.findIndex(
+        (row) =>
+          row.id === args.p_expense_id &&
+          row.household_id === args.p_household_id,
+      );
+      if (index < 0)
+        return Promise.resolve({ data: null, error: { code: "P0002" } });
+      const expense = expenses[index];
+      if (expense.status === "PENDING") {
+        expenses.splice(index, 1);
+        return Promise.resolve({ data: "DELETED", error: null });
+      }
+      if (expense.status === "CONFIRMED") {
+        expense.status = "CANCELLED";
+        return Promise.resolve({ data: "CANCELLED", error: null });
+      }
+      return Promise.resolve({ data: "ALREADY_CANCELLED", error: null });
+    }
     if (name === "fn_update_expense") {
       if (rpcError) return Promise.resolve({ data: null, error: rpcError });
       const expense = expenses.find(
@@ -741,7 +778,11 @@ async function main() {
     console.log("PASS Route exports GET and POST with list flow unchanged");
 
     const detailRoute = createTypeScriptLoader()(detailRouteModule);
-    assert.deepEqual(Object.keys(detailRoute), ["GET", "PATCH"]);
+    assert.deepEqual(Object.keys(detailRoute).sort(), [
+      "DELETE",
+      "GET",
+      "PATCH",
+    ]);
     const detail = await detailRoute.GET(detailRequest(expenseNewer), {
       params: Promise.resolve({ id: expenseNewer }),
     });
@@ -987,6 +1028,137 @@ async function main() {
     console.log(
       "PASS PATCH validates isolation, protected fields and route boundaries",
     );
+
+    const deleteRequest = (expenseId, query = "") =>
+      new Request(`http://localhost/api/expenses/${expenseId}${query}`, {
+        method: "DELETE",
+      });
+
+    observedOperations.length = 0;
+    const pendingDelete = await detailRoute.DELETE(
+      deleteRequest(expensePending),
+      { params: Promise.resolve({ id: expensePending }) },
+    );
+    assert.equal(pendingDelete.status, 204);
+    assert.equal(await pendingDelete.text(), "");
+    assert.equal(
+      expenses.some(({ id }) => id === expensePending),
+      false,
+    );
+    assert.deepEqual(
+      observedOperations.filter(({ type, name }) => type === "rpc"),
+      [
+        {
+          type: "rpc",
+          name: "fn_delete_expense",
+          args: {
+            p_household_id: householdA,
+            p_expense_id: expensePending,
+          },
+        },
+      ],
+    );
+    console.log("PASS DELETE removes a PENDING Expense physically");
+
+    observedOperations.length = 0;
+    const confirmedDelete = await detailRoute.DELETE(
+      deleteRequest(expenseNewer),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(confirmedDelete.status, 204);
+    assert.equal(
+      expenses.find(({ id }) => id === expenseNewer).status,
+      "CANCELLED",
+    );
+    assert.equal(
+      observedOperations.filter(
+        ({ type, name }) => type === "rpc" && name === "fn_delete_expense",
+      ).length,
+      1,
+    );
+
+    const cancelledDelete = await detailRoute.DELETE(
+      deleteRequest(expenseCancelled),
+      { params: Promise.resolve({ id: expenseCancelled }) },
+    );
+    assert.equal(cancelledDelete.status, 204);
+    assert.equal(
+      expenses.find(({ id }) => id === expenseCancelled).status,
+      "CANCELLED",
+    );
+    console.log(
+      "PASS DELETE cancels CONFIRMED and is idempotent for CANCELLED",
+    );
+
+    for (const [expenseId, expectedStatus] of [
+      ["invalid", 422],
+      [missingHousehold, 404],
+      [expenseOtherHousehold, 404],
+    ]) {
+      const response = await detailRoute.DELETE(deleteRequest(expenseId), {
+        params: Promise.resolve({ id: expenseId }),
+      });
+      assert.equal(response.status, expectedStatus);
+      const body = await readJson(response);
+      assert.equal(
+        body.error.code,
+        expectedStatus === 422 ? "VALIDATION_ERROR" : "NOT_FOUND",
+      );
+    }
+    for (const query of [`?householdId=${householdB}`, "?unknown=value"]) {
+      observedOperations.length = 0;
+      const response = await detailRoute.DELETE(
+        deleteRequest(expenseOlder, query),
+        { params: Promise.resolve({ id: expenseOlder }) },
+      );
+      assert.equal(response.status, 400);
+      assert.deepEqual(await readJson(response), {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Solicitud inv\u00e1lida.",
+        },
+      });
+      assert.deepEqual(observedOperations, []);
+    }
+    console.log(
+      "PASS DELETE enforces UUID, household isolation and query allowlist",
+    );
+
+    delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+    observedOperations.length = 0;
+    const unavailableDelete = await detailRoute.DELETE(
+      deleteRequest(expenseOlder),
+      { params: Promise.resolve({ id: expenseOlder }) },
+    );
+    assert.equal(unavailableDelete.status, 500);
+    assert.deepEqual(await readJson(unavailableDelete), {
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "No fue posible completar la operaci\u00f3n.",
+      },
+    });
+    assert.deepEqual(observedOperations, []);
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+
+    rpcError = { code: "42501", message: "private persistence detail" };
+    const persistenceDelete = await detailRoute.DELETE(
+      deleteRequest(expenseOlder),
+      { params: Promise.resolve({ id: expenseOlder }) },
+    );
+    assert.equal(persistenceDelete.status, 500);
+    assert.deepEqual(await readJson(persistenceDelete), {
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "No fue posible completar la operaci\u00f3n.",
+      },
+    });
+    rpcError = undefined;
+    const deleteSource = fs.readFileSync(detailRouteModule, "utf8");
+    assert.ok(!deleteSource.includes("expense.repository"));
+    assert.ok(!deleteSource.includes("database/client"));
+    assert.ok(!deleteSource.includes(".from("));
+    assert.ok(!deleteSource.includes(".rpc("));
+    console.log("PASS DELETE sanitizes context and persistence failures");
 
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
     process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;

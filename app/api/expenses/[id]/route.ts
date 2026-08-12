@@ -2,7 +2,11 @@ import {
   getConfiguredHttpActorContext,
   getConfiguredHttpHouseholdContext,
 } from "@/app/api/_lib/http-context";
-import { updateExpense, getExpense } from "@/modules/expenses/expense.service";
+import {
+  deleteExpense,
+  getExpense,
+  updateExpense,
+} from "@/modules/expenses/expense.service";
 import {
   ExpenseDomainError,
   type Expense,
@@ -236,6 +240,35 @@ export async function PATCH(
         return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");
       }
     }
+    return errorResponse(
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operación.",
+    );
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+): Promise<Response> {
+  if (hasQueryParameters(request)) return invalidRequest(400);
+
+  const { id } = await params;
+  if (!UUID_PATTERN.test(id)) return invalidRequest();
+
+  try {
+    const { householdId } = await getConfiguredHttpHouseholdContext();
+    await deleteExpense({ householdId }, id);
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    if (error instanceof ExpenseDomainError) {
+      if (error.code === "VALIDATION_ERROR") return invalidRequest();
+      if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {
+        return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");
+      }
+    }
+
     return errorResponse(
       500,
       "INTERNAL_ERROR",
