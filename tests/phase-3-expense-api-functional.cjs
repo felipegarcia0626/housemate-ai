@@ -12,6 +12,14 @@ const serviceModule = path.join(
   "expense.service.ts",
 );
 const routeModule = path.join(root, "app", "api", "expenses", "route.ts");
+const detailRouteModule = path.join(
+  root,
+  "app",
+  "api",
+  "expenses",
+  "[id]",
+  "route.ts",
+);
 
 const householdA = "41000000-0000-4000-8000-000000000001";
 const householdB = "41000000-0000-4000-8000-000000000002";
@@ -22,6 +30,8 @@ const missingMember = "41000000-0000-4000-8000-000000000013";
 const categoryA = "41000000-0000-4000-8000-000000000021";
 const expenseNewer = "41000000-0000-4000-8000-000000000031";
 const expenseOlder = "41000000-0000-4000-8000-000000000032";
+const expenseCancelled = "41000000-0000-4000-8000-000000000033";
+const expenseOtherHousehold = "41000000-0000-4000-8000-000000000034";
 
 const households = [{ id: householdA }, { id: householdB }];
 const members = [
@@ -30,8 +40,32 @@ const members = [
 ];
 const categories = [{ id: categoryA, name: "Food" }];
 const distributions = [
-  { expense_id: expenseNewer, household_member_id: memberA },
-  { expense_id: expenseOlder, household_member_id: memberA },
+  {
+    id: "41000000-0000-4000-8000-000000000041",
+    expense_id: expenseNewer,
+    household_member_id: memberA,
+    amount: "100.50",
+    percentage: "100.00",
+  },
+  {
+    id: "41000000-0000-4000-8000-000000000042",
+    expense_id: expenseOlder,
+    household_member_id: memberA,
+    amount: "50.00",
+    percentage: "100.00",
+  },
+];
+const items = [
+  {
+    id: "41000000-0000-4000-8000-000000000051",
+    expense_id: expenseNewer,
+    name: "Groceries",
+    quantity: "2.000",
+    unit_price: "50.25",
+    total_amount: "100.50",
+    category_id: categoryA,
+    created_at: "2026-08-10T12:00:00.000Z",
+  },
 ];
 const baselineExpenses = [
   {
@@ -42,6 +76,13 @@ const baselineExpenses = [
     total_amount: "50.00",
     expense_date: "2026-08-05",
     status: "CONFIRMED",
+    created_by: memberA,
+    paid_by: memberA,
+    currency: "COP",
+    description: "Cafe expense",
+    source: "WEB",
+    created_at: "2026-08-05T12:00:00.000Z",
+    updated_at: "2026-08-05T12:00:00.000Z",
     private_value: "must not be exposed",
   },
   {
@@ -52,25 +93,46 @@ const baselineExpenses = [
     total_amount: "100.50",
     expense_date: "2026-08-10",
     status: "CONFIRMED",
+    created_by: memberA,
+    paid_by: memberA,
+    currency: "COP",
+    description: "Market expense",
+    source: "WEB",
+    created_at: "2026-08-10T12:00:00.000Z",
+    updated_at: "2026-08-10T12:00:00.000Z",
     private_value: "must not be exposed",
   },
   {
-    id: "41000000-0000-4000-8000-000000000033",
+    id: expenseCancelled,
     household_id: householdA,
     category_id: null,
-    merchant: "Cancelled",
+    merchant: null,
     total_amount: "999.00",
     expense_date: "2026-08-11",
     status: "CANCELLED",
+    created_by: memberA,
+    paid_by: memberA,
+    currency: "COP",
+    description: "Cancelled expense",
+    source: "WEB",
+    created_at: "2026-08-11T12:00:00.000Z",
+    updated_at: "2026-08-11T12:00:00.000Z",
   },
   {
-    id: "41000000-0000-4000-8000-000000000034",
+    id: expenseOtherHousehold,
     household_id: householdB,
     category_id: null,
     merchant: "Other household",
     total_amount: "500.00",
     expense_date: "2026-08-12",
     status: "CONFIRMED",
+    created_by: memberB,
+    paid_by: memberB,
+    currency: "COP",
+    description: "Other household expense",
+    source: "WEB",
+    created_at: "2026-08-12T12:00:00.000Z",
+    updated_at: "2026-08-12T12:00:00.000Z",
   },
 ];
 
@@ -169,6 +231,7 @@ class FakeQuery {
     if (this.table === "tb_household_members") return members;
     if (this.table === "tb_expenses") return expenses;
     if (this.table === "tb_expense_distributions") return distributions;
+    if (this.table === "tb_expense_items") return items;
     if (this.table === "tb_categories") return categories;
     return [];
   }
@@ -286,6 +349,10 @@ function createTypeScriptLoader(overrides = new Map()) {
 
 function request(query = "") {
   return new Request(`http://localhost/api/expenses${query}`);
+}
+
+function detailRequest(expenseId, query = "") {
+  return new Request(`http://localhost/api/expenses/${expenseId}${query}`);
 }
 
 async function readJson(response) {
@@ -592,6 +659,158 @@ async function main() {
     );
     assert.ok(!observedOperations.some(({ type }) => type === "rpc"));
     console.log("PASS Route exports only GET and performs no writes or RPC");
+
+    const detailRoute = createTypeScriptLoader()(detailRouteModule);
+    assert.deepEqual(Object.keys(detailRoute), ["GET"]);
+    const detail = await detailRoute.GET(
+      detailRequest(expenseNewer),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(detail.status, 200);
+    assert.deepEqual(await readJson(detail), {
+      data: {
+        id: expenseNewer,
+        createdBy: memberA,
+        paidByMemberId: memberA,
+        merchant: "Market",
+        description: "Market expense",
+        totalAmount: 100.5,
+        expenseDate: "2026-08-10",
+        status: "CONFIRMED",
+        category: { id: categoryA, name: "Food" },
+        items: [
+          {
+            name: "Groceries",
+            quantity: 2,
+            unitPrice: 50.25,
+            totalPrice: 100.5,
+            category: { id: categoryA, name: "Food" },
+          },
+        ],
+        splits: [{ memberId: memberA, percentage: 100, amount: 100.5 }],
+      },
+    });
+    console.log("PASS GET expense detail returns the exact public DTO");
+
+    const cancelledDetail = await detailRoute.GET(
+      detailRequest(expenseCancelled),
+      { params: Promise.resolve({ id: expenseCancelled }) },
+    );
+    assert.equal(cancelledDetail.status, 200);
+    assert.deepEqual(await readJson(cancelledDetail), {
+      data: {
+        id: expenseCancelled,
+        createdBy: memberA,
+        paidByMemberId: memberA,
+        merchant: null,
+        description: "Cancelled expense",
+        totalAmount: 999,
+        expenseDate: "2026-08-11",
+        status: "CANCELLED",
+        category: null,
+        items: [],
+        splits: [],
+      },
+    });
+    console.log("PASS GET expense detail supports existing Expense states");
+
+    observedOperations.length = 0;
+    const queryHousehold = await detailRoute.GET(
+      detailRequest(expenseNewer, `?householdId=${householdB}`),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(queryHousehold.status, 400);
+    assert.deepEqual(await readJson(queryHousehold), {
+      error: { code: "VALIDATION_ERROR", message: "Solicitud inválida." },
+    });
+    assert.deepEqual(observedOperations, []);
+    console.log("PASS detail query householdId cannot alter context");
+
+    for (const [expenseId, expectedMessage] of [
+      ["invalid", "Solicitud inválida."],
+      [missingHousehold, "Recurso no encontrado."],
+      ["41000000-0000-4000-8000-000000000099", "Recurso no encontrado."],
+    ]) {
+      const response = await detailRoute.GET(
+        detailRequest(expenseId),
+        { params: Promise.resolve({ id: expenseId }) },
+      );
+      assert.equal(response.status, expenseId === "invalid" ? 422 : 404);
+      const body = await readJson(response);
+      assert.equal(body.error.message, expectedMessage);
+    }
+    console.log("PASS detail not-found, invalid-id and isolation errors");
+
+    delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+    observedOperations.length = 0;
+    const unavailableDetail = await detailRoute.GET(
+      detailRequest(expenseNewer),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(unavailableDetail.status, 500);
+    assert.deepEqual(await readJson(unavailableDetail), {
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "No fue posible completar la operación.",
+      },
+    });
+    assert.deepEqual(observedOperations, []);
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    console.log("PASS detail unavailable context is sanitized");
+
+    failedTable = "tb_expenses";
+    const failedDetail = await detailRoute.GET(
+      detailRequest(expenseNewer),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(failedDetail.status, 500);
+    assert.deepEqual(await readJson(failedDetail), {
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "No fue posible completar la operación.",
+      },
+    });
+    failedTable = undefined;
+    console.log("PASS detail persistence failures are sanitized");
+
+    const unexpectedDetailError = new Error("private detail error", {
+      cause: new Error("private detail cause"),
+    });
+    const unexpectedDetailRoute = createTypeScriptLoader(
+      new Map([
+        [
+          serviceModule,
+          {
+            getExpense: async () => {
+              throw unexpectedDetailError;
+            },
+          },
+        ],
+      ]),
+    )(detailRouteModule);
+    const unexpectedDetail = await unexpectedDetailRoute.GET(
+      detailRequest(expenseNewer),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(unexpectedDetail.status, 500);
+    assert.deepEqual(await readJson(unexpectedDetail), {
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "No fue posible completar la operación.",
+      },
+    });
+    console.log("PASS detail unexpected errors do not expose internals");
+
+    const detailSource = fs.readFileSync(detailRouteModule, "utf8");
+    assert.ok(!detailSource.includes("expense.repository"));
+    assert.ok(!detailSource.includes("database/client"));
+    assert.ok(!detailSource.includes("supabase"));
+    assert.ok(!detailSource.includes(".from("));
+    assert.ok(!detailSource.includes(".rpc("));
+    assert.ok(!detailSource.includes("insert("));
+    assert.ok(!detailSource.includes("update("));
+    assert.ok(!detailSource.includes("delete("));
+    console.log("PASS detail Route delegates without direct persistence");
   } finally {
     if (previousHouseholdId === undefined) {
       delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
