@@ -330,6 +330,8 @@ El incremento cerrado `GET /api/expenses/{id}` adapta el detalle de Expense al t
 
 El incremento cerrado `POST /api/expenses` adapta la creación de Expense al transporte HTTP mediante el contexto controlado. Deriva `createdBy` y `householdId` del contexto, asigna `WEB` en el servidor, delega la creación atómica en el Service y proyecta el DTO público. Si la creación fue confirmada pero la hidratación posterior falla, responde con `CREATED_NOT_HYDRATED` y conserva el `expenseId` confirmado.
 
+El incremento cerrado `PATCH /api/expenses/{id}` adapta la actualización parcial de Expense al transporte HTTP mediante el contexto controlado. Valida el identificador y los campos públicos, rechaza campos internos y delega la operación atómica en `updateExpense`, reutilizando las reglas existentes de estado, hogar, items, splits y `UPDATED_NOT_HYDRATED`.
+
 El incremento cerrado `GET /api/incomes` adapta Income Read mediante el mismo contexto controlado. Expone los filtros `from`, `to`, `memberId` y `categoryId`, conserva el resumen `totalIncome` calculado por el Service y proyecta explícitamente el DTO HTTP sin exponer hogar ni timestamps internos.
 
 El incremento cerrado `PATCH /api/incomes/{id}` utiliza la ruta dinámica `app/api/incomes/[id]/route.ts`, delega la actualización parcial en el Income Service existente mediante el contexto HTTP controlado, proyecta el DTO público y sanitiza los errores. Su cobertura funcional reside en `tests/phase-3-income-api-functional.cjs`.

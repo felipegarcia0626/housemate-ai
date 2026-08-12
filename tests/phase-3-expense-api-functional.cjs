@@ -299,6 +299,25 @@ const fakeClient = {
   rpc(name) {
     const args = arguments[1];
     observedOperations.push({ type: "rpc", name, args });
+    if (name === "fn_update_expense") {
+      if (rpcError) return Promise.resolve({ data: null, error: rpcError });
+      const expense = expenses.find(
+        (row) =>
+          row.id === args.p_expense_id &&
+          row.household_id === args.p_household_id,
+      );
+      if (!expense)
+        return Promise.resolve({ data: null, error: { code: "P0002" } });
+      if (args.p_set_merchant) expense.merchant = args.p_merchant;
+      if (args.p_set_description) expense.description = args.p_description;
+      if (args.p_total_amount !== null)
+        expense.total_amount = String(args.p_total_amount);
+      if (args.p_expense_date !== null)
+        expense.expense_date = args.p_expense_date;
+      if (args.p_paid_by !== null) expense.paid_by = args.p_paid_by;
+      if (args.p_set_category_id) expense.category_id = args.p_category_id;
+      return Promise.resolve({ data: expense.id, error: null });
+    }
     if (name !== "fn_create_expense") {
       throw new Error("Unexpected RPC");
     }
@@ -722,11 +741,10 @@ async function main() {
     console.log("PASS Route exports GET and POST with list flow unchanged");
 
     const detailRoute = createTypeScriptLoader()(detailRouteModule);
-    assert.deepEqual(Object.keys(detailRoute), ["GET"]);
-    const detail = await detailRoute.GET(
-      detailRequest(expenseNewer),
-      { params: Promise.resolve({ id: expenseNewer }) },
-    );
+    assert.deepEqual(Object.keys(detailRoute), ["GET", "PATCH"]);
+    const detail = await detailRoute.GET(detailRequest(expenseNewer), {
+      params: Promise.resolve({ id: expenseNewer }),
+    });
     assert.equal(detail.status, 200);
     assert.deepEqual(await readJson(detail), {
       data: {
@@ -792,10 +810,9 @@ async function main() {
       [missingHousehold, "Recurso no encontrado."],
       ["41000000-0000-4000-8000-000000000099", "Recurso no encontrado."],
     ]) {
-      const response = await detailRoute.GET(
-        detailRequest(expenseId),
-        { params: Promise.resolve({ id: expenseId }) },
-      );
+      const response = await detailRoute.GET(detailRequest(expenseId), {
+        params: Promise.resolve({ id: expenseId }),
+      });
       assert.equal(response.status, expenseId === "invalid" ? 422 : 404);
       const body = await readJson(response);
       assert.equal(body.error.message, expectedMessage);
@@ -820,10 +837,9 @@ async function main() {
     console.log("PASS detail unavailable context is sanitized");
 
     failedTable = "tb_expenses";
-    const failedDetail = await detailRoute.GET(
-      detailRequest(expenseNewer),
-      { params: Promise.resolve({ id: expenseNewer }) },
-    );
+    const failedDetail = await detailRoute.GET(detailRequest(expenseNewer), {
+      params: Promise.resolve({ id: expenseNewer }),
+    });
     assert.equal(failedDetail.status, 500);
     assert.deepEqual(await readJson(failedDetail), {
       error: {
@@ -872,6 +888,105 @@ async function main() {
     assert.ok(!detailSource.includes("update("));
     assert.ok(!detailSource.includes("delete("));
     console.log("PASS detail Route delegates without direct persistence");
+
+    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
+    const updateBody = {
+      merchant: "Updated Market",
+      description: "Updated expense",
+      paidByMemberId: memberA,
+      categoryId: categoryA,
+    };
+    observedOperations.length = 0;
+    const updated = await detailRoute.PATCH(detailRequest(expenseNewer), {
+      params: Promise.resolve({ id: expenseNewer }),
+    });
+    assert.equal(updated.status, 422);
+    const updatedWithBody = await detailRoute.PATCH(
+      new Request("http://localhost/api/expenses/" + expenseNewer, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(updateBody),
+      }),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(updatedWithBody.status, 200);
+    const updatedBody = await readJson(updatedWithBody);
+    assert.equal(updatedBody.data.merchant, "Updated Market");
+    assert.equal(updatedBody.data.description, "Updated expense");
+    assert.equal(updatedBody.data.id, expenseNewer);
+    assert.equal(
+      observedOperations.filter(
+        ({ type, name }) => type === "rpc" && name === "fn_update_expense",
+      ).length,
+      1,
+    );
+    console.log("PASS PATCH updates Expense and returns the public DTO");
+
+    const patchRequest = (body, query = "", expenseId = expenseNewer) =>
+      new Request(`http://localhost/api/expenses/${expenseId}${query}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    assert.equal(
+      (
+        await detailRoute.PATCH(
+          patchRequest(updateBody, `?householdId=${householdB}`),
+          {
+            params: Promise.resolve({ id: expenseNewer }),
+          },
+        )
+      ).status,
+      400,
+    );
+    for (const field of ["householdId", "createdBy", "source", "status"]) {
+      assert.equal(
+        (
+          await detailRoute.PATCH(
+            patchRequest({ ...updateBody, [field]: householdB }),
+            { params: Promise.resolve({ id: expenseNewer }) },
+          )
+        ).status,
+        400,
+      );
+    }
+    assert.equal(
+      (
+        await detailRoute.PATCH(patchRequest(updateBody, "", "invalid"), {
+          params: Promise.resolve({ id: "invalid" }),
+        })
+      ).status,
+      422,
+    );
+    assert.equal(
+      (
+        await detailRoute.PATCH(
+          patchRequest(updateBody, "", missingHousehold),
+          {
+            params: Promise.resolve({ id: missingHousehold }),
+          },
+        )
+      ).status,
+      404,
+    );
+    assert.equal(
+      (
+        await detailRoute.PATCH(
+          patchRequest(updateBody, "", expenseOtherHousehold),
+          {
+            params: Promise.resolve({ id: expenseOtherHousehold }),
+          },
+        )
+      ).status,
+      404,
+    );
+    const patchSource = fs.readFileSync(detailRouteModule, "utf8");
+    assert.ok(!patchSource.includes("database/client"));
+    assert.ok(!patchSource.includes("expense.repository"));
+    assert.ok(!patchSource.includes(".from("));
+    console.log(
+      "PASS PATCH validates isolation, protected fields and route boundaries",
+    );
 
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
     process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
@@ -930,7 +1045,9 @@ async function main() {
     assert.equal(createRpc.args.p_household_id, householdA);
     assert.equal(createRpc.args.p_created_by, memberA);
     assert.equal(createRpc.args.p_source, "WEB");
-    console.log("PASS POST creates an Expense through the controlled context and RPC");
+    console.log(
+      "PASS POST creates an Expense through the controlled context and RPC",
+    );
 
     const externalContextBody = { ...createBody, householdId: householdB };
     assert.equal(
@@ -938,7 +1055,8 @@ async function main() {
       400,
     );
     assert.equal(
-      (await route.POST(postRequest(createBody, `?householdId=${householdB}`))).status,
+      (await route.POST(postRequest(createBody, `?householdId=${householdB}`)))
+        .status,
       400,
     );
     console.log("PASS POST rejects external household identity");
@@ -957,11 +1075,16 @@ async function main() {
       400,
     );
     assert.equal(
-      (await route.POST(postRequest({ ...createBody, totalAmount: -1 }))).status,
+      (await route.POST(postRequest({ ...createBody, totalAmount: -1 })))
+        .status,
       422,
     );
     assert.equal(
-      (await route.POST(postRequest({ ...createBody, categoryId: missingMember }))).status,
+      (
+        await route.POST(
+          postRequest({ ...createBody, categoryId: missingMember }),
+        )
+      ).status,
       404,
     );
     console.log("PASS POST validates JSON, fields, amounts and categories");
@@ -980,7 +1103,10 @@ async function main() {
     rpcError = { code: "42501", message: "private persistence detail" };
     const persistenceResponse = await route.POST(postRequest(createBody));
     assert.equal(persistenceResponse.status, 500);
-    assert.equal((await readJson(persistenceResponse)).error.code, "INTERNAL_ERROR");
+    assert.equal(
+      (await readJson(persistenceResponse)).error.code,
+      "INTERNAL_ERROR",
+    );
     rpcError = undefined;
     console.log("PASS POST sanitizes persistence errors");
 

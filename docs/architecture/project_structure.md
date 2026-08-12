@@ -119,7 +119,7 @@ Web/PWA podrá consumir directamente estas rutas para vistas y operaciones expl�
 
 `app/api/expenses/route.ts` expone `GET /api/expenses`, construye únicamente los filtros HTTP documentados, obtiene el hogar mediante el adaptador de contexto controlado y delega el listado en `modules/expenses/expense.service.ts`.
 
-`app/api/expenses/[id]/route.ts` expone `GET /api/expenses/{id}`, obtiene el hogar mediante el contexto controlado, delega en `getExpense` y proyecta el DTO público del detalle, incluyendo items y splits.
+`app/api/expenses/[id]/route.ts` expone `GET /api/expenses/{id}` y `PATCH /api/expenses/{id}`, obtiene el hogar mediante el contexto controlado, delega en `getExpense` o `updateExpense` y proyecta el DTO público incluyendo items y splits.
 
 `app/api/expenses/route.ts` también expone `POST /api/expenses`, obtiene hogar y actor mediante el contexto controlado, delega la creación en `createExpense` y proyecta el DTO público. La cobertura de lectura y creación permanece en `tests/phase-3-expense-api-functional.cjs`.
 

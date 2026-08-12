@@ -29,6 +29,7 @@ Los siguientes endpoints del contrato ya están implementados en el repositorio 
 - `GET /api/expenses`
 - `GET /api/expenses/{id}`
 - `POST /api/expenses`
+- `PATCH /api/expenses/{id}`
 - `GET /api/incomes`
 - `PATCH /api/incomes/{id}`
 - `GET /api/sharing-rules`
