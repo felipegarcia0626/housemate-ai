@@ -176,3 +176,38 @@ An increment is ready for staging only when:
 - documentation changes are minimal and accurate.
 
 Do not implement `GET /api/expenses/{id}` or any other feature unless the current task explicitly authorizes it.
+
+## Audit Findings and Technical Debt
+
+`docs/architecture/audit_findings.md` is the single source of truth for
+technical findings and accepted technical debt identified during development.
+
+When working on an increment:
+
+- Review existing findings when they are relevant to the affected area.
+- Record new, concrete findings in `audit_findings.md` when they are discovered
+  during implementation, testing, or audit.
+- Do not create alternative or duplicate technical-debt documents.
+- Do not record hypothetical risks, speculative improvements, or personal
+  preferences as findings.
+- Do not fix findings outside the current increment unless explicitly required
+  by the implementation plan or necessary to preserve correctness.
+- When an increment resolves an existing finding, update its status and evidence
+  in `audit_findings.md`.
+- Keep findings concise, actionable, and traceable.
+- Do not let findings expand the scope of an MVP increment.
+
+## MVP Scope Discipline
+
+Prioritize completing the defined MVP over optional improvements.
+
+When time or scope is constrained:
+
+1. Complete the smallest increment that advances an MVP capability.
+2. Avoid refactors, generalized abstractions, performance work, or cosmetic
+   improvements unless they are required for correctness, security, or the
+   current increment.
+3. Record valid out-of-scope improvements in `audit_findings.md` when appropriate
+   instead of implementing them prematurely.
+4. Do not expand an increment merely because an adjacent improvement is
+   technically attractive.
