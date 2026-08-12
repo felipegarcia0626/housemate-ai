@@ -176,8 +176,9 @@ class FakeQuery {
   }
 
   delete() {
+    this.deleteRequested = true;
     observedOperations.push({ type: "delete", table: this.table });
-    throw new Error("Unexpected delete");
+    return this;
   }
 
   sourceRows() {
@@ -225,6 +226,12 @@ class FakeQuery {
         return false;
       }),
     );
+
+    if (this.deleteRequested) {
+      const deletedIds = new Set(rows.map((row) => row.id));
+      incomes = incomes.filter((row) => !deletedIds.has(row.id));
+      return { data: rows, error: null };
+    }
 
     if (this.updatePayload !== undefined) {
       for (const row of rows) Object.assign(row, this.updatePayload);
@@ -541,7 +548,7 @@ async function main() {
     incomes = [...baselineIncomes];
 
     const updateRoute = createTypeScriptLoader()(updateRouteModule);
-    assert.deepEqual(Object.keys(updateRoute).sort(), ["PATCH"]);
+    assert.deepEqual(Object.keys(updateRoute).sort(), ["DELETE", "PATCH"]);
     const updateRouteSource = fs.readFileSync(updateRouteModule, "utf8");
     for (const forbidden of [
       "income.repository",
@@ -560,6 +567,94 @@ async function main() {
     }
     console.log(
       "PASS PATCH Route has no direct persistence or Supabase access",
+    );
+
+    const deleteRequest = (id, query = "") =>
+      new Request(`http://localhost/api/incomes/${id}${query}`, {
+        method: "DELETE",
+      });
+    const deleteSource = fs.readFileSync(updateRouteModule, "utf8");
+    for (const forbidden of [
+      "income.repository",
+      "database/client",
+      "getSupabaseAdminClient",
+      ".from(",
+      ".rpc(",
+      ".insert(",
+      ".update(",
+      ".delete(",
+    ]) {
+      assert.ok(
+        !deleteSource.includes(forbidden),
+        `Route contains ${forbidden}`,
+      );
+    }
+    observedOperations.length = 0;
+    const deleted = await updateRoute.DELETE(deleteRequest(incomeFirst), {
+      params: Promise.resolve({ id: incomeFirst }),
+    });
+    assert.equal(deleted.status, 204);
+    assert.equal(await deleted.text(), "");
+    assert.equal(
+      incomes.some(({ id }) => id === incomeFirst),
+      false,
+    );
+    assert.equal(
+      observedOperations.filter(
+        ({ type, table }) => type === "delete" && table === "tb_incomes",
+      ).length,
+      1,
+    );
+
+    for (const [id, status, code] of [
+      ["invalid", 422, "VALIDATION_ERROR"],
+      [missingHousehold, 404, "NOT_FOUND"],
+      ["42000000-0000-4000-8000-000000000034", 404, "NOT_FOUND"],
+    ]) {
+      const response = await updateRoute.DELETE(deleteRequest(id), {
+        params: Promise.resolve({ id }),
+      });
+      assert.equal(response.status, status);
+      assert.equal((await readJson(response)).error.code, code);
+    }
+    for (const query of [
+      `?householdId=${householdB}`,
+      "?memberId=" + memberA,
+    ]) {
+      observedOperations.length = 0;
+      const response = await updateRoute.DELETE(
+        deleteRequest(incomeSecond, query),
+        { params: Promise.resolve({ id: incomeSecond }) },
+      );
+      assert.equal(response.status, 400);
+      assert.equal((await readJson(response)).error.code, "VALIDATION_ERROR");
+      assert.deepEqual(observedOperations, []);
+    }
+    delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+    const unavailableDelete = await updateRoute.DELETE(
+      deleteRequest(incomeSecond),
+      { params: Promise.resolve({ id: incomeSecond }) },
+    );
+    assert.equal(unavailableDelete.status, 500);
+    assert.equal(
+      (await readJson(unavailableDelete)).error.code,
+      "INTERNAL_ERROR",
+    );
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    failedTable = "tb_incomes";
+    const persistenceDelete = await updateRoute.DELETE(
+      deleteRequest(incomeSecond),
+      { params: Promise.resolve({ id: incomeSecond }) },
+    );
+    assert.equal(persistenceDelete.status, 500);
+    assert.equal(
+      (await readJson(persistenceDelete)).error.code,
+      "INTERNAL_ERROR",
+    );
+    failedTable = undefined;
+    incomes = [...baselineIncomes];
+    console.log(
+      "PASS Income DELETE validates isolation, errors and route boundaries",
     );
     const originalIncome = structuredClone(incomes[2]);
     const updated = await updateRoute.PATCH(

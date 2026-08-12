@@ -32,7 +32,9 @@ Los siguientes endpoints del contrato ya están implementados en el repositorio 
 - `PATCH /api/expenses/{id}`
 - `DELETE /api/expenses/{id}`
 - `GET /api/incomes`
+- `POST /api/incomes`
 - `PATCH /api/incomes/{id}`
+- `DELETE /api/incomes/{id}`
 - `GET /api/sharing-rules`
 - `GET /api/balance`
 - `GET /api/dashboard/summary`

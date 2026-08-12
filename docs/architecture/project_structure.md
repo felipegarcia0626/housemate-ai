@@ -125,7 +125,7 @@ Web/PWA podrá consumir directamente estas rutas para vistas y operaciones expl�
 
 `app/api/incomes/route.ts` expone `GET /api/incomes` y `POST /api/incomes`, obtiene hogar y actor mediante el contexto controlado, delega en `modules/incomes/income.service.ts` y proyecta únicamente los campos públicos aprobados.
 
-`app/api/incomes/[id]/route.ts` expone `PATCH /api/incomes/{id}`, obtiene el hogar mediante el contexto controlado, delega en `updateIncome` y proyecta únicamente el DTO público. La cobertura funcional se mantiene en `tests/phase-3-income-api-functional.cjs`.
+`app/api/incomes/[id]/route.ts` expone `PATCH /api/incomes/{id}` y `DELETE /api/incomes/{id}`, obtiene el hogar mediante el contexto controlado y delega en `updateIncome` o `deleteIncome`. La cobertura funcional se mantiene en `tests/phase-3-income-api-functional.cjs`.
 
 `app/api/sharing-rules/route.ts` expone `GET /api/sharing-rules`, obtiene el hogar mediante el contexto controlado, delega en `listSharingRules` y devuelve el DTO público de reglas y splits. La cobertura funcional se mantiene en `tests/phase-3-sharing-rule-api-functional.cjs`.
 

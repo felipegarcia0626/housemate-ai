@@ -1,9 +1,12 @@
 import { getConfiguredHttpHouseholdContext } from "@/app/api/_lib/http-context";
-import { updateIncome } from "@/modules/incomes/income.service";
+import { deleteIncome, updateIncome } from "@/modules/incomes/income.service";
 import {
   IncomeDomainError,
   type IncomeUpdateInput,
 } from "@/modules/incomes/income.types";
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function errorResponse(
   status: number,
@@ -13,8 +16,8 @@ function errorResponse(
   return Response.json({ error: { code, message } }, { status });
 }
 
-function invalidRequest(): Response {
-  return errorResponse(422, "VALIDATION_ERROR", "Solicitud inválida.");
+function invalidRequest(status: 400 | 422 = 422): Response {
+  return errorResponse(status, "VALIDATION_ERROR", "Solicitud inválida.");
 }
 
 function publicIncome(income: Awaited<ReturnType<typeof updateIncome>>) {
@@ -72,6 +75,35 @@ export async function PATCH(
     const { id } = await params;
     const income = await updateIncome({ householdId }, id, input);
     return Response.json({ data: publicIncome(income) });
+  } catch (error) {
+    if (error instanceof IncomeDomainError) {
+      if (error.code === "VALIDATION_ERROR") return invalidRequest();
+      if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {
+        return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");
+      }
+    }
+
+    return errorResponse(
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operación.",
+    );
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+): Promise<Response> {
+  if (new URL(request.url).search.length > 1) return invalidRequest(400);
+
+  const { id } = await params;
+  if (!UUID_PATTERN.test(id)) return invalidRequest();
+
+  try {
+    const { householdId } = await getConfiguredHttpHouseholdContext();
+    await deleteIncome({ householdId }, id);
+    return new Response(null, { status: 204 });
   } catch (error) {
     if (error instanceof IncomeDomainError) {
       if (error.code === "VALIDATION_ERROR") return invalidRequest();
