@@ -366,6 +366,14 @@ Objetivo
 
 Integrar el agente con el core financiero mediante herramientas controladas.
 
+El primer incremento implementado de esta fase establece la base del Agent sin
+depender todavía de un modelo LLM ni de un canal externo. Persiste propuestas
+`CREATE_EXPENSE` en `PendingProposal`, impide propuestas activas duplicadas por
+hogar y conversación, permite confirmarlas o rechazarlas mediante su
+`PendingProposal.id` y delega la creación confirmada en el Expense Service. La
+propuesta se consume de forma atómica antes de ejecutar la confirmación, por lo
+que una segunda confirmación no puede crear otro Expense.
+
 Herramientas iniciales
 Gastos
 create_expense

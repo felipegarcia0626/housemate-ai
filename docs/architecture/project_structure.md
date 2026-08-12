@@ -313,6 +313,14 @@ El análisis mediante IA será delegado a la infraestructura correspondiente.
 
 Responsable de la interacción entre el agente y las capacidades del sistema.
 
+La base implementada de Agent persiste y recupera propuestas de `CREATE_EXPENSE`
+mediante `pending-proposal.repository.ts`, y `agent.service.ts` valida el
+contexto controlado, consume la propuesta al confirmar o rechazar y delega la
+creación confirmada en el Expense Service. `tools/create-expense.tool.ts`
+expone la intención estructurada y las operaciones de confirmación sin acceder
+directamente a Supabase, Repository o RPC. La integración con LLM y canales
+externos permanece fuera de este incremento.
+
 Ejemplo:
 
 modules/
