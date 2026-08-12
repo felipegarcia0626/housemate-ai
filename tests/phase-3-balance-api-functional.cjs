@@ -231,6 +231,20 @@ async function main() {
       },
     });
     console.log("PASS Balance context and persistence errors are sanitized");
+
+    const calculateBalance = loader()(
+      path.join(root, "modules/expenses/balance-calculator.ts"),
+    ).calculateBalance;
+    const largeExpenses = Array.from({ length: 91 }, () => ({
+      paidByMemberId: memberA,
+      totalAmount: "999999999999.99",
+      distributions: [{ memberId: memberA, amount: "999999999999.99" }],
+    }));
+    assert.throws(
+      () => calculateBalance([memberA], largeExpenses),
+      /safe numeric range/,
+    );
+    console.log("PASS Balance rejects unsafe aggregate serialization");
   } finally {
     if (previous === undefined) delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
     else process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = previous;

@@ -55,6 +55,17 @@ function deletePersistenceError(): IncomeDomainError {
   );
 }
 
+function centsToSafeNumber(cents: bigint, fieldName: string): number {
+  const absolute = cents < BigInt(0) ? -cents : cents;
+  if (absolute > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new IncomeDomainError(
+      "PERSISTENCE_ERROR",
+      `${fieldName} exceeds the safe numeric range.`,
+    );
+  }
+  return Number(cents) / 100;
+}
+
 export async function createIncome(
   context: IncomeCreateServiceContext,
   input: IncomeCreateInput,
@@ -243,7 +254,7 @@ export async function listIncomes(
     return {
       incomes,
       summary: {
-        totalIncome: Number(totalIncomeCents) / 100,
+        totalIncome: centsToSafeNumber(totalIncomeCents, "totalIncome"),
       },
     };
   } catch (error) {

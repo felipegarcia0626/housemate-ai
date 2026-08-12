@@ -21,6 +21,20 @@ La API expone únicamente las operaciones necesarias para:
 
 La API no expone directamente operaciones sobre tablas ni permite consultas SQL arbitrarias.
 
+## 2.5 Estado de implementación
+
+Los siguientes endpoints del contrato ya están implementados en el repositorio y validados mediante sus harnesses funcionales:
+
+- `GET /api/categories`
+- `GET /api/expenses`
+- `GET /api/incomes`
+- `PATCH /api/incomes/{id}`
+- `GET /api/sharing-rules`
+- `GET /api/balance`
+- `GET /api/dashboard/summary`
+
+Los demás endpoints descritos en este contrato son objetivos del MVP y permanecen pendientes de implementación HTTP hasta que exista un Route Handler correspondiente.
+
 Durante el MVP no se implementará un sistema formal de autenticación mediante login, sesiones, JWT u OAuth.
 
 El backend trabajará con un contexto de usuario y hogar previamente configurado.

@@ -904,6 +904,48 @@ async function main() {
     );
     assert.ok(!observedOperations.some(({ type }) => type === "rpc"));
     console.log("PASS Route exports only GET and performs no writes or RPC");
+
+    const repositoryModule = path.join(
+      root,
+      "modules",
+      "incomes",
+      "income.repository.ts",
+    );
+    const largeIncomeService = createTypeScriptLoader(
+      new Map([
+        [
+          repositoryModule,
+          {
+            listIncomes: async () =>
+              Array.from({ length: 91 }, () => ({
+                id: incomeFirst,
+                householdId: householdA,
+                createdBy: memberA,
+                memberId: memberA,
+                amount: 999999999999.99,
+                incomeDate: "2026-08-01",
+                description: "Large income",
+                categoryId: null,
+                createdAt: "2026-08-01T00:00:00+00:00",
+                updatedAt: "2026-08-01T00:00:00+00",
+              })),
+            isIncomeMemberInHousehold: async () => true,
+            isIncomeCategoryAvailable: async () => true,
+            IncomeRepositoryError: class IncomeRepositoryError extends Error {
+              constructor() {
+                super();
+                this.kind = "TECHNICAL";
+              }
+            },
+          },
+        ],
+      ]),
+    )(serviceModule);
+    await assert.rejects(
+      () => largeIncomeService.listIncomes({ householdId: householdA }),
+      (error) => error?.code === "PERSISTENCE_ERROR",
+    );
+    console.log("PASS Income rejects unsafe aggregate serialization");
   } finally {
     if (previousHouseholdId === undefined) {
       delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;

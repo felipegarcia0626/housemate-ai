@@ -111,7 +111,7 @@ No deberá contener reglas financieras complejas.
 
 Las rutas deberán delegar las operaciones en los módulos correspondientes.
 
-El primer Route Handler implementado es `app/api/categories/route.ts`, que expone `GET /api/categories` y delega en `modules/categories/category.service.ts` sin acceder directamente a persistencia ni resolver contexto de hogar.
+`app/api/categories/route.ts` expone `GET /api/categories` y delega en `modules/categories/category.service.ts` sin acceder directamente a persistencia ni resolver contexto de hogar.
 
 Web/PWA podrá consumir directamente estas rutas para vistas y operaciones explícitas, sin contener lógica de negocio ni acceder a repositories.
 

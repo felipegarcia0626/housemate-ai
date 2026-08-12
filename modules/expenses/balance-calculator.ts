@@ -1,6 +1,7 @@
 import type { BalanceExpenseRecord, BalanceMember } from "./balance.types";
 
 const MAX_MONEY_CENTS = BigInt("99999999999999");
+const MAX_SAFE_CENTS = BigInt(Number.MAX_SAFE_INTEGER);
 
 function moneyToCents(value: number | string, field: string): bigint {
   if (typeof value === "number" && !Number.isFinite(value)) {
@@ -25,6 +26,10 @@ function moneyToCents(value: number | string, field: string): bigint {
 }
 
 function centsToMoney(cents: bigint): number {
+  const absolute = cents < BigInt(0) ? -cents : cents;
+  if (absolute > MAX_SAFE_CENTS) {
+    throw new Error("Balance result exceeds the safe numeric range.");
+  }
   return Number(cents) / 100;
 }
 
