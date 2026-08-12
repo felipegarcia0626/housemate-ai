@@ -92,6 +92,7 @@ const categories = [{ id: categoryA }];
 
 let incomes = [...baselineIncomes];
 let failedTable;
+let nextCreatedIncome = 50;
 const observedOperations = [];
 
 class FakeQuery {
@@ -154,9 +155,14 @@ class FakeQuery {
     return this;
   }
 
-  insert() {
-    observedOperations.push({ type: "insert", table: this.table });
-    throw new Error("Unexpected insert");
+  insert(payload) {
+    this.insertPayload = payload;
+    observedOperations.push({
+      type: "insert",
+      table: this.table,
+      payload,
+    });
+    return this;
   }
 
   update() {
@@ -193,6 +199,23 @@ class FakeQuery {
       };
     }
 
+    if (this.insertPayload !== undefined) {
+      const row = {
+        id: `42000000-0000-4000-8000-0000000000${nextCreatedIncome++}`,
+        household_id: this.insertPayload.household_id,
+        created_by: this.insertPayload.created_by,
+        member_id: this.insertPayload.member_id,
+        amount: String(this.insertPayload.amount),
+        income_date: this.insertPayload.income_date,
+        description: this.insertPayload.description,
+        category_id: this.insertPayload.category_id,
+        created_at: "2026-08-12T12:00:00+00:00",
+        updated_at: "2026-08-12T12:00:00+00:00",
+      };
+      incomes.push(row);
+      return { data: [row], error: null };
+    }
+
     let rows = this.sourceRows().filter((row) =>
       this.filters.every(({ operator, column, value }) => {
         const current = row[column];
@@ -224,6 +247,14 @@ class FakeQuery {
   }
 
   maybeSingle() {
+    const result = this.execute();
+    return Promise.resolve({
+      data: result.error ? null : (result.data[0] ?? null),
+      error: result.error,
+    });
+  }
+
+  single() {
     const result = this.execute();
     return Promise.resolve({
       data: result.error ? null : (result.data[0] ?? null),
@@ -299,6 +330,14 @@ function request(query = "") {
   return new Request(`http://localhost/api/incomes${query}`);
 }
 
+function postRequest(body, query = "") {
+  return new Request(`http://localhost/api/incomes${query}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function patchRequest(id, body) {
   return new Request(`http://localhost/api/incomes/${id}`, {
     method: "PATCH",
@@ -352,9 +391,11 @@ function hasOperation(expected) {
 
 async function main() {
   const previousHouseholdId = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+  const previousMemberId = process.env.HOUSEMATE_MVP_MEMBER_ID;
 
   try {
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
     const routeSource = fs.readFileSync(routeModule, "utf8");
     assert.ok(!routeSource.includes("income.repository"));
     assert.ok(!routeSource.includes("database/client"));
@@ -363,7 +404,141 @@ async function main() {
     assert.ok(!routeSource.includes("category.service"));
 
     const route = createTypeScriptLoader()(routeModule);
-    assert.deepEqual(Object.keys(route).sort(), ["GET"]);
+    assert.deepEqual(Object.keys(route).sort(), ["GET", "POST"]);
+
+    const routeSourceChecks = [
+      "income.repository",
+      "database/client",
+      "getSupabaseAdminClient",
+      ".from(",
+      ".rpc(",
+      ".insert(",
+      ".update(",
+      ".delete(",
+    ];
+    for (const forbidden of routeSourceChecks) {
+      assert.ok(
+        !routeSource.includes(forbidden),
+        `Route contains ${forbidden}`,
+      );
+    }
+    const createBody = {
+      memberId: memberA,
+      amount: 123.45,
+      incomeDate: "2026-08-12",
+      description: "Created over HTTP",
+      categoryId: categoryA,
+    };
+    observedOperations.length = 0;
+    const created = await route.POST(postRequest(createBody));
+    assert.equal(created.status, 201);
+    const createdBody = await readJson(created);
+    assert.deepEqual(Object.keys(createdBody.data).sort(), [
+      "amount",
+      "categoryId",
+      "createdBy",
+      "description",
+      "id",
+      "incomeDate",
+      "memberId",
+    ]);
+    assert.equal(createdBody.data.createdBy, memberA);
+    assert.equal(createdBody.data.memberId, memberA);
+    assert.equal(createdBody.data.amount, 123.45);
+    assert.equal(createdBody.data.categoryId, categoryA);
+    assert.ok(!Object.hasOwn(createdBody.data, "householdId"));
+    assert.ok(!Object.hasOwn(createdBody.data, "createdAt"));
+    assert.ok(!Object.hasOwn(createdBody.data, "updatedAt"));
+    assert.ok(hasOperation({ type: "insert", table: "tb_incomes" }));
+    const createInsert = observedOperations.find(
+      ({ type, table }) => type === "insert" && table === "tb_incomes",
+    );
+    assert.deepEqual(createInsert.payload, {
+      household_id: householdA,
+      created_by: memberA,
+      member_id: memberA,
+      amount: 123.45,
+      income_date: "2026-08-12",
+      description: "Created over HTTP",
+      category_id: categoryA,
+    });
+    assert.equal(
+      observedOperations.filter(
+        ({ type, table }) => type === "insert" && table === "tb_incomes",
+      ).length,
+      1,
+    );
+    console.log(
+      "PASS Income POST creates the public DTO with controlled actor and household",
+    );
+
+    for (const [body, query] of [
+      [{ ...createBody, householdId: householdB }, ""],
+      [createBody, `?householdId=${householdB}`],
+      [{ ...createBody, createdBy: memberB }, ""],
+      [{ ...createBody, status: "CONFIRMED" }, ""],
+      [{ ...createBody, createdAt: "2026-08-12T00:00:00Z" }, ""],
+      [{ ...createBody, unknown: true }, ""],
+    ]) {
+      const response = await route.POST(postRequest(body, query));
+      assert.equal(response.status, query ? 400 : 400);
+      assert.equal((await readJson(response)).error.code, "VALIDATION_ERROR");
+    }
+    assert.equal(
+      observedOperations.filter(({ type }) => type === "insert").length,
+      1,
+    );
+    console.log(
+      "PASS Income POST rejects external identity, protected and unknown fields",
+    );
+
+    for (const body of [
+      "{invalid",
+      { ...createBody, amount: 0 },
+      { ...createBody, amount: 1.001 },
+      { ...createBody, incomeDate: "2026-02-30" },
+      { ...createBody, memberId: "invalid" },
+      { ...createBody, categoryId: "invalid" },
+    ]) {
+      const requestBody =
+        typeof body === "string" ? body : JSON.stringify(body);
+      const response = await route.POST(
+        new Request("http://localhost/api/incomes", {
+          method: "POST",
+          body: requestBody,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+      assert.equal(response.status, 422);
+      assert.equal((await readJson(response)).error.code, "VALIDATION_ERROR");
+    }
+    const createMissingCategoryResponse = await route.POST(
+      postRequest({ ...createBody, categoryId: missingCategory }),
+    );
+    assert.equal(createMissingCategoryResponse.status, 404);
+    assert.equal(
+      (await readJson(createMissingCategoryResponse)).error.code,
+      "NOT_FOUND",
+    );
+    console.log(
+      "PASS Income POST validates JSON, amount, date, members and category",
+    );
+
+    delete process.env.HOUSEMATE_MVP_MEMBER_ID;
+    const missingActor = await route.POST(postRequest(createBody));
+    assert.equal(missingActor.status, 500);
+    assert.equal((await readJson(missingActor)).error.code, "INTERNAL_ERROR");
+    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
+
+    failedTable = "tb_incomes";
+    const persistenceCreate = await route.POST(postRequest(createBody));
+    assert.equal(persistenceCreate.status, 500);
+    const persistenceCreateBody = await readJson(persistenceCreate);
+    assert.equal(persistenceCreateBody.error.code, "INTERNAL_ERROR");
+    assert.ok(!JSON.stringify(persistenceCreateBody).includes("42501"));
+    failedTable = undefined;
+    console.log("PASS Income POST sanitizes context and persistence errors");
+    incomes = [...baselineIncomes];
 
     const updateRoute = createTypeScriptLoader()(updateRouteModule);
     assert.deepEqual(Object.keys(updateRoute).sort(), ["PATCH"]);
@@ -951,6 +1126,11 @@ async function main() {
       delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
     } else {
       process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = previousHouseholdId;
+    }
+    if (previousMemberId === undefined) {
+      delete process.env.HOUSEMATE_MVP_MEMBER_ID;
+    } else {
+      process.env.HOUSEMATE_MVP_MEMBER_ID = previousMemberId;
     }
   }
 }

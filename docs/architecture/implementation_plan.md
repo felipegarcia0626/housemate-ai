@@ -334,6 +334,8 @@ El incremento cerrado `PATCH /api/expenses/{id}` adapta la actualización parcia
 
 El incremento cerrado `DELETE /api/expenses/{id}` adapta la eliminación de Expense al transporte HTTP mediante el contexto controlado. Rechaza parámetros de query, valida el identificador, delega en `deleteExpense` y conserva la semántica de la RPC existente, con respuesta `204` en éxito y errores HTTP sanitizados.
 
+El incremento cerrado `POST /api/incomes` adapta la creación de Income al transporte HTTP mediante el contexto controlado. Deriva `householdId` y `createdBy` del contexto, valida únicamente los campos públicos permitidos, delega en `createIncome` y proyecta el DTO público con respuesta `201`.
+
 El incremento cerrado `GET /api/incomes` adapta Income Read mediante el mismo contexto controlado. Expone los filtros `from`, `to`, `memberId` y `categoryId`, conserva el resumen `totalIncome` calculado por el Service y proyecta explícitamente el DTO HTTP sin exponer hogar ni timestamps internos.
 
 El incremento cerrado `PATCH /api/incomes/{id}` utiliza la ruta dinámica `app/api/incomes/[id]/route.ts`, delega la actualización parcial en el Income Service existente mediante el contexto HTTP controlado, proyecta el DTO público y sanitiza los errores. Su cobertura funcional reside en `tests/phase-3-income-api-functional.cjs`.

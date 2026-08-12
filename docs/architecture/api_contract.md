@@ -530,15 +530,14 @@ Response:
     "amount": 1500000,
     "incomeDate": "2026-08-08",
     "description": "Pago de honorarios",
-    "category": {
-      "id": "category-id",
-      "name": "Honorarios"
-    }
+    "categoryId": "category-id"
   }
 }
 ```
 
 El backend validará que `memberId`, `amount`, `incomeDate` y `description` estén presentes; que `amount` sea mayor que cero; que la fecha sea válida; que los integrantes pertenezcan al hogar; y que la categoría esté disponible en el catálogo del contexto configurado cuando se proporcione.
+
+La respuesta exitosa utiliza `201 Created` y expone únicamente `id`, `createdBy`, `memberId`, `amount`, `incomeDate`, `description` y `categoryId`. `categoryId` es `string | null`; no se hidrata una categoría y no se exponen `householdId`, `createdAt` ni `updatedAt`.
 
 ## 8.2 Consultar ingresos
 

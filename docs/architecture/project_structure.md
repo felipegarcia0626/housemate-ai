@@ -123,7 +123,7 @@ Web/PWA podrá consumir directamente estas rutas para vistas y operaciones expl�
 
 `app/api/expenses/route.ts` también expone `POST /api/expenses`, obtiene hogar y actor mediante el contexto controlado, delega la creación en `createExpense` y proyecta el DTO público. La cobertura de lectura y creación permanece en `tests/phase-3-expense-api-functional.cjs`.
 
-`app/api/incomes/route.ts` expone `GET /api/incomes`, obtiene el hogar mediante el mismo adaptador controlado, delega el listado y el resumen en `modules/incomes/income.service.ts` y proyecta únicamente los campos públicos aprobados.
+`app/api/incomes/route.ts` expone `GET /api/incomes` y `POST /api/incomes`, obtiene hogar y actor mediante el contexto controlado, delega en `modules/incomes/income.service.ts` y proyecta únicamente los campos públicos aprobados.
 
 `app/api/incomes/[id]/route.ts` expone `PATCH /api/incomes/{id}`, obtiene el hogar mediante el contexto controlado, delega en `updateIncome` y proyecta únicamente el DTO público. La cobertura funcional se mantiene en `tests/phase-3-income-api-functional.cjs`.
 
