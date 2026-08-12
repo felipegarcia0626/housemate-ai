@@ -138,6 +138,9 @@ const baselineExpenses = [
 
 let expenses = [...baselineExpenses];
 let failedTable;
+let rpcError;
+let forceHydrationFailure = false;
+let nextCreatedExpense = 60;
 const observedOperations = [];
 
 class FakeQuery {
@@ -294,8 +297,57 @@ const fakeClient = {
     return new FakeQuery(table);
   },
   rpc(name) {
-    observedOperations.push({ type: "rpc", name });
-    throw new Error("Unexpected RPC");
+    const args = arguments[1];
+    observedOperations.push({ type: "rpc", name, args });
+    if (name !== "fn_create_expense") {
+      throw new Error("Unexpected RPC");
+    }
+    if (rpcError) {
+      return Promise.resolve({ data: null, error: rpcError });
+    }
+
+    const id = `41000000-0000-4000-8000-0000000000${nextCreatedExpense++}`;
+    if (!forceHydrationFailure) {
+      expenses.push({
+        id,
+        household_id: args.p_household_id,
+        category_id: args.p_category_id,
+        merchant: args.p_merchant,
+        total_amount: String(args.p_total_amount),
+        expense_date: args.p_expense_date,
+        status: "CONFIRMED",
+        created_by: args.p_created_by,
+        paid_by: args.p_paid_by,
+        currency: "COP",
+        description: args.p_description,
+        source: args.p_source,
+        created_at: "2026-08-12T12:00:00.000Z",
+        updated_at: "2026-08-12T12:00:00.000Z",
+      });
+      for (const [index, item] of args.p_items.entries()) {
+        items.push({
+          id: `41000000-0000-4000-8000-0000000000${70 + index}`,
+          expense_id: id,
+          name: item.name,
+          quantity: item.quantity,
+          unit_price: item.unitPrice,
+          total_amount: String(item.totalAmount),
+          category_id: item.categoryId,
+          created_at: "2026-08-12T12:00:00.000Z",
+        });
+      }
+      for (const [index, distribution] of args.p_distributions.entries()) {
+        distributions.push({
+          id: `41000000-0000-4000-8000-0000000000${80 + index}`,
+          expense_id: id,
+          household_member_id:
+            distribution.householdMemberId ?? distribution.memberId,
+          amount: String(distribution.amount),
+          percentage: String(distribution.percentage),
+        });
+      }
+    }
+    return Promise.resolve({ data: id, error: null });
   },
 };
 
@@ -355,6 +407,14 @@ function detailRequest(expenseId, query = "") {
   return new Request(`http://localhost/api/expenses/${expenseId}${query}`);
 }
 
+function postRequest(body, query = "") {
+  return new Request(`http://localhost/api/expenses${query}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 async function readJson(response) {
   assert.equal(response.headers.get("content-type"), "application/json");
   return response.json();
@@ -386,6 +446,7 @@ function hasOperation(expected) {
 
 async function main() {
   const previousHouseholdId = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+  const previousMemberId = process.env.HOUSEMATE_MVP_MEMBER_ID;
 
   try {
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
@@ -396,7 +457,7 @@ async function main() {
     assert.ok(!routeSource.includes("process.env"));
 
     const route = createTypeScriptLoader()(routeModule);
-    assert.deepEqual(Object.keys(route).sort(), ["GET"]);
+    assert.deepEqual(Object.keys(route).sort(), ["GET", "POST"]);
 
     observedOperations.length = 0;
     const success = await route.GET(request());
@@ -658,7 +719,7 @@ async function main() {
       ),
     );
     assert.ok(!observedOperations.some(({ type }) => type === "rpc"));
-    console.log("PASS Route exports only GET and performs no writes or RPC");
+    console.log("PASS Route exports GET and POST with list flow unchanged");
 
     const detailRoute = createTypeScriptLoader()(detailRouteModule);
     assert.deepEqual(Object.keys(detailRoute), ["GET"]);
@@ -811,11 +872,137 @@ async function main() {
     assert.ok(!detailSource.includes("update("));
     assert.ok(!detailSource.includes("delete("));
     console.log("PASS detail Route delegates without direct persistence");
+
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
+    const createBody = {
+      merchant: "Market",
+      description: "Created expense",
+      totalAmount: 100.5,
+      expenseDate: "2026-08-12",
+      paidByMemberId: memberA,
+      categoryId: categoryA,
+      items: [
+        {
+          name: "Groceries",
+          quantity: 2,
+          unitPrice: 50.25,
+          totalPrice: 100.5,
+          categoryId: categoryA,
+        },
+      ],
+      splits: [{ memberId: memberA, percentage: 100 }],
+    };
+    observedOperations.length = 0;
+    const created = await route.POST(postRequest(createBody));
+    assert.equal(created.status, 201);
+    const createdBody = await readJson(created);
+    assert.equal(createdBody.data.createdBy, memberA);
+    assert.equal(createdBody.data.status, "CONFIRMED");
+    assert.equal(createdBody.data.merchant, "Market");
+    assert.equal(createdBody.data.category.id, categoryA);
+    assert.deepEqual(createdBody.data.items[0], {
+      name: "Groceries",
+      quantity: 2,
+      unitPrice: 50.25,
+      totalPrice: 100.5,
+      category: { id: categoryA, name: "Food" },
+    });
+    assert.deepEqual(createdBody.data.splits, [
+      { memberId: memberA, percentage: 100, amount: 100.5 },
+    ]);
+    assert.ok(hasOperation({ type: "rpc", name: "fn_create_expense" }));
+    assert.equal(
+      observedOperations.filter(
+        ({ type, name }) => type === "rpc" && name === "fn_create_expense",
+      ).length,
+      1,
+    );
+    assert.ok(
+      observedOperations.every(
+        ({ type }) =>
+          type !== "insert" && type !== "update" && type !== "delete",
+      ),
+    );
+    const createRpc = observedOperations.find(
+      ({ type, name }) => type === "rpc" && name === "fn_create_expense",
+    );
+    assert.equal(createRpc.args.p_household_id, householdA);
+    assert.equal(createRpc.args.p_created_by, memberA);
+    assert.equal(createRpc.args.p_source, "WEB");
+    console.log("PASS POST creates an Expense through the controlled context and RPC");
+
+    const externalContextBody = { ...createBody, householdId: householdB };
+    assert.equal(
+      (await route.POST(postRequest(externalContextBody))).status,
+      400,
+    );
+    assert.equal(
+      (await route.POST(postRequest(createBody, `?householdId=${householdB}`))).status,
+      400,
+    );
+    console.log("PASS POST rejects external household identity");
+
+    const invalidJson = await route.POST(
+      new Request("http://localhost/api/expenses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{invalid",
+      }),
+    );
+    assert.equal(invalidJson.status, 422);
+    assert.equal((await readJson(invalidJson)).error.code, "VALIDATION_ERROR");
+    assert.equal(
+      (await route.POST(postRequest({ ...createBody, unknown: true }))).status,
+      400,
+    );
+    assert.equal(
+      (await route.POST(postRequest({ ...createBody, totalAmount: -1 }))).status,
+      422,
+    );
+    assert.equal(
+      (await route.POST(postRequest({ ...createBody, categoryId: missingMember }))).status,
+      404,
+    );
+    console.log("PASS POST validates JSON, fields, amounts and categories");
+
+    delete process.env.HOUSEMATE_MVP_MEMBER_ID;
+    assert.equal((await route.POST(postRequest(createBody))).status, 500);
+    if (previousMemberId === undefined) {
+      delete process.env.HOUSEMATE_MVP_MEMBER_ID;
+    } else {
+      process.env.HOUSEMATE_MVP_MEMBER_ID = previousMemberId;
+    }
+    console.log("PASS POST sanitizes unavailable actor context");
+
+    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
+
+    rpcError = { code: "42501", message: "private persistence detail" };
+    const persistenceResponse = await route.POST(postRequest(createBody));
+    assert.equal(persistenceResponse.status, 500);
+    assert.equal((await readJson(persistenceResponse)).error.code, "INTERNAL_ERROR");
+    rpcError = undefined;
+    console.log("PASS POST sanitizes persistence errors");
+
+    forceHydrationFailure = true;
+    const notHydrated = await route.POST(postRequest(createBody));
+    assert.equal(notHydrated.status, 202);
+    const notHydratedBody = await readJson(notHydrated);
+    assert.equal(notHydratedBody.error.code, "CREATED_NOT_HYDRATED");
+    assert.match(notHydratedBody.error.expenseId, /^[0-9a-f-]{36}$/i);
+    assert.ok(!JSON.stringify(notHydratedBody).includes("private"));
+    forceHydrationFailure = false;
+    console.log("PASS POST exposes created-but-not-hydrated state safely");
   } finally {
     if (previousHouseholdId === undefined) {
       delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
     } else {
       process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = previousHouseholdId;
+    }
+    if (previousMemberId === undefined) {
+      delete process.env.HOUSEMATE_MVP_MEMBER_ID;
+    } else {
+      process.env.HOUSEMATE_MVP_MEMBER_ID = previousMemberId;
     }
   }
 }

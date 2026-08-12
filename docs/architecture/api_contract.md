@@ -28,6 +28,7 @@ Los siguientes endpoints del contrato ya están implementados en el repositorio 
 - `GET /api/categories`
 - `GET /api/expenses`
 - `GET /api/expenses/{id}`
+- `POST /api/expenses`
 - `GET /api/incomes`
 - `PATCH /api/incomes/{id}`
 - `GET /api/sharing-rules`
@@ -306,6 +307,20 @@ ejecutar los cálculos correspondientes;
 persistir el gasto.
 
 El endpoint no realizará directamente lógica de interpretación de lenguaje natural.
+
+Si la RPC confirma la creación pero la hidratación posterior no puede completarse, el endpoint responde `202` con:
+
+```json
+{
+  "error": {
+    "code": "CREATED_NOT_HYDRATED",
+    "message": "El Expense fue creado pero no pudo cargarse.",
+    "expenseId": "expense-id"
+  }
+}
+```
+
+Esta respuesta confirma que el Expense existe; `expenseId` es el único identificador expuesto y no se incluyen detalles internos de persistencia.
 
 ## 7.2 Listar gastos
 
