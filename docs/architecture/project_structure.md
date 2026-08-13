@@ -133,6 +133,11 @@ Web/PWA podrá consumir directamente estas rutas para vistas y operaciones expl�
 
 `app/api/dashboard/summary/route.ts` expone `GET /api/dashboard/summary`, obtiene el hogar mediante el contexto controlado, delega en `getDashboard` y aplica únicamente los filtros documentados. La cobertura funcional se mantiene en `tests/phase-3-dashboard-api-functional.cjs`.
 
+`app/api/receipts/analyze/route.ts` expone `POST /api/receipts/analyze`, obtiene
+el hogar y la conversación desde configuración server-side y delega el ciclo de
+vida en `modules/receipts`. La ruta no accede directamente a Supabase, Storage
+ni OpenAI.
+
 # 5. modules/
 
 Contendrá los módulos funcionales del dominio.
@@ -309,6 +314,11 @@ Persistir y consultar receipts por `household_id`, incluso mientras `expense_id`
 
 El análisis mediante IA será delegado a la infraestructura correspondiente.
 
+La implementación actual mantiene el agregado Receipt en `PENDING`, `FAILED` o
+`PROCESSED`, persiste la extracción estructurada y reutiliza adaptadores
+server-only para Storage y OpenAI. Solo un Receipt `PROCESSED` puede asociarse
+posteriormente a un Expense; el análisis no persiste gastos automáticamente.
+
 # 12. Módulo agent
 
 Responsable de la interacción entre el agente y las capacidades del sistema.
@@ -450,6 +460,9 @@ Subir archivos.
 Obtener referencias.
 Eliminar archivos cuando corresponda.
 
+El flujo Receipt implementado utiliza `receipt-storage.adapter.ts` para subir,
+descargar y eliminar imágenes desde el bucket server-side configurado.
+
 # 17. infrastructure/openai
 
 Responsable de la integración con OpenAI.
@@ -463,6 +476,9 @@ infrastructure/
 └── openai.service.ts
 
 Esta capa encapsulará la comunicación con OpenAI.
+
+El análisis de facturas utiliza `receipt-ocr.adapter.ts` y mantiene la llamada
+al proveedor fuera de Routes y módulos de dominio.
 
 El resto del sistema no deberá depender directamente de detalles específicos del SDK cuando no sea necesario.
 

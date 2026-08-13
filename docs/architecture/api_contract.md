@@ -770,6 +770,10 @@ POST /api/receipts/analyze
 
 Para un análisis nuevo, el endpoint recibirá una imagen de factura como multipart, la almacenará en Storage, resolverá `householdId` y `conversationKey` desde el contexto controlado, creará un `Receipt` con `household_id` y `conversation_key` asignados y `expense_id = NULL`, y solicitará su análisis. El cliente no podrá proporcionar libremente esos valores.
 
+El campo multipart se denomina `file`. En el MVP HTTP, tanto `householdId`
+como `conversationKey` provienen exclusivamente de configuración server-side;
+no se aceptan como query, header, cookie, path ni body.
+
 Si esa conversación ya tiene un receipt activo (`PENDING` o `FAILED`, sin Expense), el endpoint devolverá `409 ACTIVE_RECEIPT_EXISTS`, conservará el receipt anterior y no almacenará una segunda imagen.
 
 Para reintentar un análisis técnicamente fallido, el mismo endpoint aceptará un request JSON con `{ "receiptId": "receipt-id" }`, sin una nueva imagen. Solo podrá reutilizarse un receipt `FAILED` del hogar actual; el backend reutilizará su `storagePath`, cambiará su estado a `PENDING` e invocará nuevamente el servicio de análisis.
@@ -808,6 +812,11 @@ Antes de asociar, el backend validará que `Receipt.household_id` coincida con e
 Si el usuario cancela la propuesta, el backend eliminará el registro `Receipt` y el archivo indicado por `storagePath`. Una extracción incompleta devolverá `200` con el mismo `receiptId`, `processingStatus: "PENDING"`, los datos parciales y la indicación de campos faltantes; persistirá esos datos en `analysis_payload`, conservará el archivo y permitirá que la respuesta posterior recupere el receipt por el hogar y conversación controlados. No creará un Expense. Cuando se complete la propuesta, el servicio actualizará el payload y marcará el receipt como `PROCESSED`.
 
 Un fallo técnico devolverá el error estructurado correspondiente, marcará el receipt como `FAILED` y conservará el archivo para un reintento explícito. El canal informará que el análisis no pudo completarse y ofrecerá reintentar. El mismo `receiptId` podrá reutilizarse únicamente mediante el reintento descrito; no podrá asociarse a un gasto mientras permanezca `FAILED`.
+
+Cuando el análisis técnico falla, la respuesta HTTP será `500` con el código
+público `INTERNAL_ERROR`, un mensaje genérico y, cuando exista, el `receiptId`
+que quedó en `FAILED`; nunca se exponen detalles de Storage, OpenAI, SQL ni
+PostgreSQL.
 
 # 14. WhatsApp Webhook
 

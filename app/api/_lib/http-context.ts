@@ -17,3 +17,12 @@ export function getConfiguredHttpActorContext(): Promise<HttpActorContext> {
     process.env.HOUSEMATE_MVP_MEMBER_ID,
   );
 }
+
+export function getConfiguredHttpConversationKey(): string {
+  const conversationKey = process.env.HOUSEMATE_MVP_CONVERSATION_KEY;
+  if (!conversationKey || conversationKey.trim().length === 0) {
+    throw new Error("The configured HTTP conversation context is unavailable.");
+  }
+
+  return conversationKey;
+}

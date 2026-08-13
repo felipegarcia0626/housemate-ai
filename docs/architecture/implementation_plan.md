@@ -320,6 +320,14 @@ POST /api/receipts/analyze
 GET /api/webhooks/whatsapp
 POST /api/webhooks/whatsapp
 
+El incremento de Receipts/OCR implementa `POST /api/receipts/analyze` mediante
+un Route Handler que resuelve el hogar y la conversación desde configuración
+server-side, delega el ciclo de vida en `modules/receipts` y mantiene el archivo
+en Storage separado de la persistencia del Receipt. El análisis se ejecuta a
+través de adaptadores server-only para Storage y OpenAI; los fallos dejan el
+Receipt en `FAILED`, las extracciones incompletas en `PENDING` y solo una
+extracción completa en `PROCESSED`. No se crea Expense automáticamente.
+
 El primer incremento implementado de Fase 3 expone `GET /api/categories` mediante un Route Handler que reutiliza `listCategories()`. Al tratarse del catálogo global, no resuelve contexto de hogar y no requiere migraciones ni cambios de persistencia.
 
 HTTP Controlled Context Foundation resuelve para Web/PWA el hogar y actor únicos del MVP desde configuración exclusivamente server-side. El módulo valida formato, existencia y pertenencia contra PostgreSQL antes de entregar `{ householdId }` o `{ householdId, memberId }` a futuros Route Handlers financieros; el cliente no puede proporcionar ni sobrescribir esos valores.
