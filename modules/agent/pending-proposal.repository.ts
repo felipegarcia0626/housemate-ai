@@ -160,6 +160,24 @@ export async function findPendingIncomeProposal(
     : null;
 }
 
+export async function findPendingProposalForConversation(
+  householdId: string,
+  conversationKey: string,
+): Promise<PendingProposal | null> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_pending_proposals")
+    .select(
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+    )
+    .eq("household_id", householdId)
+    .eq("conversation_key", conversationKey)
+    .eq("status", "AWAITING_CONFIRMATION")
+    .maybeSingle();
+
+  if (error) throw persistenceError("read conversation", error);
+  return data ? mapRow(data as PendingProposalRow) : null;
+}
+
 /**
  * Consumes a proposal atomically. The partial unique index prevents a second
  * active proposal for the same conversation, and this conditional delete

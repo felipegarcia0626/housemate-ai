@@ -471,6 +471,13 @@ Objetivo
 
 Integrar el agente con WhatsApp Cloud API.
 
+El incremento actual implementa la integración mínima de texto mediante los
+webhooks `GET /api/webhooks/whatsapp` y `POST /api/webhooks/whatsapp`. El canal
+resuelve el hogar configurado y el integrante asociado al identificador externo
+del remitente, reserva `ProcessedWhatsAppEvent` antes de entregar el mensaje al
+Conversation Service y envía la respuesta mediante el adaptador server-only.
+Imágenes, audio, documentos, OCR y Storage permanecen fuera de este alcance.
+
 La integración básica con Meta deberá validarse antes de invertir tiempo significativo en esta fase.
 
 Actividades

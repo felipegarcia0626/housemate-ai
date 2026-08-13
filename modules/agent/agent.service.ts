@@ -25,6 +25,7 @@ import {
   consumePendingIncomeProposal,
   createPendingIncomeProposal,
   findPendingProposal,
+  findPendingProposalForConversation,
   findPendingIncomeProposal,
   PendingProposalRepositoryError,
   restorePendingProposal,
@@ -297,6 +298,22 @@ export async function getExpenseProposal(
 ): Promise<PendingExpenseProposal> {
   try {
     return await getOwnedProposal(context, proposalId);
+  } catch (error) {
+    if (error instanceof AgentDomainError) throw error;
+    throw mapRepositoryError(error);
+  }
+}
+
+export async function findActiveProposalId(
+  context: AgentContext,
+): Promise<string | null> {
+  validateContext(context);
+  try {
+    const proposal = await findPendingProposalForConversation(
+      context.householdId,
+      context.conversationKey,
+    );
+    return proposal?.id ?? null;
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
     throw mapRepositoryError(error);

@@ -383,6 +383,12 @@ Las tools de ingresos seguirán la misma regla: `Agent → Tool → Income Servi
 
 Responsable de la lógica específica del canal WhatsApp.
 
+La implementación mínima de texto utiliza `whatsapp.service.ts` para resolver
+el contexto controlado, deduplicar eventos y delegar en el Conversation Service.
+La resolución de identidad usa el hogar configurado y el `external_identifier`
+del usuario; una configuración real de ese vínculo sigue siendo necesaria en
+cada entorno.
+
 Ejemplo:
 
 modules/
@@ -463,6 +469,10 @@ El resto del sistema no deberá depender directamente de detalles específicos d
 # 18. infrastructure/whatsapp
 
 Responsable de la comunicación técnica con WhatsApp Cloud API.
+
+`whatsapp.adapter.ts` valida el webhook, extrae mensajes de texto y envía
+respuestas mediante `fetch` server-side. No contiene lógica financiera ni
+accede al dominio.
 
 Ejemplo:
 
