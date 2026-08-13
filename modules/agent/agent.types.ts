@@ -60,6 +60,7 @@ export type AgentDomainErrorCode =
   | "HOUSEHOLD_MISMATCH"
   | "PENDING_PROPOSAL_EXISTS"
   | "PROPOSAL_NOT_AVAILABLE"
+  | "INTERPRETATION_ERROR"
   | "PERSISTENCE_ERROR";
 
 export class AgentDomainError extends Error {
@@ -71,3 +72,45 @@ export class AgentDomainError extends Error {
     this.code = code;
   }
 }
+
+export interface AgentMessageInput {
+  message: string;
+  proposalId?: string;
+}
+
+export interface AgentClarificationResult {
+  type: "CLARIFICATION_REQUIRED";
+  missingFields: string[];
+  message: string;
+}
+
+export interface AgentProposalMessageResult extends ExpenseProposalResult {
+  type: "PROPOSAL_CREATED";
+}
+
+export interface AgentConfirmedMessageResult extends ExpenseConfirmationResult {
+  type: "CONFIRMED";
+}
+
+export interface AgentRejectedMessageResult extends ExpenseRejectionResult {
+  type: "REJECTED";
+}
+
+export interface AgentUnsupportedMessageResult {
+  type: "UNSUPPORTED";
+  message: string;
+}
+
+export interface AgentInterpretationErrorResult {
+  type: "ERROR";
+  code: "INTERPRETATION_ERROR";
+  message: string;
+}
+
+export type AgentMessageResult =
+  | AgentProposalMessageResult
+  | AgentConfirmedMessageResult
+  | AgentRejectedMessageResult
+  | AgentClarificationResult
+  | AgentUnsupportedMessageResult
+  | AgentInterpretationErrorResult;

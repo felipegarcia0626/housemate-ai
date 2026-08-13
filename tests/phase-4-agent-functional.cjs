@@ -24,6 +24,18 @@ const toolModule = path.join(
   "tools",
   "create-expense.tool.ts",
 );
+const conversationModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "conversation.service.ts",
+);
+const openaiAdapterModule = path.join(
+  root,
+  "infrastructure",
+  "openai",
+  "openai.adapter.ts",
+);
 
 const householdA = "42000000-0000-4000-8000-000000000001";
 const householdB = "42000000-0000-4000-8000-000000000002";
@@ -213,14 +225,31 @@ async function main() {
       return { id: `expense-${createdExpenses.length}` };
     },
   };
+  let mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "mercado",
+    description: null,
+    totalAmount: "85000",
+    expenseDate: "2026-08-11",
+    paidBySelf: true,
+  };
   const load = createLoader(
-    new Map([[expenseServiceModule, fakeExpenseService]]),
+    new Map([
+      [expenseServiceModule, fakeExpenseService],
+      [
+        openaiAdapterModule,
+        {
+          interpretExpenseMessage: async () => mockInterpretation,
+        },
+      ],
+    ]),
   );
   expenseDomainErrorClass = load(
     path.join(root, "modules", "expenses", "expense.types.ts"),
   ).ExpenseDomainError;
   const agentService = load(agentServiceModule);
   const tool = load(toolModule);
+  const conversation = load(conversationModule);
 
   const toolSource = fs.readFileSync(toolModule, "utf8");
   for (const forbidden of [
@@ -349,6 +378,141 @@ async function main() {
   console.log(
     "PASS Agent Foundation regression boundary is Expense Service delegation",
   );
+
+  const naturalContext = {
+    ...contextA,
+    conversationKey: "agent-natural-language",
+  };
+  const naturalProposal = await conversation.processAgentMessage(
+    naturalContext,
+    { message: "Pagué 85000 de mercado ayer" },
+  );
+  assert.equal(naturalProposal.type, "PROPOSAL_CREATED");
+  assert.equal(createdExpenses.length, 2);
+  const naturalStored = proposals.find(
+    (row) => row.id === naturalProposal.proposalId,
+  );
+  assert.equal(naturalStored.payload.expense.paidByMemberId, memberA);
+  assert.equal(naturalStored.payload.source, "WEB");
+  assert.equal(naturalStored.payload.expense.totalAmount, 85000);
+  console.log(
+    "PASS natural language creates a structured PendingProposal only",
+  );
+
+  const naturalConfirmed = await conversation.processAgentMessage(
+    naturalContext,
+    { message: "sí", proposalId: naturalProposal.proposalId },
+  );
+  assert.equal(naturalConfirmed.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, 3);
+  await expectAgentError(
+    conversation.processAgentMessage(naturalContext, {
+      message: "sí",
+      proposalId: naturalProposal.proposalId,
+    }),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  console.log("PASS explicit confirmation uses the existing proposal once");
+
+  mockInterpretation = {
+    ...mockInterpretation,
+    totalAmount: null,
+  };
+  const clarification = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-clarification" },
+    { message: "Pagué algo" },
+  );
+  assert.equal(clarification.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(clarification.missingFields, ["totalAmount"]);
+  console.log(
+    "PASS incomplete intent asks for clarification without persistence",
+  );
+
+  mockInterpretation = {
+    kind: "UNSUPPORTED",
+  };
+  const unsupported = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-unsupported" },
+    { message: "¿Cómo estará el clima?" },
+  );
+  assert.equal(unsupported.type, "UNSUPPORTED");
+  console.log("PASS uninterpretable message does not create a proposal");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "mercado",
+    description: null,
+    totalAmount: "100",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    householdId: householdB,
+    actorMemberId: memberB,
+    source: "RECEIPT",
+  };
+  const protectedContext = {
+    ...contextA,
+    conversationKey: "agent-context-protection",
+  };
+  const protectedProposal = await conversation.processAgentMessage(
+    protectedContext,
+    { message: "Pagué 100" },
+  );
+  assert.equal(protectedProposal.type, "PROPOSAL_CREATED");
+  const protectedStored = proposals.find(
+    (row) => row.id === protectedProposal.proposalId,
+  );
+  assert.equal(protectedStored.household_id, householdA);
+  assert.equal(protectedStored.payload.actorMemberId, memberA);
+  assert.equal(protectedStored.payload.source, "WEB");
+  console.log("PASS model output cannot override controlled context");
+
+  const rejectionContext = {
+    ...contextA,
+    conversationKey: "agent-natural-rejection",
+  };
+  const rejectionProposal = await conversation.processAgentMessage(
+    rejectionContext,
+    { message: "Pagué 100" },
+  );
+  const conversationalRejection = await conversation.processAgentMessage(
+    rejectionContext,
+    { message: "no", proposalId: rejectionProposal.proposalId },
+  );
+  assert.equal(conversationalRejection.type, "REJECTED");
+  assert.equal(createdExpenses.length, 3);
+  console.log("PASS explicit rejection consumes the proposal without writing");
+
+  const providerError = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-provider-error" },
+    { message: "Pagué 100" },
+    async () => {
+      throw new Error("internal-provider-error-details");
+    },
+  );
+  assert.equal(providerError.type, "ERROR");
+  assert.equal(providerError.code, "INTERPRETATION_ERROR");
+  assert.ok(!providerError.message.includes("provider-error-details"));
+  console.log("PASS provider errors are sanitized");
+
+  for (const source of [
+    fs.readFileSync(conversationModule, "utf8"),
+    fs.readFileSync(openaiAdapterModule, "utf8"),
+  ]) {
+    for (const forbidden of [
+      "getSupabaseAdminClient",
+      ".from(",
+      ".rpc(",
+      ".insert(",
+      ".update(",
+      ".delete(",
+    ]) {
+      assert.ok(
+        !source.includes(forbidden),
+        `Agent adapter contains ${forbidden}`,
+      );
+    }
+  }
+  console.log("PASS Agent/OpenAI adapter has no direct persistence access");
 }
 
 main().catch((error) => {

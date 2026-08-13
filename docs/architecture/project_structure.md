@@ -319,7 +319,11 @@ contexto controlado, consume la propuesta al confirmar o rechazar y delega la
 creación confirmada en el Expense Service. `tools/create-expense.tool.ts`
 expone la intención estructurada y las operaciones de confirmación sin acceder
 directamente a Supabase, Repository o RPC. La integración con LLM y canales
-externos permanece fuera de este incremento.
+externos permanece fuera de este incremento base; el vertical slice textual
+actual añade `conversation.service.ts` al módulo Agent y el adaptador
+`infrastructure/openai/openai.adapter.ts` para interpretar mensajes, solicitar
+confirmación y delegar siempre en esa misma tool, sin
+persistencia directa ni control del contexto por parte del modelo.
 
 Ejemplo:
 
@@ -327,6 +331,7 @@ modules/
 └── agent/
 ├── agent.service.ts
 ├── agent.types.ts
+├── conversation.service.ts
 ├── pending-proposal.repository.ts
 ├── prompts/
 │ └── system-prompt.ts
@@ -436,6 +441,7 @@ Ejemplo:
 
 infrastructure/
 └── openai/
+├── openai.adapter.ts
 ├── openai.client.ts
 └── openai.service.ts
 

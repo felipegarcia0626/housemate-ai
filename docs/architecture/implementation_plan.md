@@ -374,6 +374,13 @@ hogar y conversación, permite confirmarlas o rechazarlas mediante su
 propuesta se consume de forma atómica antes de ejecutar la confirmación, por lo
 que una segunda confirmación no puede crear otro Expense.
 
+El siguiente incremento implementa el vertical slice textual de OpenAI para
+Expense. Un adaptador server-only transforma el mensaje en una intención
+estructurada; `conversation.service.ts` exige los datos mínimos, delega en la
+tool `create_expense` y conserva la confirmación mediante `PendingProposal`.
+El modelo no controla hogar, actor, creador ni source, y los errores del
+proveedor se sanitizan antes de salir del módulo.
+
 Herramientas iniciales
 Gastos
 create_expense
