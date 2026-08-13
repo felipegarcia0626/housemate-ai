@@ -687,6 +687,88 @@ async function main() {
   );
   console.log("PASS get_sharing_rules delegates controlled context");
 
+  mockInterpretation = {
+    kind: "GET_EXPENSES",
+    filters: { memberId: memberA },
+  };
+  const conversationalExpenses = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-read-expenses" },
+    { message: "Muéstrame mis gastos" },
+  );
+  assert.equal(conversationalExpenses.type, "READ_RESULT");
+  assert.equal(conversationalExpenses.operation, "GET_EXPENSES");
+  assert.equal(
+    operations.filter(({ type }) => type === "expense-list").at(-1).context
+      .householdId,
+    householdA,
+  );
+  console.log("PASS textual Expense query selects get_expenses");
+
+  mockInterpretation = {
+    kind: "GET_INCOMES",
+    filters: { categoryId: "category-1" },
+  };
+  const conversationalIncomes = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-read-incomes" },
+    { message: "Muéstrame mis ingresos" },
+  );
+  assert.equal(conversationalIncomes.type, "READ_RESULT");
+  assert.equal(conversationalIncomes.operation, "GET_INCOMES");
+  console.log("PASS textual Income query selects get_incomes");
+
+  mockInterpretation = { kind: "GET_BALANCE" };
+  const conversationalBalance = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-read-balance" },
+    { message: "¿Cuál es mi balance?" },
+  );
+  assert.equal(conversationalBalance.type, "READ_RESULT");
+  assert.equal(conversationalBalance.operation, "GET_BALANCE");
+  console.log("PASS textual Balance query selects get_balance");
+
+  mockInterpretation = { kind: "GET_CATEGORIES" };
+  const conversationalCategories = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-read-categories" },
+    { message: "Lista las categorías" },
+  );
+  assert.equal(conversationalCategories.type, "READ_RESULT");
+  assert.equal(conversationalCategories.operation, "GET_CATEGORIES");
+  console.log("PASS textual Category query selects get_categories");
+
+  mockInterpretation = { kind: "GET_SHARING_RULES" };
+  const conversationalRules = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-read-rules" },
+    { message: "Lista las reglas de reparto" },
+  );
+  assert.equal(conversationalRules.type, "READ_RESULT");
+  assert.equal(conversationalRules.operation, "GET_SHARING_RULES");
+  console.log("PASS textual Sharing Rules query selects get_sharing_rules");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "125",
+    incomeDate: "2026-08-12",
+    description: "Bonus",
+    merchant: null,
+    totalAmount: null,
+    expenseDate: null,
+    paidBySelf: null,
+  };
+  const conversationalIncomeProposal = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-income-text" },
+    { message: "Recibí un bonus de 125" },
+  );
+  assert.equal(conversationalIncomeProposal.type, "PROPOSAL_CREATED");
+  assert.equal(createdIncomes.length, 1);
+  console.log("PASS textual Income creation proposes without writing");
+
+  const conversationalIncomeRejected = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-income-text" },
+    { message: "no", proposalId: conversationalIncomeProposal.proposalId },
+  );
+  assert.equal(conversationalIncomeRejected.type, "REJECTED");
+  assert.equal(createdIncomes.length, 1);
+  console.log("PASS textual Income rejection does not write");
+
   for (const source of [
     fs.readFileSync(conversationModule, "utf8"),
     fs.readFileSync(openaiAdapterModule, "utf8"),

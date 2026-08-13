@@ -388,6 +388,11 @@ existentes y `create_income` reutiliza `PendingProposal` y confirmación
 explícita; no se añaden persistencia, cálculos ni contexto de seguridad en las
 tools.
 
+La orquestación conversacional enruta las intenciones de lectura hacia la Tool
+correspondiente y las intenciones de escritura hacia propuestas pendientes.
+Ninguna escritura financiera ocurre antes de la confirmación explícita mediante
+`PendingProposal.id`.
+
 Herramientas iniciales
 Gastos
 create_expense

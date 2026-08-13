@@ -1,6 +1,11 @@
 import { createExpenseTool } from "./tools/create-expense.tool";
 import { confirmAgentProposal, rejectAgentProposal } from "./agent.service";
 import { createIncomeTool } from "./tools/create-income.tool";
+import { getExpensesTool } from "./tools/get-expenses.tool";
+import { getIncomesTool } from "./tools/get-incomes.tool";
+import { getBalanceTool } from "./tools/get-balance.tool";
+import { getCategoriesTool } from "./tools/get-categories.tool";
+import { getSharingRulesTool } from "./tools/get-sharing-rules.tool";
 import type {
   AgentContext,
   AgentMessageInput,
@@ -101,6 +106,41 @@ export async function processAgentMessage(
     return {
       type: "UNSUPPORTED",
       message: "No pude interpretarlo como un gasto.",
+    };
+  }
+  if (interpretation.kind === "GET_EXPENSES") {
+    return {
+      type: "READ_RESULT",
+      operation: "GET_EXPENSES",
+      data: await getExpensesTool(context, interpretation.filters),
+    };
+  }
+  if (interpretation.kind === "GET_INCOMES") {
+    return {
+      type: "READ_RESULT",
+      operation: "GET_INCOMES",
+      data: await getIncomesTool(context, interpretation.filters),
+    };
+  }
+  if (interpretation.kind === "GET_BALANCE") {
+    return {
+      type: "READ_RESULT",
+      operation: "GET_BALANCE",
+      data: await getBalanceTool(context),
+    };
+  }
+  if (interpretation.kind === "GET_CATEGORIES") {
+    return {
+      type: "READ_RESULT",
+      operation: "GET_CATEGORIES",
+      data: await getCategoriesTool(context),
+    };
+  }
+  if (interpretation.kind === "GET_SHARING_RULES") {
+    return {
+      type: "READ_RESULT",
+      operation: "GET_SHARING_RULES",
+      data: await getSharingRulesTool(context),
     };
   }
   if (interpretation.kind === "CREATE_INCOME") {

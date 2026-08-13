@@ -1,3 +1,20 @@
+type ExpenseReadFilters = {
+  from?: string;
+  to?: string;
+  categoryId?: string;
+  memberId?: string;
+  merchant?: string;
+  minAmount?: number;
+  maxAmount?: number;
+};
+
+type IncomeReadFilters = {
+  from?: string;
+  to?: string;
+  memberId?: string;
+  categoryId?: string;
+};
+
 export type ExpenseInterpretation =
   | {
       kind: "CREATE_EXPENSE";
@@ -13,6 +30,17 @@ export type ExpenseInterpretation =
       incomeDate: string | null;
       description: string | null;
     }
+  | {
+      kind: "GET_EXPENSES";
+      filters: ExpenseReadFilters;
+    }
+  | {
+      kind: "GET_INCOMES";
+      filters: IncomeReadFilters;
+    }
+  | { kind: "GET_BALANCE" }
+  | { kind: "GET_CATEGORIES" }
+  | { kind: "GET_SHARING_RULES" }
   | { kind: "UNSUPPORTED" };
 
 export class OpenAIAdapterError extends Error {
@@ -30,7 +58,16 @@ const responseSchema = {
   properties: {
     kind: {
       type: "string",
-      enum: ["CREATE_EXPENSE", "CREATE_INCOME", "UNSUPPORTED"],
+      enum: [
+        "CREATE_EXPENSE",
+        "CREATE_INCOME",
+        "GET_EXPENSES",
+        "GET_INCOMES",
+        "GET_BALANCE",
+        "GET_CATEGORIES",
+        "GET_SHARING_RULES",
+        "UNSUPPORTED",
+      ],
     },
     merchant: { type: ["string", "null"] },
     description: { type: ["string", "null"] },
@@ -40,6 +77,28 @@ const responseSchema = {
     amount: { type: ["string", "null"] },
     incomeDate: { type: ["string", "null"] },
     incomeDescription: { type: ["string", "null"] },
+    filters: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      properties: {
+        from: { type: ["string", "null"] },
+        to: { type: ["string", "null"] },
+        categoryId: { type: ["string", "null"] },
+        memberId: { type: ["string", "null"] },
+        merchant: { type: ["string", "null"] },
+        minAmount: { type: ["number", "null"] },
+        maxAmount: { type: ["number", "null"] },
+      },
+      required: [
+        "from",
+        "to",
+        "categoryId",
+        "memberId",
+        "merchant",
+        "minAmount",
+        "maxAmount",
+      ],
+    },
   },
   required: [
     "kind",
@@ -51,15 +110,19 @@ const responseSchema = {
     "amount",
     "incomeDate",
     "incomeDescription",
+    "filters",
   ],
 } as const;
 
-const systemPrompt = `Interpret the user's message as a HouseMate expense intent.
-Return only the requested JSON schema. Use null when a required value is absent.
-Do not invent financial values. totalAmount must be a decimal string with at most
-two decimal places. expenseDate must be an ISO date when it is explicitly known.
-Only return paidBySelf=true when the user clearly says they paid. Never return
-household, actor, createdBy, source, member ids, or any persistence fields.`;
+const systemPrompt = `Interpret the user's message using only the supported HouseMate
+intents: create expense, create income, get expenses, get incomes, get balance,
+get categories, get sharing rules, or unsupported. Return only the requested JSON
+schema. Use null when a value is absent. Do not invent financial values.
+Expense totalAmount and income amount must be decimal strings with at most two
+decimal places. Dates must be ISO dates when explicitly known. Only return
+paidBySelf=true when the user clearly says they paid. Read filters must use only
+the fields available in the corresponding intent. Never return household, actor,
+createdBy, source, member ids, or any persistence fields.`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -84,6 +147,33 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || typeof value === "number";
+}
+
+function nullableFilterValue<T extends string | number>(
+  filters: Record<string, unknown>,
+  key: string,
+  guard: (value: unknown) => value is T | null,
+): T | undefined {
+  const value = filters[key];
+  if (!guard(value)) throw new OpenAIAdapterError();
+  return value === null ? undefined : value;
+}
+
+function parseFilters(value: unknown): ExpenseReadFilters {
+  if (!isRecord(value)) throw new OpenAIAdapterError();
+  return {
+    from: nullableFilterValue(value, "from", isNullableString),
+    to: nullableFilterValue(value, "to", isNullableString),
+    categoryId: nullableFilterValue(value, "categoryId", isNullableString),
+    memberId: nullableFilterValue(value, "memberId", isNullableString),
+    merchant: nullableFilterValue(value, "merchant", isNullableString),
+    minAmount: nullableFilterValue(value, "minAmount", isNullableNumber),
+    maxAmount: nullableFilterValue(value, "maxAmount", isNullableNumber),
+  };
+}
+
 function parseInterpretation(value: unknown): ExpenseInterpretation {
   if (!isRecord(value) || typeof value.kind !== "string") {
     throw new OpenAIAdapterError();
@@ -103,6 +193,28 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
       incomeDate: value.incomeDate,
       description: value.incomeDescription,
     };
+  }
+  if (value.kind === "GET_EXPENSES" || value.kind === "GET_INCOMES") {
+    const filters = parseFilters(value.filters);
+    if (value.kind === "GET_INCOMES") {
+      return {
+        kind: value.kind,
+        filters: {
+          from: filters.from,
+          to: filters.to,
+          memberId: filters.memberId,
+          categoryId: filters.categoryId,
+        },
+      };
+    }
+    return { kind: value.kind, filters };
+  }
+  if (
+    value.kind === "GET_BALANCE" ||
+    value.kind === "GET_CATEGORIES" ||
+    value.kind === "GET_SHARING_RULES"
+  ) {
+    return { kind: value.kind };
   }
   if (
     value.kind !== "CREATE_EXPENSE" ||

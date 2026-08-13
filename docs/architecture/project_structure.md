@@ -325,6 +325,11 @@ actual añade `conversation.service.ts` al módulo Agent y el adaptador
 confirmación y delegar siempre en esa misma tool, sin
 persistencia directa ni control del contexto por parte del modelo.
 
+`conversation.service.ts` orquesta las intenciones textuales hacia las tools de
+lectura y creación existentes. Las lecturas devuelven resultados del Service;
+las escrituras crean y consumen `PendingProposal` antes de delegar la
+persistencia en el Service de dominio.
+
 Ejemplo:
 
 modules/

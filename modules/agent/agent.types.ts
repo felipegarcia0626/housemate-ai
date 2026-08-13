@@ -1,9 +1,17 @@
 import type {
   ExpenseCreateInput,
   Expense,
+  ExpenseListItem,
   ExpenseSource,
 } from "@/modules/expenses/expense.types";
-import type { Income, IncomeCreateInput } from "@/modules/incomes/income.types";
+import type {
+  Income,
+  IncomeCreateInput,
+  IncomeListResult,
+} from "@/modules/incomes/income.types";
+import type { BalanceResult } from "@/modules/expenses/balance.types";
+import type { Category } from "@/modules/categories/category.types";
+import type { SharingRule } from "@/modules/sharing-rules/sharing-rule.types";
 
 export interface AgentContext {
   householdId: string;
@@ -148,6 +156,24 @@ export interface AgentInterpretationErrorResult {
   message: string;
 }
 
+export type AgentReadOperation =
+  | "GET_EXPENSES"
+  | "GET_INCOMES"
+  | "GET_BALANCE"
+  | "GET_CATEGORIES"
+  | "GET_SHARING_RULES";
+
+export interface AgentReadResult {
+  type: "READ_RESULT";
+  operation: AgentReadOperation;
+  data:
+    | ExpenseListItem[]
+    | IncomeListResult
+    | BalanceResult
+    | Category[]
+    | SharingRule[];
+}
+
 export type AgentMessageResult =
   | AgentProposalMessageResult
   | AgentConfirmedMessageResult
@@ -155,4 +181,5 @@ export type AgentMessageResult =
   | AgentRejectedMessageResult
   | AgentClarificationResult
   | AgentUnsupportedMessageResult
-  | AgentInterpretationErrorResult;
+  | AgentInterpretationErrorResult
+  | AgentReadResult;
