@@ -1,8 +1,6 @@
-import {
-  confirmCreateExpenseTool,
-  createExpenseTool,
-  rejectCreateExpenseTool,
-} from "./tools/create-expense.tool";
+import { createExpenseTool } from "./tools/create-expense.tool";
+import { confirmAgentProposal, rejectAgentProposal } from "./agent.service";
+import { createIncomeTool } from "./tools/create-income.tool";
 import type {
   AgentContext,
   AgentMessageInput,
@@ -77,12 +75,12 @@ export async function processAgentMessage(
   const message = input.message.trim();
   if (isConfirmation(message)) {
     if (!input.proposalId) return clarification(["proposalId"]);
-    const result = await confirmCreateExpenseTool(context, input.proposalId);
+    const result = await confirmAgentProposal(context, input.proposalId);
     return { type: "CONFIRMED", ...result };
   }
   if (isRejection(message)) {
     if (!input.proposalId) return clarification(["proposalId"]);
-    const result = await rejectCreateExpenseTool(context, input.proposalId);
+    const result = await rejectAgentProposal(context, input.proposalId);
     return { type: "REJECTED", ...result };
   }
   if (!message)
@@ -104,6 +102,22 @@ export async function processAgentMessage(
       type: "UNSUPPORTED",
       message: "No pude interpretarlo como un gasto.",
     };
+  }
+  if (interpretation.kind === "CREATE_INCOME") {
+    const amount = toAmount(interpretation.amount);
+    const missingFields: string[] = [];
+    if (amount === null) missingFields.push("amount");
+    if (!interpretation.incomeDate) missingFields.push("incomeDate");
+    if (!interpretation.description?.trim()) missingFields.push("description");
+    if (missingFields.length > 0) return clarification(missingFields);
+    const result = await createIncomeTool(context, {
+      memberId: context.actorMemberId,
+      amount: amount as number,
+      incomeDate: interpretation.incomeDate as string,
+      description: interpretation.description as string,
+      categoryId: null,
+    });
+    return { type: "PROPOSAL_CREATED", ...result };
   }
   const proposal = toProposalInput(context, interpretation);
   if (proposal.missingFields.length > 0) {

@@ -337,6 +337,12 @@ modules/
 │ └── system-prompt.ts
 └── tools/
 ├── create-expense.tool.ts
+├── create-income.tool.ts
+├── get-expenses.tool.ts
+├── get-incomes.tool.ts
+├── get-balance.tool.ts
+├── get-categories.tool.ts
+├── get-sharing-rules.tool.ts
 ├── get-expense.tool.ts
 ├── update-expense.tool.ts
 ├── delete-expense.tool.ts

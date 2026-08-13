@@ -3,6 +3,7 @@ import type {
   Expense,
   ExpenseSource,
 } from "@/modules/expenses/expense.types";
+import type { Income, IncomeCreateInput } from "@/modules/incomes/income.types";
 
 export interface AgentContext {
   householdId: string;
@@ -37,6 +38,25 @@ export interface PendingExpenseProposal {
   updatedAt: string;
 }
 
+export interface PendingIncomeProposalPayload {
+  actorMemberId: string;
+  source: ExpenseSource;
+  income: IncomeCreateInput;
+}
+
+export interface PendingIncomeProposal {
+  id: string;
+  householdId: string;
+  conversationKey: string;
+  operationType: "CREATE_INCOME";
+  payload: PendingIncomeProposalPayload;
+  status: "AWAITING_CONFIRMATION";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PendingProposal = PendingExpenseProposal | PendingIncomeProposal;
+
 export interface ExpenseProposalResult {
   proposalId: string;
   status: "AWAITING_CONFIRMATION";
@@ -50,6 +70,23 @@ export interface ExpenseConfirmationResult {
 }
 
 export interface ExpenseRejectionResult {
+  proposalId: string;
+  status: "REJECTED";
+}
+
+export interface IncomeProposalResult {
+  proposalId: string;
+  status: "AWAITING_CONFIRMATION";
+}
+
+export interface IncomeConfirmationResult {
+  proposalId: string;
+  status: "CONFIRMED";
+  incomeId: string;
+  income: Income;
+}
+
+export interface IncomeRejectionResult {
   proposalId: string;
   status: "REJECTED";
 }
@@ -92,6 +129,10 @@ export interface AgentConfirmedMessageResult extends ExpenseConfirmationResult {
   type: "CONFIRMED";
 }
 
+export interface AgentIncomeConfirmedMessageResult extends IncomeConfirmationResult {
+  type: "CONFIRMED";
+}
+
 export interface AgentRejectedMessageResult extends ExpenseRejectionResult {
   type: "REJECTED";
 }
@@ -110,6 +151,7 @@ export interface AgentInterpretationErrorResult {
 export type AgentMessageResult =
   | AgentProposalMessageResult
   | AgentConfirmedMessageResult
+  | AgentIncomeConfirmedMessageResult
   | AgentRejectedMessageResult
   | AgentClarificationResult
   | AgentUnsupportedMessageResult

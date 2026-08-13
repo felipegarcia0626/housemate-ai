@@ -7,6 +7,12 @@ export type ExpenseInterpretation =
       expenseDate: string | null;
       paidBySelf: boolean | null;
     }
+  | {
+      kind: "CREATE_INCOME";
+      amount: string | null;
+      incomeDate: string | null;
+      description: string | null;
+    }
   | { kind: "UNSUPPORTED" };
 
 export class OpenAIAdapterError extends Error {
@@ -22,12 +28,18 @@ const responseSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    kind: { type: "string", enum: ["CREATE_EXPENSE", "UNSUPPORTED"] },
+    kind: {
+      type: "string",
+      enum: ["CREATE_EXPENSE", "CREATE_INCOME", "UNSUPPORTED"],
+    },
     merchant: { type: ["string", "null"] },
     description: { type: ["string", "null"] },
     totalAmount: { type: ["string", "null"] },
     expenseDate: { type: ["string", "null"] },
     paidBySelf: { type: ["boolean", "null"] },
+    amount: { type: ["string", "null"] },
+    incomeDate: { type: ["string", "null"] },
+    incomeDescription: { type: ["string", "null"] },
   },
   required: [
     "kind",
@@ -36,6 +48,9 @@ const responseSchema = {
     "totalAmount",
     "expenseDate",
     "paidBySelf",
+    "amount",
+    "incomeDate",
+    "incomeDescription",
   ],
 } as const;
 
@@ -74,6 +89,21 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
     throw new OpenAIAdapterError();
   }
   if (value.kind === "UNSUPPORTED") return { kind: "UNSUPPORTED" };
+  if (value.kind === "CREATE_INCOME") {
+    if (
+      !isNullableString(value.amount) ||
+      !isNullableString(value.incomeDate) ||
+      !isNullableString(value.incomeDescription)
+    ) {
+      throw new OpenAIAdapterError();
+    }
+    return {
+      kind: "CREATE_INCOME",
+      amount: value.amount,
+      incomeDate: value.incomeDate,
+      description: value.incomeDescription,
+    };
+  }
   if (
     value.kind !== "CREATE_EXPENSE" ||
     !isNullableString(value.merchant) ||

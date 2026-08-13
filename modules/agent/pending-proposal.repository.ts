@@ -1,5 +1,8 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
 import type {
+  PendingIncomeProposal,
+  PendingIncomeProposalPayload,
+  PendingProposal,
   PendingExpenseProposal,
   PendingExpenseProposalPayload,
 } from "./agent.types";
@@ -20,24 +23,36 @@ interface PendingProposalRow {
   id: string;
   household_id: string;
   conversation_key: string;
-  operation_type: "CREATE_EXPENSE";
-  payload: PendingExpenseProposalPayload;
+  operation_type: "CREATE_EXPENSE" | "CREATE_INCOME";
+  payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
   status: "AWAITING_CONFIRMATION";
   created_at: string;
   updated_at: string;
 }
 
-function mapRow(row: PendingProposalRow): PendingExpenseProposal {
+function mapRow(row: PendingProposalRow): PendingProposal {
+  if (row.operation_type === "CREATE_INCOME") {
+    return {
+      id: row.id,
+      householdId: row.household_id,
+      conversationKey: row.conversation_key,
+      operationType: row.operation_type,
+      payload: row.payload as PendingIncomeProposalPayload,
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    } satisfies PendingIncomeProposal;
+  }
   return {
     id: row.id,
     householdId: row.household_id,
     conversationKey: row.conversation_key,
     operationType: row.operation_type,
-    payload: row.payload,
+    payload: row.payload as PendingExpenseProposalPayload,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  };
+  } satisfies PendingExpenseProposal;
 }
 
 function persistenceError(
@@ -64,7 +79,8 @@ export async function createPendingProposal(input: {
   id: string;
   householdId: string;
   conversationKey: string;
-  payload: PendingExpenseProposalPayload;
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
+  payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
 }): Promise<PendingExpenseProposal> {
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
@@ -72,7 +88,7 @@ export async function createPendingProposal(input: {
       id: input.id,
       household_id: input.householdId,
       conversation_key: input.conversationKey,
-      operation_type: "CREATE_EXPENSE",
+      operation_type: input.operationType,
       payload: input.payload,
       status: "AWAITING_CONFIRMATION",
     })
@@ -82,7 +98,20 @@ export async function createPendingProposal(input: {
     .single();
 
   if (error || !data) throw persistenceError("create", error);
-  return mapRow(data as PendingProposalRow);
+  return mapRow(data as PendingProposalRow) as PendingExpenseProposal;
+}
+
+export async function createPendingIncomeProposal(input: {
+  id: string;
+  householdId: string;
+  conversationKey: string;
+  payload: PendingIncomeProposalPayload;
+}): Promise<PendingIncomeProposal> {
+  const proposal = await createPendingProposal({
+    ...input,
+    operationType: "CREATE_INCOME",
+  });
+  return proposal as unknown as PendingIncomeProposal;
 }
 
 export async function findPendingProposal(
@@ -98,11 +127,37 @@ export async function findPendingProposal(
     .eq("id", id)
     .eq("household_id", householdId)
     .eq("conversation_key", conversationKey)
+    .eq("operation_type", "CREATE_EXPENSE")
     .eq("status", "AWAITING_CONFIRMATION")
     .maybeSingle();
 
   if (error) throw persistenceError("read", error);
-  return data ? mapRow(data as PendingProposalRow) : null;
+  return data
+    ? (mapRow(data as PendingProposalRow) as PendingExpenseProposal)
+    : null;
+}
+
+export async function findPendingIncomeProposal(
+  id: string,
+  householdId: string,
+  conversationKey: string,
+): Promise<PendingIncomeProposal | null> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_pending_proposals")
+    .select(
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+    )
+    .eq("id", id)
+    .eq("household_id", householdId)
+    .eq("conversation_key", conversationKey)
+    .eq("operation_type", "CREATE_INCOME")
+    .eq("status", "AWAITING_CONFIRMATION")
+    .maybeSingle();
+
+  if (error) throw persistenceError("read income", error);
+  return data
+    ? (mapRow(data as PendingProposalRow) as PendingIncomeProposal)
+    : null;
 }
 
 /**
@@ -121,6 +176,7 @@ export async function consumePendingProposal(
     .eq("id", id)
     .eq("household_id", householdId)
     .eq("conversation_key", conversationKey)
+    .eq("operation_type", "CREATE_EXPENSE")
     .eq("status", "AWAITING_CONFIRMATION")
     .select(
       "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
@@ -128,7 +184,33 @@ export async function consumePendingProposal(
     .maybeSingle();
 
   if (error) throw persistenceError("consume", error);
-  return data ? mapRow(data as PendingProposalRow) : null;
+  return data
+    ? (mapRow(data as PendingProposalRow) as PendingExpenseProposal)
+    : null;
+}
+
+export async function consumePendingIncomeProposal(
+  id: string,
+  householdId: string,
+  conversationKey: string,
+): Promise<PendingIncomeProposal | null> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_pending_proposals")
+    .delete()
+    .eq("id", id)
+    .eq("household_id", householdId)
+    .eq("conversation_key", conversationKey)
+    .eq("operation_type", "CREATE_INCOME")
+    .eq("status", "AWAITING_CONFIRMATION")
+    .select(
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+    )
+    .maybeSingle();
+
+  if (error) throw persistenceError("consume income", error);
+  return data
+    ? (mapRow(data as PendingProposalRow) as PendingIncomeProposal)
+    : null;
 }
 
 export async function restorePendingProposal(
@@ -148,4 +230,23 @@ export async function restorePendingProposal(
     });
 
   if (error) throw persistenceError("restore", error);
+}
+
+export async function restorePendingIncomeProposal(
+  proposal: PendingIncomeProposal,
+): Promise<void> {
+  const { error } = await getSupabaseAdminClient()
+    .from("tb_pending_proposals")
+    .insert({
+      id: proposal.id,
+      household_id: proposal.householdId,
+      conversation_key: proposal.conversationKey,
+      operation_type: proposal.operationType,
+      payload: proposal.payload,
+      status: proposal.status,
+      created_at: proposal.createdAt,
+      updated_at: proposal.updatedAt,
+    });
+
+  if (error) throw persistenceError("restore income", error);
 }

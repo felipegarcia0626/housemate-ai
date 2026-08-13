@@ -13,14 +13,25 @@ import {
   type ExpenseRejectionResult,
   type PendingExpenseProposal,
   type PendingExpenseProposalPayload,
+  type IncomeConfirmationResult,
+  type IncomeProposalResult,
+  type IncomeRejectionResult,
+  type PendingIncomeProposal,
+  type PendingIncomeProposalPayload,
 } from "./agent.types";
 import {
   consumePendingProposal,
   createPendingProposal,
+  consumePendingIncomeProposal,
+  createPendingIncomeProposal,
   findPendingProposal,
+  findPendingIncomeProposal,
   PendingProposalRepositoryError,
   restorePendingProposal,
+  restorePendingIncomeProposal,
 } from "./pending-proposal.repository";
+import { createIncome } from "@/modules/incomes/income.service";
+import type { IncomeCreateInput } from "@/modules/incomes/income.types";
 
 function validateUuid(value: string, field: string): void {
   if (
@@ -124,12 +135,143 @@ export async function createExpenseProposal(
       id: randomUUID(),
       householdId: context.householdId,
       conversationKey: context.conversationKey,
+      operationType: "CREATE_EXPENSE",
       payload,
     });
     return { proposalId: proposal.id, status: "AWAITING_CONFIRMATION" };
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
     throw mapRepositoryError(error);
+  }
+}
+
+export async function createIncomeProposal(
+  context: AgentContext,
+  input: IncomeCreateInput,
+): Promise<IncomeProposalResult> {
+  validateContext(context);
+  const payload: PendingIncomeProposalPayload = {
+    actorMemberId: context.actorMemberId,
+    source: context.source,
+    income: input,
+  };
+  try {
+    const proposal = await createPendingIncomeProposal({
+      id: randomUUID(),
+      householdId: context.householdId,
+      conversationKey: context.conversationKey,
+      payload,
+    });
+    return { proposalId: proposal.id, status: "AWAITING_CONFIRMATION" };
+  } catch (error) {
+    if (error instanceof AgentDomainError) throw error;
+    throw mapRepositoryError(error);
+  }
+}
+
+async function getOwnedIncomeProposal(
+  context: AgentContext,
+  proposalId: string,
+): Promise<PendingIncomeProposal> {
+  validateContext(context);
+  validateUuid(proposalId, "proposalId");
+  const proposal = await findPendingIncomeProposal(
+    proposalId,
+    context.householdId,
+    context.conversationKey,
+  );
+  if (!proposal) throw new AgentDomainError("NOT_FOUND", "Proposal not found.");
+  ensureProposalOwnership(
+    context,
+    proposal as unknown as PendingExpenseProposal,
+  );
+  return proposal;
+}
+
+export async function confirmIncomeProposal(
+  context: AgentContext,
+  proposalId: string,
+): Promise<IncomeConfirmationResult> {
+  let proposal: PendingIncomeProposal;
+  try {
+    proposal = await getOwnedIncomeProposal(context, proposalId);
+  } catch (error) {
+    if (error instanceof AgentDomainError && error.code === "NOT_FOUND") {
+      throw proposalUnavailable();
+    }
+    if (error instanceof AgentDomainError) throw error;
+    throw mapRepositoryError(error);
+  }
+  const consumed = await consumePendingIncomeProposal(
+    proposal.id,
+    context.householdId,
+    context.conversationKey,
+  );
+  if (!consumed) throw proposalUnavailable();
+  try {
+    const income = await createIncome(
+      { householdId: context.householdId, memberId: context.actorMemberId },
+      consumed.payload.income,
+    );
+    return {
+      proposalId: consumed.id,
+      status: "CONFIRMED",
+      incomeId: income.id,
+      income,
+    };
+  } catch (error) {
+    try {
+      await restorePendingIncomeProposal(consumed);
+    } catch {
+      throw persistenceError();
+    }
+    if (error instanceof AgentDomainError) throw error;
+    throw persistenceError();
+  }
+}
+
+export async function rejectIncomeProposal(
+  context: AgentContext,
+  proposalId: string,
+): Promise<IncomeRejectionResult> {
+  try {
+    const proposal = await getOwnedIncomeProposal(context, proposalId);
+    const consumed = await consumePendingIncomeProposal(
+      proposal.id,
+      context.householdId,
+      context.conversationKey,
+    );
+    if (!consumed) throw proposalUnavailable();
+    return { proposalId: consumed.id, status: "REJECTED" };
+  } catch (error) {
+    if (error instanceof AgentDomainError) throw error;
+    throw mapRepositoryError(error);
+  }
+}
+
+export async function confirmAgentProposal(
+  context: AgentContext,
+  proposalId: string,
+): Promise<ExpenseConfirmationResult | IncomeConfirmationResult> {
+  try {
+    return await confirmExpenseProposal(context, proposalId);
+  } catch (error) {
+    if (!(error instanceof AgentDomainError)) throw error;
+    if (error.code !== "PROPOSAL_NOT_AVAILABLE") throw error;
+    return confirmIncomeProposal(context, proposalId);
+  }
+}
+
+export async function rejectAgentProposal(
+  context: AgentContext,
+  proposalId: string,
+): Promise<ExpenseRejectionResult | IncomeRejectionResult> {
+  try {
+    return await rejectExpenseProposal(context, proposalId);
+  } catch (error) {
+    if (!(error instanceof AgentDomainError)) throw error;
+    if (error.code !== "PROPOSAL_NOT_AVAILABLE") throw error;
+    return rejectIncomeProposal(context, proposalId);
   }
 }
 

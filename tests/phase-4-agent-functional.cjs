@@ -11,6 +11,30 @@ const expenseServiceModule = path.join(
   "expenses",
   "expense.service.ts",
 );
+const incomeServiceModule = path.join(
+  root,
+  "modules",
+  "incomes",
+  "income.service.ts",
+);
+const balanceServiceModule = path.join(
+  root,
+  "modules",
+  "expenses",
+  "balance.service.ts",
+);
+const categoryServiceModule = path.join(
+  root,
+  "modules",
+  "categories",
+  "category.service.ts",
+);
+const sharingRuleServiceModule = path.join(
+  root,
+  "modules",
+  "sharing-rules",
+  "sharing-rule.service.ts",
+);
 const agentServiceModule = path.join(
   root,
   "modules",
@@ -23,6 +47,48 @@ const toolModule = path.join(
   "agent",
   "tools",
   "create-expense.tool.ts",
+);
+const incomeToolModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "tools",
+  "create-income.tool.ts",
+);
+const getExpensesToolModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "tools",
+  "get-expenses.tool.ts",
+);
+const getIncomesToolModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "tools",
+  "get-incomes.tool.ts",
+);
+const getBalanceToolModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "tools",
+  "get-balance.tool.ts",
+);
+const getCategoriesToolModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "tools",
+  "get-categories.tool.ts",
+);
+const getSharingRulesToolModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "tools",
+  "get-sharing-rules.tool.ts",
 );
 const conversationModule = path.join(
   root,
@@ -59,6 +125,7 @@ const expenseInput = {
 let proposals = [];
 let operations = [];
 let createdExpenses = [];
+let createdIncomes = [];
 let nextProposal = 1;
 let hydrationFailure = false;
 
@@ -224,6 +291,43 @@ async function main() {
       }
       return { id: `expense-${createdExpenses.length}` };
     },
+    async listExpenses(context, filters) {
+      operations.push({ type: "expense-list", context, filters });
+      return [{ id: "expense-read-1", totalAmount: 12 }];
+    },
+  };
+  const fakeIncomeService = {
+    async createIncome(context, input) {
+      createdIncomes.push({ context, input });
+      return { id: `income-${createdIncomes.length}`, ...input };
+    },
+    async listIncomes(context, filters) {
+      operations.push({ type: "income-list", context, filters });
+      return {
+        incomes: [{ id: "income-read-1", amount: 25 }],
+        summary: { totalIncome: 25 },
+      };
+    },
+  };
+  const fakeBalanceService = {
+    async getBalance(context) {
+      operations.push({ type: "balance-read", context });
+      return {
+        members: [{ memberId: memberA, paid: 10, share: 5, balance: 5 }],
+      };
+    },
+  };
+  const fakeCategoryService = {
+    async listCategories() {
+      operations.push({ type: "category-read" });
+      return [{ id: "category-1", name: "Food" }];
+    },
+  };
+  const fakeSharingRuleService = {
+    async listSharingRules(context) {
+      operations.push({ type: "sharing-rule-read", context });
+      return [{ id: "rule-1", name: "Equal", type: "PERCENTAGE", splits: [] }];
+    },
   };
   let mockInterpretation = {
     kind: "CREATE_EXPENSE",
@@ -236,6 +340,10 @@ async function main() {
   const load = createLoader(
     new Map([
       [expenseServiceModule, fakeExpenseService],
+      [incomeServiceModule, fakeIncomeService],
+      [balanceServiceModule, fakeBalanceService],
+      [categoryServiceModule, fakeCategoryService],
+      [sharingRuleServiceModule, fakeSharingRuleService],
       [
         openaiAdapterModule,
         {
@@ -250,6 +358,12 @@ async function main() {
   const agentService = load(agentServiceModule);
   const tool = load(toolModule);
   const conversation = load(conversationModule);
+  const createIncome = load(incomeToolModule);
+  const getExpenses = load(getExpensesToolModule);
+  const getIncomes = load(getIncomesToolModule);
+  const getBalance = load(getBalanceToolModule);
+  const getCategories = load(getCategoriesToolModule);
+  const getSharingRules = load(getSharingRulesToolModule);
 
   const toolSource = fs.readFileSync(toolModule, "utf8");
   for (const forbidden of [
@@ -494,9 +608,94 @@ async function main() {
   assert.ok(!providerError.message.includes("provider-error-details"));
   console.log("PASS provider errors are sanitized");
 
+  const incomeContext = {
+    ...contextA,
+    conversationKey: "agent-income-create",
+  };
+  const incomeProposal = await createIncome.createIncomeTool(incomeContext, {
+    memberId: memberB,
+    amount: 75,
+    incomeDate: "2026-08-12",
+    description: "Salary",
+    categoryId: null,
+  });
+  assert.equal(incomeProposal.status, "AWAITING_CONFIRMATION");
+  assert.equal(createdIncomes.length, 0);
+  const incomeConfirmed = await conversation.processAgentMessage(
+    incomeContext,
+    {
+      message: "si",
+      proposalId: incomeProposal.proposalId,
+    },
+  );
+  assert.equal(incomeConfirmed.type, "CONFIRMED");
+  assert.equal(createdIncomes.length, 1);
+  assert.equal(createdIncomes[0].context.householdId, householdA);
+  assert.equal(createdIncomes[0].context.memberId, memberA);
+  assert.equal(createdIncomes[0].input.memberId, memberB);
+  await expectAgentError(
+    conversation.processAgentMessage(incomeContext, {
+      message: "si",
+      proposalId: incomeProposal.proposalId,
+    }),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  console.log("PASS create_income requires confirmation and cannot duplicate");
+
+  const expenseRead = await getExpenses.getExpensesTool(contextA, {
+    from: "2026-08-01",
+    memberId: memberA,
+  });
+  assert.deepEqual(expenseRead, [{ id: "expense-read-1", totalAmount: 12 }]);
+  const expenseReadOperation = operations.find(
+    ({ type }) => type === "expense-list",
+  );
+  assert.equal(expenseReadOperation.context.householdId, householdA);
+  assert.equal(expenseReadOperation.filters.memberId, memberA);
+  console.log("PASS get_expenses delegates controlled context and filters");
+
+  const incomeRead = await getIncomes.getIncomesTool(contextA, {
+    categoryId: "category-1",
+  });
+  assert.equal(incomeRead.summary.totalIncome, 25);
+  assert.equal(
+    operations.find(({ type }) => type === "income-list").context.householdId,
+    householdA,
+  );
+  console.log("PASS get_incomes delegates controlled context and filters");
+
+  const balanceRead = await getBalance.getBalanceTool(contextA);
+  assert.equal(balanceRead.members[0].memberId, memberA);
+  assert.equal(
+    operations.find(({ type }) => type === "balance-read").context.householdId,
+    householdA,
+  );
+  console.log("PASS get_balance delegates without recalculating");
+
+  const categoryRead = await getCategories.getCategoriesTool(contextA);
+  assert.deepEqual(categoryRead, [{ id: "category-1", name: "Food" }]);
+  console.log(
+    "PASS get_categories delegates without context or persistence access",
+  );
+
+  const sharingRead = await getSharingRules.getSharingRulesTool(contextA);
+  assert.equal(sharingRead[0].id, "rule-1");
+  assert.equal(
+    operations.find(({ type }) => type === "sharing-rule-read").context
+      .householdId,
+    householdA,
+  );
+  console.log("PASS get_sharing_rules delegates controlled context");
+
   for (const source of [
     fs.readFileSync(conversationModule, "utf8"),
     fs.readFileSync(openaiAdapterModule, "utf8"),
+    fs.readFileSync(incomeToolModule, "utf8"),
+    fs.readFileSync(getExpensesToolModule, "utf8"),
+    fs.readFileSync(getIncomesToolModule, "utf8"),
+    fs.readFileSync(getBalanceToolModule, "utf8"),
+    fs.readFileSync(getCategoriesToolModule, "utf8"),
+    fs.readFileSync(getSharingRulesToolModule, "utf8"),
   ]) {
     for (const forbidden of [
       "getSupabaseAdminClient",

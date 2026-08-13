@@ -381,6 +381,13 @@ tool `create_expense` y conserva la confirmación mediante `PendingProposal`.
 El modelo no controla hogar, actor, creador ni source, y los errores del
 proveedor se sanitizan antes de salir del módulo.
 
+Este incremento amplía el Agent con las tools controladas
+`get_expenses`, `create_income`, `get_incomes`, `get_balance`,
+`get_categories` y `get_sharing_rules`. Las consultas delegan en sus Services
+existentes y `create_income` reutiliza `PendingProposal` y confirmación
+explícita; no se añaden persistencia, cálculos ni contexto de seguridad en las
+tools.
+
 Herramientas iniciales
 Gastos
 create_expense
