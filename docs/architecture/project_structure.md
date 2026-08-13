@@ -138,6 +138,13 @@ el hogar y la conversación desde configuración server-side y delega el ciclo d
 vida en `modules/receipts`. La ruta no accede directamente a Supabase, Storage
 ni OpenAI.
 
+## Web/PWA mÃ­nima
+
+`app/page.tsx` contiene la interfaz mÃ­nima del MVP para Dashboard, Gastos,
+Ingresos y Balance. Consume las rutas HTTP existentes para lecturas y escrituras
+explÃ­citas; no contiene acceso directo a Supabase ni lÃ³gica financiera. La
+cobertura de integraciÃ³n se mantiene en `tests/phase-6-web-functional.cjs`.
+
 # 5. modules/
 
 Contendrá los módulos funcionales del dominio.

@@ -1,28 +1,245 @@
 :root {
   color-scheme: light;
-  font-family: Arial, Helvetica, sans-serif;
-  background: #f5f5f5;
-  color: #171717;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  background: #f4f7f6;
+  color: #17201d;
 }
-
 * {
   box-sizing: border-box;
 }
-
 body {
   margin: 0;
 }
-
-main {
-  display: grid;
-  min-height: 100vh;
-  place-content: center;
-  gap: 0.75rem;
-  padding: 2rem;
-  text-align: center;
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
-
+button {
+  cursor: pointer;
+}
+.shell {
+  min-height: 100vh;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+.eyebrow {
+  margin: 0 0 0.25rem;
+  color: #357c68;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
 h1,
+h2,
 p {
   margin: 0;
+}
+h1 {
+  font-size: clamp(1.6rem, 4vw, 2.35rem);
+}
+h2 {
+  font-size: 1.05rem;
+  margin-bottom: 1rem;
+}
+.refresh,
+.nav button,
+.actions button,
+.inline button {
+  border: 1px solid #d7e1dd;
+  background: white;
+  color: #2d4b42;
+  border-radius: 0.65rem;
+  padding: 0.6rem 0.85rem;
+}
+.refresh:disabled,
+button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  border-bottom: 1px solid #dce6e2;
+  margin-bottom: 1.5rem;
+}
+.nav button {
+  border: 0;
+  border-radius: 0.65rem 0.65rem 0 0;
+  background: transparent;
+  padding: 0.75rem 1rem;
+}
+.nav button.active {
+  background: #d8eee7;
+  color: #155d49;
+  font-weight: 700;
+}
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.card,
+.panel {
+  background: white;
+  border: 1px solid #e1ebe7;
+  border-radius: 1rem;
+  padding: 1rem;
+  box-shadow: 0 8px 24px rgba(30, 65, 54, 0.05);
+}
+.card span {
+  display: block;
+  color: #667873;
+  font-size: 0.82rem;
+  margin-bottom: 0.5rem;
+}
+.card strong {
+  font-size: 1.35rem;
+}
+.columns {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.2fr);
+  gap: 1rem;
+}
+.row,
+.list-item,
+.balance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #edf2f0;
+}
+.row:last-child,
+.list-item:last-child {
+  border-bottom: 0;
+}
+.form {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+}
+label {
+  display: grid;
+  gap: 0.35rem;
+  color: #536660;
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid #cfded8;
+  border-radius: 0.55rem;
+  padding: 0.62rem 0.7rem;
+  color: #17201d;
+  background: #fbfdfc;
+}
+textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+}
+.primary {
+  border: 0;
+  border-radius: 0.6rem;
+  padding: 0.7rem 1rem;
+  color: white;
+  background: #287c63;
+  font-weight: 750;
+}
+.list-item p {
+  color: #697a74;
+  font-size: 0.83rem;
+  margin-top: 0.3rem;
+}
+.actions,
+.inline {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.danger {
+  border-color: #f0caca !important;
+  color: #a53e3e !important;
+}
+.alert {
+  margin-bottom: 1rem;
+  padding: 0.8rem 1rem;
+  border-radius: 0.65rem;
+  background: #fff1f0;
+  color: #9a3535;
+}
+.loading,
+.muted {
+  color: #71817b;
+}
+.balance-row {
+  flex-wrap: wrap;
+}
+.positive {
+  color: #18744e;
+}
+.negative {
+  color: #ae4a42;
+}
+footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  color: #71817b;
+  font-size: 0.82rem;
+  margin-top: 1.5rem;
+}
+@media (max-width: 800px) {
+  .cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 480px) {
+  .shell {
+    padding: 1.25rem 0.8rem 2rem;
+  }
+  .topbar {
+    align-items: flex-start;
+  }
+  .cards {
+    gap: 0.6rem;
+  }
+  .card {
+    padding: 0.8rem;
+  }
+  .card strong {
+    font-size: 1.05rem;
+  }
+  .list-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  footer {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
 }

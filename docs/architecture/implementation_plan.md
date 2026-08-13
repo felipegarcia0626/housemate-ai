@@ -977,6 +977,14 @@ La arquitectura debe ser suficientemente buena para el MVP, no una arquitectura 
 
 # 24. Resultado esperado
 
+## Web/PWA mÃ­nima implementada
+
+La implementaciÃ³n actual en `app/page.tsx` consume exclusivamente las APIs HTTP
+existentes para Dashboard, Expenses, Incomes, Categories, Balance y Sharing
+Rules. Incluye navegaciÃ³n bÃ¡sica, formularios para las operaciones del MVP y
+mensajes de error sanitizados, sin duplicar cÃ¡lculos financieros ni acceder
+directamente a Supabase.
+
 Al finalizar el plan deberá existir un MVP desplegado de HouseMate AI capaz de:
 
 recibir solicitudes mediante lenguaje natural;
