@@ -31,6 +31,18 @@ DO $$ DECLARE count_a INTEGER; total NUMERIC; BEGIN
  IF count_a<>2 OR total<>100 THEN RAISE EXCEPTION 'FAIL household read'; END IF;
  IF EXISTS(SELECT 1 FROM public.tb_sharing_rules WHERE household_id='31000000-0000-4000-8000-000000000001' AND id='31000000-0000-4000-8000-000000000042') THEN RAISE EXCEPTION 'FAIL isolation'; END IF;
  IF NOT EXISTS(SELECT 1 FROM public.tb_sharing_rules r JOIN public.tb_sharing_rule_members m ON m.sharing_rule_id=r.id WHERE r.id='00000000-0000-4000-8000-000000000041' GROUP BY r.id HAVING SUM(m.percentage)=100) THEN RAISE EXCEPTION 'FAIL seed'; END IF;
+ IF NOT EXISTS(
+   SELECT 1
+   FROM public.tb_sharing_rules r
+   JOIN public.tb_sharing_rule_members m ON m.sharing_rule_id=r.id
+   WHERE r.id='00000000-0000-4000-8000-000000000042'
+     AND r.household_id='00000000-0000-4000-8000-000000000001'
+   GROUP BY r.id
+   HAVING COUNT(*)=2
+      AND SUM(m.percentage)=100
+      AND COUNT(*) FILTER (WHERE m.household_member_id='00000000-0000-4000-8000-000000000021' AND m.percentage=100.00)=1
+      AND COUNT(*) FILTER (WHERE m.household_member_id='00000000-0000-4000-8000-000000000022' AND m.percentage=0.00)=1
+ ) THEN RAISE EXCEPTION 'FAIL 100 / 0 seed'; END IF;
  RAISE NOTICE 'PASS read, percentages, isolation and seed';
 END $$;
 RESET ROLE;

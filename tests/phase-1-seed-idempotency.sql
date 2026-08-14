@@ -40,14 +40,19 @@ WHERE id IN (
 CREATE TEMP TABLE phase_1_seed_rules_before ON COMMIT DROP AS
 SELECT id, household_id, name, description, created_at, updated_at
 FROM public.tb_sharing_rules
-WHERE id = '00000000-0000-4000-8000-000000000041';
+WHERE id IN (
+  '00000000-0000-4000-8000-000000000041',
+  '00000000-0000-4000-8000-000000000042'
+);
 
 CREATE TEMP TABLE phase_1_seed_rule_members_before ON COMMIT DROP AS
 SELECT id, sharing_rule_id, household_member_id, percentage
 FROM public.tb_sharing_rule_members
 WHERE id IN (
   '00000000-0000-4000-8000-000000000051',
-  '00000000-0000-4000-8000-000000000052'
+  '00000000-0000-4000-8000-000000000052',
+  '00000000-0000-4000-8000-000000000053',
+  '00000000-0000-4000-8000-000000000054'
 );
 
 \ir ../database/seeds/0001_initial_seed.sql
@@ -179,6 +184,47 @@ BEGIN
     RAISE EXCEPTION 'Seed sharing rule percentages do not sum to 100';
   END IF;
 
+  IF (
+    SELECT COUNT(*)
+    FROM public.tb_sharing_rules
+    WHERE id = '00000000-0000-4000-8000-000000000042'
+      AND household_id = '00000000-0000-4000-8000-000000000001'
+      AND name = '100 / 0'
+      AND description = 'Distribución completamente propia para Felipe'
+      AND created_at = fixed_timestamp
+      AND updated_at = fixed_timestamp
+  ) <> 1 THEN
+    RAISE EXCEPTION 'Seed 100 / 0 sharing rule values or timestamps changed';
+  END IF;
+
+  IF (
+    SELECT COUNT(*)
+    FROM public.tb_sharing_rule_members
+    WHERE sharing_rule_id = '00000000-0000-4000-8000-000000000042'
+      AND (
+        (
+          id = '00000000-0000-4000-8000-000000000053'
+          AND household_member_id = '00000000-0000-4000-8000-000000000021'
+          AND percentage = 100.00
+        )
+        OR (
+          id = '00000000-0000-4000-8000-000000000054'
+          AND household_member_id = '00000000-0000-4000-8000-000000000022'
+          AND percentage = 0.00
+        )
+      )
+  ) <> 2 THEN
+    RAISE EXCEPTION 'Seed 100 / 0 rule-member values changed';
+  END IF;
+
+  IF (
+    SELECT SUM(percentage)
+    FROM public.tb_sharing_rule_members
+    WHERE sharing_rule_id = '00000000-0000-4000-8000-000000000042'
+  ) <> 100.00 THEN
+    RAISE EXCEPTION 'Seed 100 / 0 percentages do not sum to 100';
+  END IF;
+
   IF EXISTS (
     (SELECT * FROM pg_temp.phase_1_seed_households_before
      EXCEPT
@@ -270,11 +316,17 @@ BEGIN
      EXCEPT
      SELECT id, household_id, name, description, created_at, updated_at
      FROM public.tb_sharing_rules
-     WHERE id = '00000000-0000-4000-8000-000000000041')
+     WHERE id IN (
+       '00000000-0000-4000-8000-000000000041',
+       '00000000-0000-4000-8000-000000000042'
+     ))
     UNION ALL
     (SELECT id, household_id, name, description, created_at, updated_at
      FROM public.tb_sharing_rules
-     WHERE id = '00000000-0000-4000-8000-000000000041'
+     WHERE id IN (
+       '00000000-0000-4000-8000-000000000041',
+       '00000000-0000-4000-8000-000000000042'
+     )
      EXCEPT
      SELECT * FROM pg_temp.phase_1_seed_rules_before)
   ) THEN
@@ -288,14 +340,18 @@ BEGIN
      FROM public.tb_sharing_rule_members
      WHERE id IN (
        '00000000-0000-4000-8000-000000000051',
-       '00000000-0000-4000-8000-000000000052'
+       '00000000-0000-4000-8000-000000000052',
+       '00000000-0000-4000-8000-000000000053',
+       '00000000-0000-4000-8000-000000000054'
      ))
     UNION ALL
     (SELECT id, sharing_rule_id, household_member_id, percentage
      FROM public.tb_sharing_rule_members
      WHERE id IN (
        '00000000-0000-4000-8000-000000000051',
-       '00000000-0000-4000-8000-000000000052'
+       '00000000-0000-4000-8000-000000000052',
+       '00000000-0000-4000-8000-000000000053',
+       '00000000-0000-4000-8000-000000000054'
      )
      EXCEPT
      SELECT * FROM pg_temp.phase_1_seed_rule_members_before)

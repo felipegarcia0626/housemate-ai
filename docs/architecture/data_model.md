@@ -1571,6 +1571,7 @@ Este catálogo mínimo permite probar gastos, categoría residual, ingresos sin 
 | id | household_id | name | description |
 | --- | --- | --- | --- |
 | `00000000-0000-4000-8000-000000000041` | `00000000-0000-4000-8000-000000000001` | `50 / 50` | `Distribución equitativa entre los dos integrantes` |
+| `00000000-0000-4000-8000-000000000042` | `00000000-0000-4000-8000-000000000001` | `100 / 0` | `Distribución completamente propia para Felipe` |
 
 ### Orden 6 — SharingRuleMembers
 
@@ -1578,6 +1579,8 @@ Este catálogo mínimo permite probar gastos, categoría residual, ingresos sin 
 | --- | --- | --- | --- |
 | `00000000-0000-4000-8000-000000000051` | `00000000-0000-4000-8000-000000000041` | `00000000-0000-4000-8000-000000000021` | `50.00` |
 | `00000000-0000-4000-8000-000000000052` | `00000000-0000-4000-8000-000000000041` | `00000000-0000-4000-8000-000000000022` | `50.00` |
+| `00000000-0000-4000-8000-000000000053` | `00000000-0000-4000-8000-000000000042` | `00000000-0000-4000-8000-000000000021` | `100.00` |
+| `00000000-0000-4000-8000-000000000054` | `00000000-0000-4000-8000-000000000042` | `00000000-0000-4000-8000-000000000022` | `0.00` |
 
 El trigger diferido de porcentajes se evalúa al cerrar la transacción, después de insertar ambos integrantes. El seed no crea gastos, ingresos, receipts, propuestas ni eventos ficticios.
 

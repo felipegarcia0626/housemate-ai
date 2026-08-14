@@ -132,6 +132,42 @@ WHERE (
   EXCLUDED.updated_at
 );
 
+INSERT INTO public.tb_sharing_rules AS existing_rule (
+  id,
+  household_id,
+  name,
+  description,
+  created_at,
+  updated_at
+)
+VALUES (
+  '00000000-0000-4000-8000-000000000042',
+  '00000000-0000-4000-8000-000000000001',
+  '100 / 0',
+  'Distribución completamente propia para Felipe',
+  '2026-01-01 00:00:00+00',
+  '2026-01-01 00:00:00+00'
+)
+ON CONFLICT (id) DO UPDATE
+SET household_id = EXCLUDED.household_id,
+    name = EXCLUDED.name,
+    description = EXCLUDED.description,
+    created_at = EXCLUDED.created_at,
+    updated_at = EXCLUDED.updated_at
+WHERE (
+  existing_rule.household_id,
+  existing_rule.name,
+  existing_rule.description,
+  existing_rule.created_at,
+  existing_rule.updated_at
+) IS DISTINCT FROM (
+  EXCLUDED.household_id,
+  EXCLUDED.name,
+  EXCLUDED.description,
+  EXCLUDED.created_at,
+  EXCLUDED.updated_at
+);
+
 INSERT INTO public.tb_sharing_rule_members (
   id,
   sharing_rule_id,
@@ -150,6 +186,30 @@ VALUES
     '00000000-0000-4000-8000-000000000041',
     '00000000-0000-4000-8000-000000000022',
     50.00
+  )
+ON CONFLICT (id) DO UPDATE
+SET sharing_rule_id = EXCLUDED.sharing_rule_id,
+    household_member_id = EXCLUDED.household_member_id,
+    percentage = EXCLUDED.percentage;
+
+INSERT INTO public.tb_sharing_rule_members (
+  id,
+  sharing_rule_id,
+  household_member_id,
+  percentage
+)
+VALUES
+  (
+    '00000000-0000-4000-8000-000000000053',
+    '00000000-0000-4000-8000-000000000042',
+    '00000000-0000-4000-8000-000000000021',
+    100.00
+  ),
+  (
+    '00000000-0000-4000-8000-000000000054',
+    '00000000-0000-4000-8000-000000000042',
+    '00000000-0000-4000-8000-000000000022',
+    0.00
   )
 ON CONFLICT (id) DO UPDATE
 SET sharing_rule_id = EXCLUDED.sharing_rule_id,
