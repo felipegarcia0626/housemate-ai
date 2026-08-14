@@ -35,6 +35,12 @@ const sharingRuleServiceModule = path.join(
   "sharing-rules",
   "sharing-rule.service.ts",
 );
+const householdMemberServiceModule = path.join(
+  root,
+  "modules",
+  "household-members",
+  "household-member.service.ts",
+);
 const agentServiceModule = path.join(
   root,
   "modules",
@@ -107,6 +113,7 @@ const householdA = "42000000-0000-4000-8000-000000000001";
 const householdB = "42000000-0000-4000-8000-000000000002";
 const memberA = "42000000-0000-4000-8000-000000000011";
 const memberB = "42000000-0000-4000-8000-000000000012";
+const memberC = "42000000-0000-4000-8000-000000000014";
 
 const contextA = {
   householdId: householdA,
@@ -129,6 +136,8 @@ let createdExpenses = [];
 let createdIncomes = [];
 let nextProposal = 1;
 let hydrationFailure = false;
+let ambiguousMemberNames = false;
+let normalizedMemberNames = false;
 
 function matches(row, filters) {
   return filters.every(({ column, value }) => row[column] === value);
@@ -373,6 +382,30 @@ async function main() {
       return [{ id: "rule-1", name: "Equal", type: "PERCENTAGE", splits: [] }];
     },
   };
+  const fakeHouseholdMemberService = {
+    async listHouseholdMembers(context) {
+      operations.push({ type: "household-member-read", context });
+      if (context.householdId === householdA) {
+        const members = [
+          { id: memberA, displayName: "Felipe" },
+          { id: memberB, displayName: "Alejandra" },
+        ];
+        if (ambiguousMemberNames) {
+          members.push({
+            id: "42000000-0000-4000-8000-000000000013",
+            displayName: "Alejandra",
+          });
+        }
+        if (normalizedMemberNames) {
+          members.push({ id: memberC, displayName: "Ángela Gómez" });
+        }
+        return members;
+      }
+      return [
+        { id: "42000000-0000-4000-8000-000000000013", displayName: "Carlos" },
+      ];
+    },
+  };
   let mockInterpretation = {
     kind: "CREATE_EXPENSE",
     merchant: "mercado",
@@ -389,6 +422,7 @@ async function main() {
       [balanceServiceModule, fakeBalanceService],
       [categoryServiceModule, fakeCategoryService],
       [sharingRuleServiceModule, fakeSharingRuleService],
+      [householdMemberServiceModule, fakeHouseholdMemberService],
       [
         openaiAdapterModule,
         {
@@ -629,6 +663,184 @@ async function main() {
 
   mockInterpretation = {
     kind: "CREATE_EXPENSE",
+    merchant: "Éxito",
+    description: "Mercado",
+    totalAmount: "50000",
+    expenseDate: "2026-08-12",
+    paidBySelf: false,
+    paidByMemberName: "  ALEJANDRA  ",
+    categoryName: "Food",
+  };
+  const otherPayerContext = {
+    ...contextA,
+    conversationKey: "agent-expense-other-payer",
+  };
+  const beforeOtherPayerExpenses = createdExpenses.length;
+  const otherPayerProposal = await conversation.processAgentMessage(
+    otherPayerContext,
+    { message: "Alejandra pagó 50000 de mercado" },
+  );
+  assert.equal(otherPayerProposal.type, "PROPOSAL_CREATED");
+  const otherPayerStored = proposals.find(
+    (row) => row.id === otherPayerProposal.proposalId,
+  );
+  assert.equal(otherPayerStored.payload.actorMemberId, memberA);
+  assert.equal(otherPayerStored.payload.expense.paidByMemberId, memberB);
+  assert.equal(createdExpenses.length, beforeOtherPayerExpenses);
+  const otherPayerConfirmed = await conversation.processAgentMessage(
+    otherPayerContext,
+    { message: "si" },
+  );
+  assert.equal(otherPayerConfirmed.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, beforeOtherPayerExpenses + 1);
+  assert.equal(createdExpenses.at(-1).input.createdBy, memberA);
+  assert.equal(createdExpenses.at(-1).input.paidByMemberId, memberB);
+  const otherPayerRepeated = await conversation.processAgentMessage(
+    otherPayerContext,
+    { message: "si" },
+  );
+  assert.equal(otherPayerRepeated.type, "CLARIFICATION_REQUIRED");
+  assert.equal(createdExpenses.length, beforeOtherPayerExpenses + 1);
+  console.log(
+    "PASS explicit household member payer resolves without changing createdBy",
+  );
+
+  normalizedMemberNames = true;
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Éxito",
+    description: "Mercado",
+    totalAmount: "50000",
+    expenseDate: "2026-08-12",
+    paidBySelf: false,
+    paidByMemberName: "angela   gomez",
+    categoryName: "Food",
+  };
+  const normalizedPayerContext = {
+    ...contextA,
+    conversationKey: "agent-expense-normalized-payer",
+  };
+  const normalizedPayerProposal = await conversation.processAgentMessage(
+    normalizedPayerContext,
+    { message: "angela   gomez pagó 50000 de mercado" },
+  );
+  assert.equal(normalizedPayerProposal.type, "PROPOSAL_CREATED");
+  const normalizedPayerStored = proposals.find(
+    (row) => row.id === normalizedPayerProposal.proposalId,
+  );
+  assert.equal(normalizedPayerStored.payload.expense.paidByMemberId, memberC);
+  const normalizedPayerRejected = await conversation.processAgentMessage(
+    normalizedPayerContext,
+    { message: "no" },
+  );
+  assert.equal(normalizedPayerRejected.type, "REJECTED");
+  normalizedMemberNames = false;
+  console.log("PASS payer resolution normalizes accents and internal spaces");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Carulla",
+    description: null,
+    totalAmount: "100",
+    expenseDate: "2026-08-12",
+    paidBySelf: false,
+    paidByMemberName: "Carlos",
+    categoryName: "Food",
+  };
+  const unknownPayerContext = {
+    ...contextA,
+    conversationKey: "agent-expense-unknown-payer",
+  };
+  const beforeUnknownPayerProposals = proposals.length;
+  const unknownPayer = await conversation.processAgentMessage(
+    unknownPayerContext,
+    { message: "Carlos pagó 100 de mercado" },
+  );
+  assert.equal(unknownPayer.type, "CLARIFICATION_REQUIRED");
+  assert.equal(proposals.length, beforeUnknownPayerProposals);
+  assert.equal(createdExpenses.at(-1).input.paidByMemberId, memberB);
+  console.log("PASS unknown household payer does not fall back to actor");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Carulla",
+    description: null,
+    totalAmount: "100",
+    expenseDate: "2026-08-12",
+    paidBySelf: false,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const missingPayer = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-expense-missing-payer" },
+    { message: "Alguien pagó 100 de mercado" },
+  );
+  assert.equal(missingPayer.type, "CLARIFICATION_REQUIRED");
+  assert.equal(proposals.length, beforeUnknownPayerProposals);
+  console.log("PASS missing explicit payer requests clarification");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Carulla",
+    description: null,
+    totalAmount: "100",
+    expenseDate: "2026-08-12",
+    paidBySelf: false,
+    paidByMemberName: "Alejandra",
+    categoryName: null,
+  };
+  const payerCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-expense-payer-category",
+  };
+  const payerCategoryClarification = await conversation.processAgentMessage(
+    payerCategoryContext,
+    { message: "Alejandra pagó 100 de mercado" },
+  );
+  assert.equal(payerCategoryClarification.type, "CLARIFICATION_REQUIRED");
+  const payerDraft = categoryDrafts.find(
+    (row) => row.conversation_key === payerCategoryContext.conversationKey,
+  );
+  assert.equal(payerDraft.payload.expense.paidByMemberId, memberB);
+  const payerCategoryProposal = await conversation.processAgentMessage(
+    payerCategoryContext,
+    { message: "Food" },
+  );
+  assert.equal(payerCategoryProposal.type, "PROPOSAL_CREATED");
+  const payerCategoryStored = proposals.find(
+    (row) => row.id === payerCategoryProposal.proposalId,
+  );
+  assert.equal(payerCategoryStored.payload.expense.paidByMemberId, memberB);
+  await conversation.processAgentMessage(payerCategoryContext, {
+    message: "si",
+  });
+  assert.equal(createdExpenses.at(-1).input.paidByMemberId, memberB);
+  console.log("PASS payer resolution survives category draft continuation");
+
+  ambiguousMemberNames = true;
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Carulla",
+    description: null,
+    totalAmount: "100",
+    expenseDate: "2026-08-12",
+    paidBySelf: false,
+    paidByMemberName: "Alejandra",
+    categoryName: "Food",
+  };
+  const beforeAmbiguousPayerProposals = proposals.length;
+  const ambiguousPayer = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-expense-ambiguous-payer" },
+    { message: "Alejandra pagó 100 de mercado" },
+  );
+  assert.equal(ambiguousPayer.type, "CLARIFICATION_REQUIRED");
+  assert.equal(proposals.length, beforeAmbiguousPayerProposals);
+  assert.equal(createdExpenses.at(-1).input.paidByMemberId, memberB);
+  ambiguousMemberNames = false;
+  console.log("PASS ambiguous household payer requests clarification");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
     merchant: "Carulla",
     description: null,
     totalAmount: "10000",
@@ -827,6 +1039,7 @@ async function main() {
     ...contextA,
     conversationKey: "agent-natural-rejection",
   };
+  const beforeRejectionExpenses = createdExpenses.length;
   const rejectionProposal = await conversation.processAgentMessage(
     rejectionContext,
     { message: "Pagué 100" },
@@ -836,7 +1049,7 @@ async function main() {
     { message: "no", proposalId: rejectionProposal.proposalId },
   );
   assert.equal(conversationalRejection.type, "REJECTED");
-  assert.equal(createdExpenses.length, 5);
+  assert.equal(createdExpenses.length, beforeRejectionExpenses);
   console.log("PASS explicit rejection consumes the proposal without writing");
 
   const providerError = await conversation.processAgentMessage(
@@ -1012,6 +1225,24 @@ async function main() {
   assert.equal(conversationalIncomeRejected.type, "REJECTED");
   assert.equal(createdIncomes.length, 1);
   console.log("PASS textual Income rejection does not write");
+
+  const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
+  const createExpenseTypeStart = openaiSource.indexOf('kind: "CREATE_EXPENSE"');
+  const createIncomeTypeStart = openaiSource.indexOf('kind: "CREATE_INCOME"');
+  const createExpenseTypeSource = openaiSource.slice(
+    createExpenseTypeStart,
+    createIncomeTypeStart,
+  );
+  assert.ok(createExpenseTypeSource.includes("paidByMemberName"));
+  assert.ok(!createExpenseTypeSource.includes("paidByMemberId"));
+  assert.ok(!createExpenseTypeSource.includes("householdId"));
+  assert.ok(!createExpenseTypeSource.includes("memberId"));
+  assert.ok(
+    openaiSource.includes(
+      "Never return household, actor,\ncreatedBy, source, member ids",
+    ),
+  );
+  console.log("PASS payer model contract exposes only a member name");
 
   for (const source of [
     fs.readFileSync(conversationModule, "utf8"),

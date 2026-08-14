@@ -23,6 +23,7 @@ export type ExpenseInterpretation =
       totalAmount: string | null;
       expenseDate: string | null;
       paidBySelf: boolean | null;
+      paidByMemberName: string | null;
       categoryName: string | null;
     }
   | {
@@ -76,6 +77,7 @@ const responseSchema = {
     totalAmount: { type: ["string", "null"] },
     expenseDate: { type: ["string", "null"] },
     paidBySelf: { type: ["boolean", "null"] },
+    paidByMemberName: { type: ["string", "null"] },
     categoryName: { type: ["string", "null"] },
     amount: { type: ["string", "null"] },
     incomeDate: { type: ["string", "null"] },
@@ -110,6 +112,7 @@ const responseSchema = {
     "totalAmount",
     "expenseDate",
     "paidBySelf",
+    "paidByMemberName",
     "categoryName",
     "amount",
     "incomeDate",
@@ -126,8 +129,12 @@ Expense totalAmount and income amount must be decimal strings with at most two
 decimal places. Dates must be ISO dates when explicitly known. Categories are
 closed and must never be invented; return the category name only when the user
 provides one. Only return
-paidBySelf=true when the user clearly says they paid. Read filters must use only
-the fields available in the corresponding intent. Never return household, actor,
+paidBySelf=true when the user clearly says they paid. If the user explicitly
+names another household member as the payer, return paidBySelf=false and
+preserve that person's display name in paidByMemberName. Return
+paidBySelf=null and paidByMemberName=null when no payer is specified. Never
+invent a member name. Read filters must use only the fields available in the
+corresponding intent. Never return household, actor,
 createdBy, source, member ids, or any persistence fields.`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -230,6 +237,7 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
     !isNullableString(value.description) ||
     !isNullableString(value.totalAmount) ||
     !isNullableString(value.expenseDate) ||
+    !isNullableString(value.paidByMemberName) ||
     !isNullableString(value.categoryName) ||
     (value.paidBySelf !== null && typeof value.paidBySelf !== "boolean")
   ) {
@@ -242,6 +250,7 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
     totalAmount: value.totalAmount,
     expenseDate: value.expenseDate,
     paidBySelf: value.paidBySelf,
+    paidByMemberName: value.paidByMemberName,
     categoryName: value.categoryName,
   };
 }

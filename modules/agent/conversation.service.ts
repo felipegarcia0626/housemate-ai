@@ -10,6 +10,7 @@ import { getIncomesTool } from "./tools/get-incomes.tool";
 import { getBalanceTool } from "./tools/get-balance.tool";
 import { getCategoriesTool } from "./tools/get-categories.tool";
 import { getSharingRulesTool } from "./tools/get-sharing-rules.tool";
+import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
 import {
   createCategoryDraft,
   deleteCategoryDraft,
@@ -153,24 +154,81 @@ function toAmount(value: string | null): number | null {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
-function toProposalInput(
+function normalizeMemberName(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es");
+}
+
+interface ProposalInputResult {
+  input: ExpenseProposalInput;
+  missingFields: string[];
+  clarificationMessage?: string;
+}
+
+async function toProposalInput(
   context: AgentContext,
   interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_EXPENSE" }>,
-): { input: ExpenseProposalInput; missingFields: string[] } {
+): Promise<ProposalInputResult> {
   const totalAmount = toAmount(interpretation.totalAmount);
   const expenseDate =
     interpretation.expenseDate?.trim() || new Date().toISOString().slice(0, 10);
-  const paidBySelf = interpretation.paidBySelf ?? true;
   const missingFields: string[] = [];
   if (totalAmount === null) missingFields.push("totalAmount");
   if (!expenseDate) missingFields.push("expenseDate");
-  if (!paidBySelf) missingFields.push("paidBySelf");
   if (missingFields.length > 0) {
     return { input: {} as ExpenseProposalInput, missingFields };
   }
+
+  let paidByMemberId = context.actorMemberId;
+  let clarificationMessage: string | undefined;
+  const paidByMemberName = interpretation.paidByMemberName?.trim() ?? "";
+  if (paidByMemberName) {
+    let members;
+    try {
+      members = await listHouseholdMembers({
+        householdId: context.householdId,
+      });
+    } catch {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "Household members could not be resolved.",
+      );
+    }
+    const normalizedName = normalizeMemberName(paidByMemberName);
+    const matches = members.filter(
+      (member) => normalizeMemberName(member.displayName) === normalizedName,
+    );
+    if (matches.length === 1) {
+      paidByMemberId = matches[0].id;
+    } else if (matches.length > 1) {
+      missingFields.push("paidByMemberName");
+      clarificationMessage =
+        "Encontré varios integrantes con ese nombre. ¿Cuál de ellos pagó?";
+    } else {
+      missingFields.push("paidByMemberName");
+      clarificationMessage =
+        "No encontré ese integrante en el household. ¿Quién pagó?";
+    }
+  } else if (interpretation.paidBySelf === false) {
+    missingFields.push("paidByMemberName");
+    clarificationMessage = "¿Qué integrante del household pagó el gasto?";
+  }
+
+  if (missingFields.length > 0) {
+    return {
+      input: {} as ExpenseProposalInput,
+      missingFields,
+      clarificationMessage,
+    };
+  }
+
   return {
     input: {
-      paidByMemberId: context.actorMemberId,
+      paidByMemberId,
       totalAmount: totalAmount as number,
       expenseDate,
       merchant: interpretation.merchant,
@@ -348,9 +406,9 @@ export async function processAgentMessage(
     });
     return { type: "PROPOSAL_CREATED", ...result };
   }
-  const proposal = toProposalInput(context, interpretation);
+  const proposal = await toProposalInput(context, interpretation);
   if (proposal.missingFields.length > 0) {
-    return clarification(proposal.missingFields);
+    return clarification(proposal.missingFields, proposal.clarificationMessage);
   }
   const categories = await getCategoriesTool(context);
   const category = interpretation.categoryName

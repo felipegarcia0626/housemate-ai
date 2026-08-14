@@ -301,6 +301,15 @@ En esta sección, `ExpenseResponse`, `ExpenseListItem`, `IncomeResponse`, `Categ
 
 ### create_expense
 
+Cuando el usuario menciona explícitamente a otro integrante como pagador, el
+modelo puede devolver su nombre en `paidByMemberName`, pero nunca un
+`memberId`. `conversation.service.ts` resuelve ese nombre mediante el catálogo
+de miembros del `householdId` del contexto controlado, usando coincidencia
+exacta normalizada y requiriendo una única coincidencia. `createdBy` continúa
+siendo el actor controlado y `paidByMemberId` es el identificador del miembro
+resuelto. Un nombre inexistente, ambiguo o un pagador distinto sin nombre
+requiere aclaración antes de crear la propuesta.
+
 Input:
 
 ```text
