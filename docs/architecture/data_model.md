@@ -587,7 +587,33 @@ Si llega una nueva operación de escritura mientras ya existe una propuesta pend
 
 Una confirmación o rechazo incluirá internamente el `PendingProposal.id` que fue presentado. El backend solo ejecutará el payload si ese identificador continúa siendo la propuesta pendiente de `household_id + conversation_key`. Si ya fue consumida, rechazada o no coincide, no ejecutará ninguna operación y responderá que la propuesta ya no está disponible. Esto evita que una confirmación tardía ejecute otra operación.
 
-## 15.2 ProcessedWhatsAppEvent
+## 15.2 AgentCategoryDraft
+
+`AgentCategoryDraft` conserva únicamente una operación incompleta de
+`CREATE_EXPENSE` o `CREATE_INCOME` mientras falta seleccionar una categoría del
+catálogo global. No es una `PendingProposal` y nunca representa una operación
+lista para confirmación.
+
+```text
+AgentCategoryDraft
+├── id
+├── household_id
+├── actor_member_id
+├── conversation_key
+├── operation_type
+├── payload
+├── status = AWAITING_CATEGORY
+├── created_at
+└── updated_at
+```
+
+El draft se aísla por `household_id + actor_member_id + conversation_key`,
+expira lógicamente después de 30 minutos sin actividad y se elimina al
+cancelarse o convertirse en una `PendingProposal` completa. Las categorías se
+resuelven siempre contra `tb_categories`; el draft no almacena IDs inventados
+ni permite crear categorías.
+
+## 15.3 ProcessedWhatsAppEvent
 
 Registra la deduplicación mínima de eventos de WhatsApp.
 
@@ -1217,7 +1243,25 @@ No se agregan `created_at` o `updated_at`: el modelo aprobado define `uploaded_a
 
 La propuesta se elimina al confirmar o rechazar; no se persisten otros estados.
 
-### 28.2.13 `public.tb_processed_whatsapp_events`
+### 28.2.13 `public.tb_agent_category_drafts`
+
+| Columna | Tipo | NULL | Default | Restricciones |
+| --- | --- | --- | --- | --- |
+| `id` | `UUID` | NOT NULL | — | PK `pk_tb_agent_category_drafts` |
+| `household_id` | `UUID` | NOT NULL | — | FK |
+| `actor_member_id` | `UUID` | NOT NULL | — | FK compuesta con `household_id` |
+| `conversation_key` | `TEXT` | NOT NULL | — | — |
+| `operation_type` | `pending_operation_type` | NOT NULL | — | `CREATE_EXPENSE` o `CREATE_INCOME` |
+| `payload` | `JSONB` | NOT NULL | — | — |
+| `status` | `agent_category_draft_status` | NOT NULL | `'AWAITING_CATEGORY'` | — |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | — |
+| `updated_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | trigger de actualización |
+
+La unicidad de `(household_id, actor_member_id, conversation_key)` evita drafts
+ambiguos. El servicio aplica TTL lógico de 30 minutos y elimina el draft al
+cancelar o convertirlo en propuesta.
+
+### 28.2.14 `public.tb_processed_whatsapp_events`
 
 | Columna | Tipo | NULL | Default | Restricciones |
 | --- | --- | --- | --- | --- |
@@ -1249,6 +1293,8 @@ La propuesta se elimina al confirmar o rechazar; no se persisten otros estados.
 | `fk_tb_receipts_household` | `tb_receipts.household_id` | `tb_households.id` | `RESTRICT` | `NO ACTION` |
 | `fk_tb_receipts_expense_household` | `tb_receipts.(household_id, expense_id)` | `tb_expenses.(household_id, id)` | `RESTRICT` | `NO ACTION` |
 | `fk_tb_pending_proposals_household` | `tb_pending_proposals.household_id` | `tb_households.id` | `RESTRICT` | `NO ACTION` |
+| `fk_agent_category_drafts_household` | `tb_agent_category_drafts.household_id` | `tb_households.id` | `RESTRICT` | `NO ACTION` |
+| `fk_agent_category_drafts_actor_household` | `tb_agent_category_drafts.(household_id, actor_member_id)` | `tb_household_members.(household_id, id)` | `RESTRICT` | `NO ACTION` |
 
 `CASCADE` se limita a componentes inseparables de su agregado: items y distribuciones de un Expense, y miembros de una SharingRule. Los datos financieros, identidades, receipts y propuestas no se eliminan indirectamente al eliminar su hogar o miembro.
 
@@ -1271,6 +1317,7 @@ Las PK y constraints `UNIQUE` crean sus propios índices. No se duplicarán con 
 - `uq_tb_expense_distributions_expense_member` sobre `tb_expense_distributions(expense_id, household_member_id)`.
 - `uq_tb_processed_whatsapp_events_external_event_id` sobre `tb_processed_whatsapp_events(external_event_id)`.
 - Índice único parcial `uq_tb_pending_proposals_active_conversation` sobre `tb_pending_proposals(household_id, conversation_key) WHERE status = 'AWAITING_CONFIRMATION'`.
+- `uq_agent_category_drafts_context` sobre `tb_agent_category_drafts(household_id, actor_member_id, conversation_key)`.
 - Índice único parcial `uq_tb_receipts_active_conversation` sobre `tb_receipts(household_id, conversation_key) WHERE expense_id IS NULL AND processing_status IN ('PENDING', 'FAILED')`.
 
 ### Índices de rendimiento
@@ -1292,6 +1339,7 @@ Las PK y constraints `UNIQUE` crean sus propios índices. No se duplicarán con 
 | `idx_tb_incomes_household_category_date` | `tb_incomes(household_id, category_id, income_date DESC)` |
 | `idx_tb_receipts_household_conversation` | `tb_receipts(household_id, conversation_key)` |
 | `idx_tb_receipts_expense_id` | `tb_receipts(expense_id)` |
+| `idx_agent_category_drafts_updated_at` | `tb_agent_category_drafts(updated_at)` |
 
 ## 28.5 Invariantes y responsable de validación
 

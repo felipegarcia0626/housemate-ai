@@ -401,6 +401,15 @@ correspondiente y las intenciones de escritura hacia propuestas pendientes.
 Ninguna escritura financiera ocurre antes de la confirmación explícita mediante
 `PendingProposal.id`.
 
+El incremento `AGENT CATEGORY CLARIFICATION` mantiene las categorías como
+catálogo global cerrado. Cuando `CREATE_EXPENSE` o `CREATE_INCOME` carece de
+categoría, consulta `getCategoriesTool()` y persiste un draft específico del
+Agent (`AWAITING_CATEGORY`) aislado por hogar, actor y `conversationKey`. La
+selección se valida contra el catálogo real; solo una selección válida crea la
+`PendingProposal`. Los drafts expiran lógicamente tras 30 minutos y se eliminan
+al cancelar o al convertirse en propuesta. No se modifica la obligatoriedad
+opcional de `categoryId` en los dominios ni en sus APIs.
+
 Herramientas iniciales
 Gastos
 create_expense

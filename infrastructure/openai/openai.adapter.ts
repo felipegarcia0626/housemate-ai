@@ -23,12 +23,14 @@ export type ExpenseInterpretation =
       totalAmount: string | null;
       expenseDate: string | null;
       paidBySelf: boolean | null;
+      categoryName: string | null;
     }
   | {
       kind: "CREATE_INCOME";
       amount: string | null;
       incomeDate: string | null;
       description: string | null;
+      categoryName: string | null;
     }
   | {
       kind: "GET_EXPENSES";
@@ -74,6 +76,7 @@ const responseSchema = {
     totalAmount: { type: ["string", "null"] },
     expenseDate: { type: ["string", "null"] },
     paidBySelf: { type: ["boolean", "null"] },
+    categoryName: { type: ["string", "null"] },
     amount: { type: ["string", "null"] },
     incomeDate: { type: ["string", "null"] },
     incomeDescription: { type: ["string", "null"] },
@@ -107,6 +110,7 @@ const responseSchema = {
     "totalAmount",
     "expenseDate",
     "paidBySelf",
+    "categoryName",
     "amount",
     "incomeDate",
     "incomeDescription",
@@ -119,7 +123,9 @@ intents: create expense, create income, get expenses, get incomes, get balance,
 get categories, get sharing rules, or unsupported. Return only the requested JSON
 schema. Use null when a value is absent. Do not invent financial values.
 Expense totalAmount and income amount must be decimal strings with at most two
-decimal places. Dates must be ISO dates when explicitly known. Only return
+decimal places. Dates must be ISO dates when explicitly known. Categories are
+closed and must never be invented; return the category name only when the user
+provides one. Only return
 paidBySelf=true when the user clearly says they paid. Read filters must use only
 the fields available in the corresponding intent. Never return household, actor,
 createdBy, source, member ids, or any persistence fields.`;
@@ -183,7 +189,8 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
     if (
       !isNullableString(value.amount) ||
       !isNullableString(value.incomeDate) ||
-      !isNullableString(value.incomeDescription)
+      !isNullableString(value.incomeDescription) ||
+      !isNullableString(value.categoryName)
     ) {
       throw new OpenAIAdapterError();
     }
@@ -192,6 +199,7 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
       amount: value.amount,
       incomeDate: value.incomeDate,
       description: value.incomeDescription,
+      categoryName: value.categoryName,
     };
   }
   if (value.kind === "GET_EXPENSES" || value.kind === "GET_INCOMES") {
@@ -222,6 +230,7 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
     !isNullableString(value.description) ||
     !isNullableString(value.totalAmount) ||
     !isNullableString(value.expenseDate) ||
+    !isNullableString(value.categoryName) ||
     (value.paidBySelf !== null && typeof value.paidBySelf !== "boolean")
   ) {
     throw new OpenAIAdapterError();
@@ -233,6 +242,7 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
     totalAmount: value.totalAmount,
     expenseDate: value.expenseDate,
     paidBySelf: value.paidBySelf,
+    categoryName: value.categoryName,
   };
 }
 

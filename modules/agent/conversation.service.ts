@@ -6,6 +6,19 @@ import { getIncomesTool } from "./tools/get-incomes.tool";
 import { getBalanceTool } from "./tools/get-balance.tool";
 import { getCategoriesTool } from "./tools/get-categories.tool";
 import { getSharingRulesTool } from "./tools/get-sharing-rules.tool";
+import {
+  createCategoryDraft,
+  deleteCategoryDraft,
+  getActiveCategoryDraft,
+  isCategoryDraftRepositoryError,
+  updateCategoryDraft,
+} from "./category-draft.service";
+import type {
+  AgentCategoryDraft,
+  CategoryDraftExpensePayload,
+  CategoryDraftIncomePayload,
+} from "./category-draft.types";
+import type { Category } from "@/modules/categories/category.types";
 import type {
   AgentContext,
   AgentMessageInput,
@@ -32,12 +45,102 @@ function isRejection(message: string): boolean {
   );
 }
 
-function clarification(missingFields: string[]): AgentMessageResult {
+function clarification(
+  missingFields: string[],
+  message = "Necesito más información para preparar el gasto.",
+  options?: Category[],
+): AgentMessageResult {
   return {
     type: "CLARIFICATION_REQUIRED",
     missingFields,
-    message: "Necesito más información para preparar el gasto.",
+    message,
+    ...(options ? { options: options.map((category) => ({ name: category.name })) } : {}),
   };
+}
+
+function normalizeCategoryName(value: string): string {
+  return value
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es");
+}
+
+function resolveCategorySelection(
+  message: string,
+  categories: Category[],
+): Category | null {
+  const normalized = normalizeCategoryName(message);
+  return (
+    categories.find(
+      (category) => normalizeCategoryName(category.name) === normalized,
+    ) ?? null
+  );
+}
+
+async function categoryClarification(
+  context: AgentContext,
+  message = "¿En qué categoría lo quieres registrar?",
+): Promise<AgentMessageResult> {
+  const categories = await getCategoriesTool(context);
+  const options = categories
+    .map((category) => category.name)
+    .map((name, index) => `${index + 1}. ${name}`)
+    .join("\n");
+  return clarification(
+    ["categoryId"],
+    `${message}\n\n${options}`,
+    categories,
+  );
+}
+
+async function persistCategoryDraft(
+  context: AgentContext,
+  draft: Parameters<typeof createCategoryDraft>[2],
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME",
+): Promise<void> {
+  try {
+    await createCategoryDraft(context, operationType, draft);
+  } catch (error) {
+    if (isCategoryDraftRepositoryError(error)) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The category clarification could not be persisted.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function completeCategoryDraft(
+  context: AgentContext,
+  draft: AgentCategoryDraft,
+  category: Category,
+): Promise<AgentMessageResult> {
+  try {
+    if (draft.operationType === "CREATE_EXPENSE") {
+      const payload = draft.payload as CategoryDraftExpensePayload;
+      const result = await createExpenseTool(context, {
+        ...payload.expense,
+        categoryId: category.id,
+      });
+      await deleteCategoryDraft(context, draft.id);
+      return { type: "PROPOSAL_CREATED", ...result };
+    }
+    const payload = draft.payload as CategoryDraftIncomePayload;
+    const result = await createIncomeTool(context, {
+      ...payload.income,
+      categoryId: category.id,
+    });
+    await deleteCategoryDraft(context, draft.id);
+    return { type: "PROPOSAL_CREATED", ...result };
+  } catch (error) {
+    if (error instanceof AgentDomainError) throw error;
+    throw new AgentDomainError(
+      "PERSISTENCE_ERROR",
+      "The category clarification could not be completed.",
+    );
+  }
 }
 
 function toAmount(value: string | null): number | null {
@@ -78,6 +181,18 @@ export async function processAgentMessage(
   interpreter: Interpreter = interpretExpenseMessage,
 ): Promise<AgentMessageResult> {
   const message = input.message.trim();
+  let categoryDraft: AgentCategoryDraft | null;
+  try {
+    categoryDraft = await getActiveCategoryDraft(context);
+  } catch (error) {
+    if (isCategoryDraftRepositoryError(error)) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The category clarification could not be loaded.",
+      );
+    }
+    throw error;
+  }
   if (isConfirmation(message)) {
     if (!input.proposalId) return clarification(["proposalId"]);
     const result = await confirmAgentProposal(context, input.proposalId);
@@ -90,6 +205,29 @@ export async function processAgentMessage(
   }
   if (!message)
     return { type: "UNSUPPORTED", message: "No pude interpretar el mensaje." };
+
+  if (categoryDraft) {
+    const categories = await getCategoriesTool(context);
+    const category = resolveCategorySelection(message, categories);
+    if (!category) {
+      try {
+        await updateCategoryDraft(context, categoryDraft.id, categoryDraft.payload);
+      } catch (error) {
+        if (isCategoryDraftRepositoryError(error)) {
+          throw new AgentDomainError(
+            "PERSISTENCE_ERROR",
+            "The category clarification could not be updated.",
+          );
+        }
+        throw error;
+      }
+      return categoryClarification(
+        context,
+        "No tengo esa categoría disponible. Elige una de estas opciones:",
+      );
+    }
+    return completeCategoryDraft(context, categoryDraft, category);
+  }
 
   let interpretation: ExpenseInterpretation;
   try {
@@ -150,12 +288,37 @@ export async function processAgentMessage(
     if (!interpretation.incomeDate) missingFields.push("incomeDate");
     if (!interpretation.description?.trim()) missingFields.push("description");
     if (missingFields.length > 0) return clarification(missingFields);
-    const result = await createIncomeTool(context, {
+    const incomeInput = {
       memberId: context.actorMemberId,
       amount: amount as number,
       incomeDate: interpretation.incomeDate as string,
       description: interpretation.description as string,
       categoryId: null,
+    };
+    const categories = await getCategoriesTool(context);
+    const category = interpretation.categoryName
+      ? resolveCategorySelection(interpretation.categoryName, categories)
+      : null;
+    if (!category) {
+      await persistCategoryDraft(
+        context,
+        {
+          actorMemberId: context.actorMemberId,
+          source: context.source,
+          income: incomeInput,
+        },
+        "CREATE_INCOME",
+      );
+      return categoryClarification(
+        context,
+        interpretation.categoryName
+          ? "No tengo esa categoría disponible. Elige una de estas opciones:"
+          : "¿En qué categoría quieres registrar el ingreso?",
+      );
+    }
+    const result = await createIncomeTool(context, {
+      ...incomeInput,
+      categoryId: category.id,
     });
     return { type: "PROPOSAL_CREATED", ...result };
   }
@@ -163,7 +326,31 @@ export async function processAgentMessage(
   if (proposal.missingFields.length > 0) {
     return clarification(proposal.missingFields);
   }
-  const result = await createExpenseTool(context, proposal.input);
+  const categories = await getCategoriesTool(context);
+  const category = interpretation.categoryName
+    ? resolveCategorySelection(interpretation.categoryName, categories)
+    : null;
+  if (!category) {
+    await persistCategoryDraft(
+      context,
+      {
+        actorMemberId: context.actorMemberId,
+        source: context.source,
+        expense: proposal.input,
+      },
+      "CREATE_EXPENSE",
+    );
+    return categoryClarification(
+      context,
+      interpretation.categoryName
+        ? "No tengo esa categoría disponible. Elige una de estas opciones:"
+        : "Claro. ¿En qué categoría lo quieres registrar?",
+    );
+  }
+  const result = await createExpenseTool(context, {
+    ...proposal.input,
+    categoryId: category.id,
+  });
   return {
     type: "PROPOSAL_CREATED",
     ...result,

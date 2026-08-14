@@ -800,6 +800,15 @@ Si llega otra intención de escritura antes de resolver la propuesta vigente, no
 
 La confirmación o rechazo se vinculará además al `PendingProposal.id` presentado. Si una respuesta tardía apunta a una propuesta ya consumida, rechazada o diferente de la vigente, el backend devolverá `PROPOSAL_NOT_AVAILABLE`; el agente informará que ya no hay una propuesta válida y no ejecutará ninguna tool de escritura.
 
+Cuando un `CREATE_EXPENSE` o `CREATE_INCOME` conversacional no incluya
+categoría, el Agent consulta `getCategoriesTool()` y persiste un
+`AgentCategoryDraft` con estado `AWAITING_CATEGORY`. El draft se recupera por
+hogar, actor y `conversationKey`; una selección válida se resuelve contra el
+catálogo real y recién entonces se crea la `PendingProposal`. Una selección
+inválida vuelve a mostrar las opciones disponibles y una cancelación elimina el
+draft. Este estado es específico del Agent, no amplía `PendingProposal` ni
+introduce memoria en proceso.
+
 # 22. Ejemplo completo: gasto simple
 
 Usuario:

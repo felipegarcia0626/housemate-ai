@@ -345,7 +345,10 @@ persistencia directa ni control del contexto por parte del modelo.
 `conversation.service.ts` orquesta las intenciones textuales hacia las tools de
 lectura y creación existentes. Las lecturas devuelven resultados del Service;
 las escrituras crean y consumen `PendingProposal` antes de delegar la
-persistencia en el Service de dominio.
+persistencia en el Service de dominio. Cuando falta una categoría, el Agent
+persiste un draft específico mediante `category-draft.types.ts`,
+`category-draft.repository.ts` y `category-draft.service.ts`; el draft se
+recupera por hogar, actor y clave controlada antes de crear la propuesta.
 
 Ejemplo:
 
@@ -355,6 +358,9 @@ modules/
 ├── agent.types.ts
 ├── conversation.service.ts
 ├── pending-proposal.repository.ts
+├── category-draft.types.ts
+├── category-draft.repository.ts
+├── category-draft.service.ts
 ├── prompts/
 │ └── system-prompt.ts
 └── tools/

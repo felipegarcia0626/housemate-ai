@@ -127,6 +127,7 @@ export interface AgentClarificationResult {
   type: "CLARIFICATION_REQUIRED";
   missingFields: string[];
   message: string;
+  options?: Array<{ name: string }>;
 }
 
 export interface AgentProposalMessageResult extends ExpenseProposalResult {
@@ -143,6 +144,7 @@ export interface AgentIncomeConfirmedMessageResult extends IncomeConfirmationRes
 
 export interface AgentRejectedMessageResult extends ExpenseRejectionResult {
   type: "REJECTED";
+  message?: string;
 }
 
 export interface AgentUnsupportedMessageResult {

@@ -123,6 +123,7 @@ const expenseInput = {
 };
 
 let proposals = [];
+let categoryDrafts = [];
 let operations = [];
 let createdExpenses = [];
 let createdIncomes = [];
@@ -151,6 +152,12 @@ class FakeQuery {
     return this;
   }
 
+  update(payload) {
+    this.updatePayload = payload;
+    operations.push({ type: "update", table: this.table, payload });
+    return this;
+  }
+
   delete() {
     this.deleteRequested = true;
     operations.push({ type: "delete", table: this.table });
@@ -164,8 +171,45 @@ class FakeQuery {
   }
 
   execute() {
-    if (this.table !== "tb_pending_proposals") {
+    if (
+      this.table !== "tb_pending_proposals" &&
+      this.table !== "tb_agent_category_drafts"
+    ) {
       return { data: null, error: { code: "UNEXPECTED_TABLE" } };
+    }
+
+    if (this.table === "tb_agent_category_drafts") {
+      if (this.updatePayload !== undefined) {
+        const row = categoryDrafts.find((candidate) =>
+          matches(candidate, this.filters),
+        );
+        if (!row) return { data: [], error: null };
+        Object.assign(row, this.updatePayload, {
+          updated_at: new Date().toISOString(),
+        });
+        return { data: [row], error: null };
+      }
+      if (this.insertPayload !== undefined) {
+        const conflict = categoryDrafts.some((row) =>
+          ["household_id", "actor_member_id", "conversation_key"].every(
+            (column) => row[column] === this.insertPayload[column],
+          ),
+        );
+        if (conflict) return { data: null, error: { code: "23505" } };
+        const now = new Date().toISOString();
+        const row = {
+          ...this.insertPayload,
+          created_at: this.insertPayload.created_at ?? now,
+          updated_at: this.insertPayload.updated_at ?? now,
+        };
+        categoryDrafts.push(row);
+        return { data: [row], error: null };
+      }
+      const rows = categoryDrafts.filter((row) => matches(row, this.filters));
+      if (this.deleteRequested) {
+        categoryDrafts = categoryDrafts.filter((row) => !rows.includes(row));
+      }
+      return { data: rows, error: null };
     }
 
     if (this.insertPayload !== undefined) {
@@ -336,6 +380,7 @@ async function main() {
     totalAmount: "85000",
     expenseDate: "2026-08-11",
     paidBySelf: true,
+    categoryName: "Food",
   };
   const load = createLoader(
     new Map([
@@ -482,7 +527,9 @@ async function main() {
 
   assert.equal(
     operations.filter(
-      ({ type, table }) => type === "from" && table !== "tb_pending_proposals",
+      ({ type, table }) =>
+        type === "from" &&
+        !["tb_pending_proposals", "tb_agent_category_drafts"].includes(table),
     ).length,
     0,
   );
@@ -562,6 +609,7 @@ async function main() {
     householdId: householdB,
     actorMemberId: memberB,
     source: "RECEIPT",
+    categoryName: "Food",
   };
   const protectedContext = {
     ...contextA,
@@ -593,7 +641,7 @@ async function main() {
     { message: "no", proposalId: rejectionProposal.proposalId },
   );
   assert.equal(conversationalRejection.type, "REJECTED");
-  assert.equal(createdExpenses.length, 3);
+  assert.equal(createdExpenses.length, 5);
   console.log("PASS explicit rejection consumes the proposal without writing");
 
   const providerError = await conversation.processAgentMessage(
@@ -752,6 +800,7 @@ async function main() {
     totalAmount: null,
     expenseDate: null,
     paidBySelf: null,
+    categoryName: "Food",
   };
   const conversationalIncomeProposal = await conversation.processAgentMessage(
     { ...contextA, conversationKey: "agent-income-text" },
