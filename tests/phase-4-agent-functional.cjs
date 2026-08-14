@@ -575,9 +575,204 @@ async function main() {
   );
   console.log("PASS explicit confirmation uses the existing proposal once");
 
+  const defaultExpenseDate = new Date().toISOString().slice(0, 10);
   mockInterpretation = {
-    ...mockInterpretation,
+    kind: "CREATE_EXPENSE",
+    merchant: "Carulla",
+    description: null,
+    totalAmount: "10000",
+    expenseDate: null,
+    paidBySelf: null,
+    householdId: householdB,
+    actorMemberId: memberB,
+    memberId: memberB,
+    paidByMemberId: memberB,
+    source: "RECEIPT",
+    categoryName: "Food",
+  };
+  const defaultProposal = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-expense-defaults" },
+    { message: "Registra un gasto de 10000 pesos en Carulla" },
+  );
+  assert.equal(defaultProposal.type, "PROPOSAL_CREATED");
+  const defaultStored = proposals.find(
+    (row) => row.id === defaultProposal.proposalId,
+  );
+  assert.equal(defaultStored.payload.expense.expenseDate, defaultExpenseDate);
+  assert.equal(defaultStored.payload.expense.paidByMemberId, memberA);
+  assert.equal(defaultStored.payload.actorMemberId, memberA);
+  assert.equal(defaultStored.payload.source, "WEB");
+  assert.equal(createdExpenses.length, 3);
+  /*
+  const defaultConfirmed = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-expense-defaults" },
+    { message: "sÃ­" },
+  );
+  );
+  */
+  const defaultConfirmed = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-expense-defaults" },
+    { message: "si" },
+  );
+  assert.equal(defaultConfirmed.type, "CONFIRMED");
+  const repeatedDefaultConfirmation = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-expense-defaults" },
+    { message: "si" },
+  );
+  assert.equal(repeatedDefaultConfirmation.type, "CLARIFICATION_REQUIRED");
+  assert.equal(createdExpenses.length, 4);
+  assert.equal(createdExpenses[3].input.expenseDate, defaultExpenseDate);
+  assert.equal(createdExpenses[3].input.paidByMemberId, memberA);
+  console.log(
+    "PASS expense defaults use execution date and controlled actor without persisting before confirmation",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Carulla",
+    description: null,
+    totalAmount: "10000",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    categoryName: null,
+  };
+  const categoryContext = {
+    ...contextA,
+    conversationKey: "agent-category-clarification",
+  };
+  const beforeCategoryProposalCount = proposals.length;
+  const categoryClarificationResult = await conversation.processAgentMessage(
+    categoryContext,
+    { message: "Registra un gasto de 10000 pesos en Carulla" },
+  );
+  assert.equal(categoryClarificationResult.type, "CLARIFICATION_REQUIRED");
+  assert.equal(categoryDrafts.length, 1);
+  assert.equal(proposals.length, beforeCategoryProposalCount);
+  const categoryProposal = await conversation.processAgentMessage(
+    categoryContext,
+    { message: "Food" },
+  );
+  assert.equal(categoryProposal.type, "PROPOSAL_CREATED");
+  const categoryStored = proposals.find(
+    (row) => row.id === categoryProposal.proposalId,
+  );
+  assert.equal(categoryStored.payload.expense.categoryId, "category-1");
+  assert.equal(categoryDrafts.length, 0);
+  const categoryConfirmed = await conversation.processAgentMessage(
+    categoryContext,
+    { message: "si" },
+  );
+  assert.equal(categoryConfirmed.type, "CONFIRMED");
+  assert.equal(createdExpenses.at(-1).input.categoryId, "category-1");
+  console.log(
+    "PASS category clarification resolves a real category before proposal",
+  );
+
+  const invalidCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-invalid-category",
+  };
+  await conversation.processAgentMessage(invalidCategoryContext, {
+    message: "Registra un gasto de 100 en Carulla",
+  });
+  const invalidCategory = await conversation.processAgentMessage(
+    invalidCategoryContext,
+    { message: "Transport" },
+  );
+  assert.equal(invalidCategory.type, "CLARIFICATION_REQUIRED");
+  assert.equal(proposals.filter((row) => row.household_id === householdA).length > 0, true);
+  const invalidCategoryProposal = await conversation.processAgentMessage(
+    invalidCategoryContext,
+    { message: "Food" },
+  );
+  assert.equal(invalidCategoryProposal.type, "PROPOSAL_CREATED");
+  await conversation.processAgentMessage(invalidCategoryContext, {
+    message: "no",
+  });
+  const cancelledDraftResult = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-draft-cancel" },
+    { message: "Registra un gasto de 50 en Carulla" },
+  );
+  assert.equal(cancelledDraftResult.type, "CLARIFICATION_REQUIRED");
+  const cancelledDraft = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-draft-cancel" },
+    { message: "cancelar" },
+  );
+  assert.equal(cancelledDraft.type, "REJECTED");
+  assert.equal(cancelledDraft.message, "Operación cancelada.");
+  console.log("PASS invalid category keeps the draft and reoffers real options");
+
+  const isolatedCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-category-isolation",
+  };
+  await conversation.processAgentMessage(isolatedCategoryContext, {
+    message: "Registra un gasto de 200 en Carulla",
+  });
+  const otherHouseholdCategory = await conversation.processAgentMessage(
+    { ...isolatedCategoryContext, householdId: householdB, actorMemberId: memberB },
+    { message: "Food" },
+  );
+  assert.equal(otherHouseholdCategory.type, "CLARIFICATION_REQUIRED");
+  assert.equal(categoryDrafts.some((row) => row.household_id === householdA), true);
+  const isolatedCompleted = await conversation.processAgentMessage(
+    isolatedCategoryContext,
+    { message: "Food" },
+  );
+  assert.equal(isolatedCompleted.type, "PROPOSAL_CREATED");
+  await conversation.processAgentMessage(isolatedCategoryContext, {
+    message: "no",
+  });
+  console.log("PASS category drafts are isolated by household and actor");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "125",
+    incomeDate: "2026-08-12",
+    description: "Salary",
+    categoryName: null,
+  };
+  const incomeCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-income-category",
+  };
+  const incomeCategoryClarification = await conversation.processAgentMessage(
+    incomeCategoryContext,
+    { message: "Recibí un salario de 125" },
+  );
+  assert.equal(incomeCategoryClarification.type, "CLARIFICATION_REQUIRED");
+  const incomeCategoryProposal = await conversation.processAgentMessage(
+    incomeCategoryContext,
+    { message: "Food" },
+  );
+  assert.equal(incomeCategoryProposal.type, "PROPOSAL_CREATED");
+  const incomeCategoryStored = proposals.find(
+    (row) => row.id === incomeCategoryProposal.proposalId,
+  );
+  assert.equal(incomeCategoryStored.payload.income.categoryId, "category-1");
+  console.log("PASS income category clarification creates a categorized proposal");
+  /*
+  await expectAgentError(
+    conversation.processAgentMessage(
+      { ...contextA, conversationKey: "agent-expense-defaults" },
+      { message: "sÃ­" },
+    ),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  assert.equal(createdExpenses.length, 4);
+  console.log(
+    "PASS expense defaults use execution date and controlled actor without persisting before confirmation",
+  );
+
+  */
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "algo",
+    description: null,
     totalAmount: null,
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    categoryName: "Food",
   };
   const clarification = await conversation.processAgentMessage(
     { ...contextA, conversationKey: "agent-clarification" },

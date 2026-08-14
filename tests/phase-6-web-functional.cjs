@@ -138,6 +138,8 @@ for (const endpoint of [
   "/api/expenses",
   "/api/incomes",
   "/api/categories",
+  "/api/household-members",
+  "/api/agent",
   "/api/sharing-rules",
   "/api/balance",
 ]) {
@@ -145,16 +147,138 @@ for (const endpoint of [
     throw new Error(`Missing UI API integration: ${endpoint}`);
 }
 
+if (!page.includes("Promise.allSettled"))
+  throw new Error("UI must load resources independently");
+if (page.includes("Promise.all(["))
+  throw new Error("UI must not fail all resources together");
+for (const marker of [
+  "resourceErrors",
+  "setCategories(categoryResult.value)",
+  'failed("categories")',
+  'failed("members")',
+  'failed("sharingRules")',
+  "memberNames",
+  "memberLabel",
+  '"/api/agent"',
+  "HouseMate AI",
+  "sendAgentMessage",
+  "presentAgentResult",
+  '"GET_EXPENSES"',
+  '"GET_INCOMES"',
+  '"GET_BALANCE"',
+  '"GET_CATEGORIES"',
+  '"GET_SHARING_RULES"',
+  "EncontrÃ©",
+  "No encontrÃ© gastos con esos criterios.",
+  "Estas son las categorÃ­as disponibles:",
+]) {
+  if (
+    marker.startsWith("Encontr") ||
+    marker.startsWith("No encontr") ||
+    marker.startsWith("Estas son")
+  )
+    continue;
+  if (!page.includes(marker))
+    throw new Error(`Missing partial-load handling: ${marker}`);
+}
+
+if (!page.includes("Total:"))
+  throw new Error("Expense presentation must include a human-readable total");
+for (const marker of ["Encontr", "No encontr", "Estas son las categor"]) {
+  if (!page.includes(marker))
+    throw new Error(`Missing human-readable Agent presentation: ${marker}`);
+}
+
+if (page.includes("JSON.stringify(agentResult"))
+  throw new Error("Agent results must not be rendered as technical JSON");
+for (const forbidden of ["agentResult.proposalId", "agentResult.data.id"]) {
+  if (page.includes(forbidden))
+    throw new Error("Agent presentation must not expose internal identifiers");
+}
+
 for (const operation of ["POST", "PATCH", "DELETE"]) {
   if (!page.includes(`method: \"${operation}\"`))
     throw new Error(`Missing UI mutation: ${operation}`);
 }
+
+for (const marker of [
+  'method: "PATCH"',
+  "onSubmit={(event) =>",
+  "event.preventDefault()",
+  'type="submit"',
+  "Descripción del gasto",
+  "value={editExpenseForm.totalAmount}",
+  "value={editExpenseForm.categoryId}",
+  "value={editExpenseForm.paidByMemberId}",
+]) {
+  if (!page.includes(marker))
+    throw new Error(`Missing Expense edit flow marker: ${marker}`);
+}
+
+const editStart = page.indexOf("async function startExpenseEdit");
+const saveStart = page.indexOf("async function saveExpense");
+const cancelStart = page.indexOf("function cancelExpenseEdit", saveStart);
+if (editStart < 0 || saveStart < 0 || cancelStart < 0 || saveStart < editStart)
+  throw new Error("Missing Expense Update UI handlers");
+
+const editSource = page.slice(editStart, saveStart);
+for (const marker of [
+  "setEditingExpense(expenseId)",
+  "setEditExpenseForm(initialExpenseEdit)",
+  "api<ExpenseDetail>(",
+  "/api/expenses/${expenseId}",
+  "expense.description",
+  "expense.totalAmount",
+  "expense.category?.id",
+  "expense.paidByMemberId",
+]) {
+  if (!editSource.includes(marker))
+    throw new Error(`Missing Expense detail hydration marker: ${marker}`);
+}
+
+const saveSource = page.slice(saveStart, cancelStart);
+for (const marker of [
+  "editExpenseForm.description",
+  "totalAmount: Number(editExpenseForm.totalAmount)",
+  "categoryId: editExpenseForm.categoryId || null",
+  "paidByMemberId: editExpenseForm.paidByMemberId",
+  "await refresh()",
+]) {
+  if (!saveSource.includes(marker))
+    throw new Error(`Missing Expense Update payload marker: ${marker}`);
+}
+for (const forbidden of [
+  "amount:",
+  "memberId:",
+  "householdId",
+  "createdBy",
+  "status",
+]) {
+  if (saveSource.includes(forbidden))
+    throw new Error(
+      `Expense Update payload contains protected alias: ${forbidden}`,
+    );
+}
+const patchCall = saveSource.indexOf('method: "PATCH"');
+const refreshCall = saveSource.indexOf("await refresh()");
+const saveCatch = saveSource.indexOf("} catch");
+if (!(patchCall >= 0 && patchCall < refreshCall && refreshCall < saveCatch))
+  throw new Error(
+    "Expense Update refresh must run only after a successful PATCH",
+  );
+console.log(
+  "PASS Expense Update UI hydrates detail and sends the contractual fields",
+);
 
 for (const forbidden of [
   "getSupabaseAdminClient",
   ".from(",
   ".rpc(",
   "householdId",
+  "openai",
+  "OpenAI",
+  "conversation.service",
+  "pending-proposal",
 ]) {
   if (page.includes(forbidden))
     throw new Error(`UI must not contain ${forbidden}`);

@@ -1,5 +1,9 @@
 import { createExpenseTool } from "./tools/create-expense.tool";
-import { confirmAgentProposal, rejectAgentProposal } from "./agent.service";
+import {
+  confirmAgentProposal,
+  findActiveProposalId,
+  rejectAgentProposal,
+} from "./agent.service";
 import { createIncomeTool } from "./tools/create-income.tool";
 import { getExpensesTool } from "./tools/get-expenses.tool";
 import { getIncomesTool } from "./tools/get-incomes.tool";
@@ -154,10 +158,13 @@ function toProposalInput(
   interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_EXPENSE" }>,
 ): { input: ExpenseProposalInput; missingFields: string[] } {
   const totalAmount = toAmount(interpretation.totalAmount);
+  const expenseDate =
+    interpretation.expenseDate?.trim() || new Date().toISOString().slice(0, 10);
+  const paidBySelf = interpretation.paidBySelf ?? true;
   const missingFields: string[] = [];
   if (totalAmount === null) missingFields.push("totalAmount");
-  if (!interpretation.expenseDate) missingFields.push("expenseDate");
-  if (interpretation.paidBySelf !== true) missingFields.push("paidBySelf");
+  if (!expenseDate) missingFields.push("expenseDate");
+  if (!paidBySelf) missingFields.push("paidBySelf");
   if (missingFields.length > 0) {
     return { input: {} as ExpenseProposalInput, missingFields };
   }
@@ -165,7 +172,7 @@ function toProposalInput(
     input: {
       paidByMemberId: context.actorMemberId,
       totalAmount: totalAmount as number,
-      expenseDate: interpretation.expenseDate as string,
+      expenseDate,
       merchant: interpretation.merchant,
       description: interpretation.description,
       items: [],
@@ -194,14 +201,32 @@ export async function processAgentMessage(
     throw error;
   }
   if (isConfirmation(message)) {
-    if (!input.proposalId) return clarification(["proposalId"]);
-    const result = await confirmAgentProposal(context, input.proposalId);
-    return { type: "CONFIRMED", ...result };
+    const proposalId =
+      input.proposalId ?? (await findActiveProposalId(context));
+    if (proposalId) {
+      const result = await confirmAgentProposal(context, proposalId);
+      return { type: "CONFIRMED", ...result };
+    }
+    if (categoryDraft) return categoryClarification(context);
+    return clarification(["proposalId"]);
   }
   if (isRejection(message)) {
-    if (!input.proposalId) return clarification(["proposalId"]);
-    const result = await rejectAgentProposal(context, input.proposalId);
-    return { type: "REJECTED", ...result };
+    const proposalId =
+      input.proposalId ?? (await findActiveProposalId(context));
+    if (proposalId) {
+      const result = await rejectAgentProposal(context, proposalId);
+      return { type: "REJECTED", ...result };
+    }
+    if (categoryDraft) {
+      await deleteCategoryDraft(context, categoryDraft.id);
+      return {
+        type: "REJECTED",
+        proposalId: categoryDraft.id,
+        status: "REJECTED",
+        message: "Operación cancelada.",
+      };
+    }
+    return clarification(["proposalId"]);
   }
   if (!message)
     return { type: "UNSUPPORTED", message: "No pude interpretar el mensaje." };
@@ -240,6 +265,7 @@ export async function processAgentMessage(
       message: "No pude interpretar el mensaje.",
     };
   }
+
   if (interpretation.kind === "UNSUPPORTED") {
     return {
       type: "UNSUPPORTED",

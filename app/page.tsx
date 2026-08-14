@@ -2,7 +2,15 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type Section = "dashboard" | "expenses" | "incomes" | "balance";
+type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
+type ResourceKey =
+  | "dashboard"
+  | "expenses"
+  | "incomes"
+  | "categories"
+  | "members"
+  | "sharingRules"
+  | "balance";
 
 type Expense = {
   id: string;
@@ -13,6 +21,7 @@ type Expense = {
   status: string;
   category: { id: string; name: string } | null;
 };
+type ExpenseDetail = Expense & { paidByMemberId: string };
 
 type Income = {
   id: string;
@@ -24,6 +33,7 @@ type Income = {
 };
 
 type Category = { id: string; name: string };
+type HouseholdMember = { id: string; displayName: string };
 type SharingRule = {
   id: string;
   name: string;
@@ -44,6 +54,14 @@ type Dashboard = {
 type Balance = {
   members: { memberId: string; paid: number; share: number; balance: number }[];
 };
+type AgentResult = {
+  type?: string;
+  message?: string;
+  operation?: string;
+  status?: string;
+  proposalId?: string;
+  data?: unknown;
+};
 
 const initialExpense = {
   merchant: "",
@@ -60,6 +78,12 @@ const initialIncome = {
   incomeDate: new Date().toISOString().slice(0, 10),
   description: "",
   categoryId: "",
+};
+const initialExpenseEdit = {
+  description: "",
+  totalAmount: "",
+  categoryId: "",
+  paidByMemberId: "",
 };
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -89,6 +113,23 @@ function money(value: number): string {
   }).format(value);
 }
 
+function humanDate(value: string): string {
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es-CO", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function percentage(value: number): string {
+  return `${new Intl.NumberFormat("es-CO", {
+    maximumFractionDigits: 2,
+  }).format(value)}%`;
+}
+
 export default function HomePage() {
   const [section, setSection] = useState<Section>("dashboard");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -96,58 +137,109 @@ export default function HomePage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [incomes, setIncomes] = useState<Income[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [rules, setRules] = useState<SharingRule[]>([]);
   const [expenseForm, setExpenseForm] = useState(initialExpense);
   const [incomeForm, setIncomeForm] = useState(initialIncome);
+  const [agentMessage, setAgentMessage] = useState("");
+  const [agentResult, setAgentResult] = useState<AgentResult | null>(null);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentError, setAgentError] = useState("");
   const [editingExpense, setEditingExpense] = useState<string | null>(null);
-  const [editDescription, setEditDescription] = useState("");
+  const [editExpenseForm, setEditExpenseForm] = useState(initialExpenseEdit);
+  const [editLoading, setEditLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [resourceErrors, setResourceErrors] = useState<
+    Partial<Record<ResourceKey, string>>
+  >({});
 
   const memberIds = useMemo(() => {
-    const ids = new Set<string>();
+    const ids = new Set(members.map((member) => member.id));
     rules.forEach((rule) =>
       rule.splits.forEach((split) => ids.add(split.memberId)),
     );
     return [...ids];
-  }, [rules]);
+  }, [members, rules]);
+
+  const memberNames = useMemo(
+    () =>
+      Object.fromEntries(
+        members.map((member) => [member.id, member.displayName]),
+      ) as Record<string, string>,
+    [members],
+  );
+
+  function memberLabel(memberId: string): string {
+    return memberNames[memberId] ?? memberId;
+  }
 
   async function refresh() {
     setLoading(true);
     setError("");
     try {
       const [
-        dashboardData,
-        expenseData,
-        incomeData,
-        categoryData,
-        ruleData,
-        balanceData,
-      ] = await Promise.all([
+        dashboardResult,
+        expenseResult,
+        incomeResult,
+        categoryResult,
+        memberResult,
+        ruleResult,
+        balanceResult,
+      ] = await Promise.allSettled([
         api<Dashboard>("/api/dashboard/summary"),
         api<Expense[]>("/api/expenses"),
         api<Income[]>("/api/incomes"),
         api<Category[]>("/api/categories"),
+        api<HouseholdMember[]>("/api/household-members"),
         api<SharingRule[]>("/api/sharing-rules"),
         api<Balance>("/api/balance"),
       ]);
-      setDashboard(dashboardData);
-      setExpenses(expenseData);
-      setIncomes(incomeData);
-      setCategories(categoryData);
-      setRules(ruleData);
-      setBalance(balanceData);
-      const firstMemberId = ruleData[0]?.splits[0]?.memberId ?? "";
-      setIncomeForm((current) => ({
-        ...current,
-        memberId: current.memberId || firstMemberId,
-      }));
-      setExpenseForm((current) => ({
-        ...current,
-        paidByMemberId: current.paidByMemberId || firstMemberId,
-        ruleId: current.ruleId || ruleData[0]?.id || "",
-      }));
+      const nextErrors: Partial<Record<ResourceKey, string>> = {};
+      const failed = (key: ResourceKey) => {
+        nextErrors[key] = "No fue posible cargar esta secciÃ³n.";
+      };
+      if (dashboardResult.status === "fulfilled")
+        setDashboard(dashboardResult.value);
+      else failed("dashboard");
+      if (expenseResult.status === "fulfilled")
+        setExpenses(expenseResult.value);
+      else failed("expenses");
+      if (incomeResult.status === "fulfilled") setIncomes(incomeResult.value);
+      else failed("incomes");
+      if (categoryResult.status === "fulfilled")
+        setCategories(categoryResult.value);
+      else failed("categories");
+      if (memberResult.status === "fulfilled") {
+        setMembers(memberResult.value);
+        const firstMemberId = memberResult.value[0]?.id ?? "";
+        setIncomeForm((current) => ({
+          ...current,
+          memberId: current.memberId || firstMemberId,
+        }));
+        setExpenseForm((current) => ({
+          ...current,
+          paidByMemberId: current.paidByMemberId || firstMemberId,
+        }));
+      } else failed("members");
+      if (ruleResult.status === "fulfilled") {
+        const ruleData = ruleResult.value;
+        setRules(ruleData);
+        const firstMemberId = ruleData[0]?.splits[0]?.memberId ?? "";
+        setIncomeForm((current) => ({
+          ...current,
+          memberId: current.memberId || firstMemberId,
+        }));
+        setExpenseForm((current) => ({
+          ...current,
+          paidByMemberId: current.paidByMemberId || firstMemberId,
+          ruleId: current.ruleId || ruleData[0]?.id || "",
+        }));
+      } else failed("sharingRules");
+      if (balanceResult.status === "fulfilled") setBalance(balanceResult.value);
+      else failed("balance");
+      setResourceErrors(nextErrors);
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -202,15 +294,46 @@ export default function HomePage() {
     }
   }
 
+  async function startExpenseEdit(expenseId: string) {
+    setEditingExpense(expenseId);
+    setEditExpenseForm(initialExpenseEdit);
+    setEditLoading(true);
+    setError("");
+    try {
+      const expense = await api<ExpenseDetail>(`/api/expenses/${expenseId}`);
+      setEditExpenseForm({
+        description: expense.description ?? "",
+        totalAmount: String(expense.totalAmount),
+        categoryId: expense.category?.id ?? "",
+        paidByMemberId: expense.paidByMemberId,
+      });
+    } catch (cause) {
+      setEditingExpense(null);
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "No fue posible cargar el gasto.",
+      );
+    } finally {
+      setEditLoading(false);
+    }
+  }
+
   async function saveExpense(expenseId: string) {
     setBusy(true);
     setError("");
     try {
       await api<Expense>(`/api/expenses/${expenseId}`, {
         method: "PATCH",
-        body: JSON.stringify({ description: editDescription || null }),
+        body: JSON.stringify({
+          description: editExpenseForm.description || null,
+          totalAmount: Number(editExpenseForm.totalAmount),
+          categoryId: editExpenseForm.categoryId || null,
+          paidByMemberId: editExpenseForm.paidByMemberId,
+        }),
       });
       setEditingExpense(null);
+      setEditExpenseForm(initialExpenseEdit);
       await refresh();
     } catch (cause) {
       setError(
@@ -221,6 +344,13 @@ export default function HomePage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function cancelExpenseEdit() {
+    setEditingExpense(null);
+    setEditExpenseForm(initialExpenseEdit);
+    setEditLoading(false);
+    setError("");
   }
 
   async function removeExpense(expenseId: string) {
@@ -287,6 +417,143 @@ export default function HomePage() {
     }
   }
 
+  async function sendAgentMessage(event: FormEvent) {
+    event.preventDefault();
+    if (!agentMessage.trim()) return;
+    setAgentBusy(true);
+    setAgentError("");
+    try {
+      const result = await api<AgentResult>("/api/agent", {
+        method: "POST",
+        body: JSON.stringify({ message: agentMessage }),
+      });
+      setAgentResult(result);
+      setAgentMessage("");
+      if (result.type === "CONFIRMED") await refresh();
+    } catch (cause) {
+      setAgentError(
+        cause instanceof Error
+          ? cause.message
+          : "No fue posible consultar HouseMate AI.",
+      );
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  function describeAgentResult(result: AgentResult): string {
+    if (result.message) return result.message;
+    if (result.type === "READ_RESULT") return "Consulta completada.";
+    if (result.type === "PROPOSAL_CREATED")
+      return "Propuesta creada. Escribe “Sí, confirmar” para continuar.";
+    if (result.type === "CONFIRMED")
+      return "Operación confirmada correctamente.";
+    if (result.type === "REJECTED") return "Operación rechazada.";
+    return "Respuesta recibida.";
+  }
+
+  function presentAgentResult(result: AgentResult): string {
+    if (result.type !== "READ_RESULT") return describeAgentResult(result);
+    const agentMemberLabel = (memberId: string): string =>
+      memberNames[memberId] ?? "Integrante";
+
+    if (result.operation === "GET_EXPENSES") {
+      const items = Array.isArray(result.data) ? result.data : [];
+      if (items.length === 0) return "No encontré gastos con esos criterios.";
+      const total = items.reduce(
+        (sum, item) =>
+          sum +
+          (typeof item === "object" && item !== null &&
+          typeof (item as { totalAmount?: unknown }).totalAmount === "number"
+            ? (item as { totalAmount: number }).totalAmount
+            : 0),
+        0,
+      );
+      const lines = items.map((item) => {
+        const expense = item as {
+          merchant?: string | null;
+          totalAmount?: number;
+          expenseDate?: string;
+          category?: { name?: string } | null;
+        };
+        return `• ${expense.merchant ?? "Gasto"} — ${money(expense.totalAmount ?? 0)} — ${humanDate(expense.expenseDate ?? "")} — ${expense.category?.name ?? "Sin categoría"}`;
+      });
+      return [`Encontré ${items.length} ${items.length === 1 ? "gasto" : "gastos"}:`, ...lines, `Total: ${money(total)}`].join("\n");
+    }
+
+    if (result.operation === "GET_INCOMES") {
+      const value = result.data as {
+        incomes?: {
+          amount?: number;
+          incomeDate?: string;
+          description?: string;
+        }[];
+        summary?: { totalIncome?: number };
+      };
+      const items = Array.isArray(value?.incomes) ? value.incomes : [];
+      if (items.length === 0) return "No encontré ingresos con esos criterios.";
+      const lines = items.map(
+        (income) =>
+          `• ${income.description ?? "Ingreso"} — ${money(income.amount ?? 0)} — ${humanDate(income.incomeDate ?? "")}`,
+      );
+      return [
+        `Encontré ${items.length} ${items.length === 1 ? "ingreso" : "ingresos"}:`,
+        ...lines,
+        `Total: ${money(value.summary?.totalIncome ?? 0)}`,
+      ].join("\n");
+    }
+
+    if (result.operation === "GET_BALANCE") {
+      const value = result.data as {
+        members?: { memberId?: string; balance?: number }[];
+      };
+      const members = Array.isArray(value?.members) ? value.members : [];
+      if (members.length === 0) return "No hay balances para mostrar.";
+      return [
+        "Balance del hogar:",
+        ...members.map((member) => {
+          const amount = member.balance ?? 0;
+          return `• ${agentMemberLabel(member.memberId ?? "")}: ${amount < 0 ? "-" : ""}${money(Math.abs(amount))}`;
+        }),
+      ].join("\n");
+    }
+
+    if (result.operation === "GET_CATEGORIES") {
+      const categories = Array.isArray(result.data) ? result.data : [];
+      if (categories.length === 0) return "No hay categorías disponibles.";
+      return [
+        "Estas son las categorías disponibles:",
+        ...categories.map((category) => {
+          const item = category as { name?: string };
+          return `• ${item.name ?? "Sin nombre"}`;
+        }),
+      ].join("\n");
+    }
+
+    if (result.operation === "GET_SHARING_RULES") {
+      const rules = Array.isArray(result.data) ? result.data : [];
+      if (rules.length === 0) return "No hay reglas de reparto disponibles.";
+      return rules
+        .map((rule) => {
+          const item = rule as {
+            name?: string;
+            splits?: { memberId?: string; percentage?: number }[];
+          };
+          const splits = Array.isArray(item.splits) ? item.splits : [];
+          return [
+            `Regla de reparto: ${item.name ?? "Sin nombre"}`,
+            ...splits.map(
+              (split) =>
+                `• ${agentMemberLabel(split.memberId ?? "")}: ${percentage(split.percentage ?? 0)}`,
+            ),
+          ].join("\n");
+        })
+        .join("\n\n");
+    }
+
+    return "Consulta completada.";
+  }
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -303,23 +570,25 @@ export default function HomePage() {
         </button>
       </header>
       <nav className="nav" aria-label="Navegación principal">
-        {(["dashboard", "expenses", "incomes", "balance"] as Section[]).map(
-          (item) => (
-            <button
-              key={item}
-              className={section === item ? "active" : ""}
-              onClick={() => setSection(item)}
-            >
-              {item === "dashboard"
-                ? "Dashboard"
-                : item === "expenses"
-                  ? "Gastos"
-                  : item === "incomes"
-                    ? "Ingresos"
-                    : "Balance"}
-            </button>
-          ),
-        )}
+        {(
+          ["dashboard", "expenses", "incomes", "balance", "agent"] as Section[]
+        ).map((item) => (
+          <button
+            key={item}
+            className={section === item ? "active" : ""}
+            onClick={() => setSection(item)}
+          >
+            {item === "dashboard"
+              ? "Dashboard"
+              : item === "expenses"
+                ? "Gastos"
+                : item === "incomes"
+                  ? "Ingresos"
+                  : item === "balance"
+                    ? "Balance"
+                    : "HouseMate AI"}
+          </button>
+        ))}
       </nav>
       {error && (
         <p className="alert" role="alert">
@@ -351,7 +620,7 @@ export default function HomePage() {
               <h2>Ingresos por integrante</h2>
               {dashboard.memberIncome.map((item) => (
                 <p className="row" key={item.memberId}>
-                  <span>{item.memberId}</span>
+                  <span>{memberLabel(item.memberId)}</span>
                   <strong>{money(item.amount)}</strong>
                 </p>
               ))}
@@ -368,11 +637,30 @@ export default function HomePage() {
           </div>
         </section>
       )}
+      {!loading && section === "dashboard" && !dashboard && (
+        <section className="panel">
+          <p className="alert">{resourceErrors.dashboard}</p>
+        </section>
+      )}
       {!loading && section === "expenses" && (
         <section>
+          {resourceErrors.expenses && (
+            <p className="alert" role="alert">
+              {resourceErrors.expenses}
+            </p>
+          )}
           <div className="columns">
             <form className="panel form" onSubmit={submitExpense}>
               <h2>Registrar gasto</h2>
+              {resourceErrors.sharingRules && (
+                <p className="muted">{resourceErrors.sharingRules}</p>
+              )}
+              {resourceErrors.categories && (
+                <p className="muted">{resourceErrors.categories}</p>
+              )}
+              {resourceErrors.members && (
+                <p className="muted">{resourceErrors.members}</p>
+              )}
               <label>
                 Comercio
                 <input
@@ -427,7 +715,7 @@ export default function HomePage() {
                   <option value="">Seleccionar</option>
                   {memberIds.map((id) => (
                     <option key={id} value={id}>
-                      {id}
+                      {memberLabel(id)}
                     </option>
                   ))}
                 </select>
@@ -490,18 +778,99 @@ export default function HomePage() {
               {expenses.map((expense) => (
                 <div className="list-item" key={expense.id}>
                   {editingExpense === expense.id ? (
-                    <div className="inline">
-                      <input
-                        value={editDescription}
-                        onChange={(e) => setEditDescription(e.target.value)}
-                      />
-                      <button
-                        onClick={() => void saveExpense(expense.id)}
-                        disabled={busy}
+                    editLoading ? (
+                      <p className="muted">Cargando gasto...</p>
+                    ) : (
+                      <form
+                        className="inline"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void saveExpense(expense.id);
+                        }}
                       >
-                        Guardar
-                      </button>
-                    </div>
+                        <label>
+                          Descripción
+                          <input
+                            aria-label="Descripción del gasto"
+                            value={editExpenseForm.description}
+                            onChange={(e) =>
+                              setEditExpenseForm({
+                                ...editExpenseForm,
+                                description: e.target.value,
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Monto
+                          <input
+                            aria-label="Monto del gasto"
+                            required
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={editExpenseForm.totalAmount}
+                            onChange={(e) =>
+                              setEditExpenseForm({
+                                ...editExpenseForm,
+                                totalAmount: e.target.value,
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Categoría
+                          <select
+                            aria-label="Categoría del gasto"
+                            value={editExpenseForm.categoryId}
+                            onChange={(e) =>
+                              setEditExpenseForm({
+                                ...editExpenseForm,
+                                categoryId: e.target.value,
+                              })
+                            }
+                          >
+                            <option value="">Sin categoría</option>
+                            {categories.map((category) => (
+                              <option key={category.id} value={category.id}>
+                                {category.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Pagado por
+                          <select
+                            aria-label="Pagador del gasto"
+                            required
+                            value={editExpenseForm.paidByMemberId}
+                            onChange={(e) =>
+                              setEditExpenseForm({
+                                ...editExpenseForm,
+                                paidByMemberId: e.target.value,
+                              })
+                            }
+                          >
+                            <option value="">Seleccionar</option>
+                            {members.map((member) => (
+                              <option key={member.id} value={member.id}>
+                                {member.displayName}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button type="submit" disabled={busy}>
+                          Guardar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelExpenseEdit}
+                          disabled={busy}
+                        >
+                          Cancelar
+                        </button>
+                      </form>
+                    )
                   ) : (
                     <>
                       <div>
@@ -513,10 +882,8 @@ export default function HomePage() {
                       </div>
                       <div className="actions">
                         <button
-                          onClick={() => {
-                            setEditingExpense(expense.id);
-                            setEditDescription(expense.description ?? "");
-                          }}
+                          onClick={() => void startExpenseEdit(expense.id)}
+                          disabled={busy || editLoading}
                         >
                           Editar
                         </button>
@@ -538,19 +905,36 @@ export default function HomePage() {
       )}
       {!loading && section === "incomes" && (
         <section>
+          {resourceErrors.incomes && (
+            <p className="alert" role="alert">
+              {resourceErrors.incomes}
+            </p>
+          )}
           <div className="columns">
             <form className="panel form" onSubmit={submitIncome}>
               <h2>Registrar ingreso</h2>
+              {resourceErrors.categories && (
+                <p className="muted">{resourceErrors.categories}</p>
+              )}
+              {resourceErrors.members && (
+                <p className="muted">{resourceErrors.members}</p>
+              )}
               <label>
                 Integrante
-                <input
+                <select
                   required
                   value={incomeForm.memberId}
                   onChange={(e) =>
                     setIncomeForm({ ...incomeForm, memberId: e.target.value })
                   }
-                  placeholder="ID del integrante"
-                />
+                >
+                  <option value="">Seleccionar</option>
+                  {memberIds.map((id) => (
+                    <option key={id} value={id}>
+                      {memberLabel(id)}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 Monto
@@ -620,7 +1004,7 @@ export default function HomePage() {
                     <strong>{income.description}</strong>
                     <p>
                       {income.incomeDate} · {money(income.amount)} ·{" "}
-                      {income.memberId}
+                      {memberLabel(income.memberId)}
                     </p>
                   </div>
                   <button
@@ -641,7 +1025,7 @@ export default function HomePage() {
           <h2>Balance entre integrantes</h2>
           {balance.members.map((member) => (
             <div className="balance-row" key={member.memberId}>
-              <strong>{member.memberId}</strong>
+              <strong>{memberLabel(member.memberId)}</strong>
               <span>Pagó {money(member.paid)}</span>
               <span>Le corresponde {money(member.share)}</span>
               <b className={member.balance >= 0 ? "positive" : "negative"}>
@@ -650,6 +1034,45 @@ export default function HomePage() {
               </b>
             </div>
           ))}
+        </section>
+      )}
+      {!loading && section === "balance" && !balance && (
+        <section className="panel">
+          <p className="alert">{resourceErrors.balance}</p>
+        </section>
+      )}
+      {section === "agent" && (
+        <section className="panel">
+          <h2>HouseMate AI</h2>
+          <p className="muted">
+            Consulta tus finanzas o prepara una operación para confirmarla.
+          </p>
+          <form className="form" onSubmit={sendAgentMessage}>
+            <label>
+              Mensaje
+              <textarea
+                value={agentMessage}
+                onChange={(event) => setAgentMessage(event.target.value)}
+                placeholder="¿Cuánto gastamos este mes?"
+                disabled={agentBusy}
+              />
+            </label>
+            <button className="primary" type="submit" disabled={agentBusy}>
+              {agentBusy ? "Enviando…" : "Enviar"}
+            </button>
+          </form>
+          {agentError && (
+            <p className="alert" role="alert">
+              {agentError}
+            </p>
+          )}
+          {agentResult && (
+            <article className="panel" aria-live="polite">
+              <p style={{ whiteSpace: "pre-line" }}>
+                {presentAgentResult(agentResult)}
+              </p>
+            </article>
+          )}
         </section>
       )}
       <footer>

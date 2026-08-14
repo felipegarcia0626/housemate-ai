@@ -26,6 +26,7 @@ La API no expone directamente operaciones sobre tablas ni permite consultas SQL 
 Los siguientes endpoints del contrato ya están implementados en el repositorio y validados mediante sus harnesses funcionales:
 
 - `GET /api/categories`
+- `POST /api/agent`
 - `GET /api/expenses`
 - `GET /api/expenses/{id}`
 - `POST /api/expenses`
