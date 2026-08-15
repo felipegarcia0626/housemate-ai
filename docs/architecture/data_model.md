@@ -362,14 +362,21 @@ Expense
 Representa la categoría financiera de un gasto o producto.
 
 Ejemplos
+Vivienda
 Alimentación
-Restaurantes
 Transporte
-Mascotas
-Servicios
-Entretenimiento
 Salud
+Mascotas
+Ocio
+Servicios
+Compras
+Educación
+Deudas y obligaciones
+Viajes
+Impuestos
 Otros
+Salario
+Honorarios
 Atributos
 Category
 ├── id
@@ -1563,8 +1570,19 @@ Se utilizan dos User porque los dos HouseholdMember representan identidades dist
 | `00000000-0000-4000-8000-000000000032` | `Otros` | `Registros sin categoría específica` |
 | `00000000-0000-4000-8000-000000000033` | `Salario` | `Ingresos salariales` |
 | `00000000-0000-4000-8000-000000000034` | `Honorarios` | `Ingresos por servicios profesionales` |
+| `00000000-0000-4000-8000-000000000035` | `Vivienda` | `Arriendo, hipoteca, reparaciones y mantenimiento del hogar` |
+| `00000000-0000-4000-8000-000000000036` | `Transporte` | `Gasolina, transporte público, parqueadero y mantenimiento` |
+| `00000000-0000-4000-8000-000000000037` | `Salud` | `Consultas, medicamentos y tratamientos` |
+| `00000000-0000-4000-8000-000000000038` | `Mascotas` | `Veterinario, alimento y accesorios` |
+| `00000000-0000-4000-8000-000000000039` | `Ocio` | `Cine, entretenimiento, actividades y salidas` |
+| `00000000-0000-4000-8000-000000000040` | `Servicios` | `Energía, agua, internet, telefonía y suscripciones básicas` |
+| `00000000-0000-4000-8000-000000000046` | `Compras` | `Ropa, artículos personales y compras generales` |
+| `00000000-0000-4000-8000-000000000047` | `Educación` | `Matrículas, cursos, libros y materiales` |
+| `00000000-0000-4000-8000-000000000048` | `Deudas y obligaciones` | `Cuotas, créditos y obligaciones financieras` |
+| `00000000-0000-4000-8000-000000000049` | `Viajes` | `Alojamiento, vuelos y gastos de viaje` |
+| `00000000-0000-4000-8000-000000000050` | `Impuestos` | `Impuestos, tasas y contribuciones` |
 
-Este catálogo mínimo permite probar gastos, categoría residual, ingresos sin categoría e ingresos categorizados sin crear una jerarquía separada.
+Este catálogo global contiene trece categorías de gasto y dos categorías de ingreso. Permite probar gastos, categoría residual, ingresos sin categoría e ingresos categorizados sin crear una jerarquía separada.
 
 ### Orden 5 — SharingRule
 

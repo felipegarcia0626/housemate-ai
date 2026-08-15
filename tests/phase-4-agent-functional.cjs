@@ -373,7 +373,13 @@ async function main() {
   const fakeCategoryService = {
     async listCategories() {
       operations.push({ type: "category-read" });
-      return [{ id: "category-1", name: "Food" }];
+      return [
+        { id: "category-1", name: "Food" },
+        { id: "category-vivienda", name: "Vivienda" },
+        { id: "category-transporte", name: "Transporte" },
+        { id: "category-mascotas", name: "Mascotas" },
+        { id: "category-ocio", name: "Ocio" },
+      ];
     },
   };
   const fakeSharingRuleService = {
@@ -880,6 +886,54 @@ async function main() {
     "PASS category clarification resolves a real category before proposal",
   );
 
+  const canonicalCategories = [
+    ["Vivienda", "category-vivienda"],
+    ["Transporte", "category-transporte"],
+    ["Mascotas", "category-mascotas"],
+    ["Ocio", "category-ocio"],
+  ];
+  for (const [categoryName, categoryId] of canonicalCategories) {
+    mockInterpretation = {
+      kind: "CREATE_EXPENSE",
+      merchant: "Prueba de catálogo",
+      description: null,
+      totalAmount: "100",
+      expenseDate: "2026-08-12",
+      paidBySelf: true,
+      categoryName,
+    };
+    const canonicalCategoryContext = {
+      ...contextA,
+      conversationKey: `agent-canonical-category-${categoryName}`,
+    };
+    const canonicalProposal = await conversation.processAgentMessage(
+      canonicalCategoryContext,
+      { message: `Registra un gasto de 100 en ${categoryName}` },
+    );
+    assert.equal(canonicalProposal.type, "PROPOSAL_CREATED");
+    const canonicalStored = proposals.find(
+      (row) => row.id === canonicalProposal.proposalId,
+    );
+    assert.equal(canonicalStored.payload.expense.categoryId, categoryId);
+    const canonicalRejected = await conversation.processAgentMessage(
+      canonicalCategoryContext,
+      { message: "no" },
+    );
+    assert.equal(canonicalRejected.type, "REJECTED");
+  }
+  console.log(
+    "PASS canonical essential expense categories resolve without semantic mapping",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Carulla",
+    description: null,
+    totalAmount: "100",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    categoryName: null,
+  };
   const invalidCategoryContext = {
     ...contextA,
     conversationKey: "agent-invalid-category",
@@ -1129,7 +1183,13 @@ async function main() {
   console.log("PASS get_balance delegates without recalculating");
 
   const categoryRead = await getCategories.getCategoriesTool(contextA);
-  assert.deepEqual(categoryRead, [{ id: "category-1", name: "Food" }]);
+  assert.deepEqual(categoryRead, [
+    { id: "category-1", name: "Food" },
+    { id: "category-vivienda", name: "Vivienda" },
+    { id: "category-transporte", name: "Transporte" },
+    { id: "category-mascotas", name: "Mascotas" },
+    { id: "category-ocio", name: "Ocio" },
+  ]);
   console.log(
     "PASS get_categories delegates without context or persistence access",
   );

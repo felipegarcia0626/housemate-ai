@@ -90,6 +90,72 @@ VALUES
     'Honorarios',
     'Ingresos por servicios profesionales',
     '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000035',
+    'Vivienda',
+    'Arriendo, hipoteca, reparaciones y mantenimiento del hogar',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000036',
+    'Transporte',
+    'Gasolina, transporte público, parqueadero y mantenimiento',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000037',
+    'Salud',
+    'Consultas, medicamentos y tratamientos',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000038',
+    'Mascotas',
+    'Veterinario, alimento y accesorios',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000039',
+    'Ocio',
+    'Cine, entretenimiento, actividades y salidas',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000040',
+    'Servicios',
+    'Energía, agua, internet, telefonía y suscripciones básicas',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000046',
+    'Compras',
+    'Ropa, artículos personales y compras generales',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000047',
+    'Educación',
+    'Matrículas, cursos, libros y materiales',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000048',
+    'Deudas y obligaciones',
+    'Cuotas, créditos y obligaciones financieras',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000049',
+    'Viajes',
+    'Alojamiento, vuelos y gastos de viaje',
+    '2026-01-01 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000050',
+    'Impuestos',
+    'Impuestos, tasas y contribuciones',
+    '2026-01-01 00:00:00+00'
   )
 ON CONFLICT (id) DO UPDATE
 SET name = EXCLUDED.name,
