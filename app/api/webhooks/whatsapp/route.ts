@@ -1,5 +1,6 @@
 import {
   verifyWhatsAppWebhook,
+  verifyWhatsAppSignature,
   WhatsAppAdapterError,
 } from "@/infrastructure/whatsapp/whatsapp.adapter";
 import {
@@ -41,9 +42,32 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  let rawBody: string;
+  try {
+    rawBody = await request.text();
+  } catch {
+    return errorResponse(400, "VALIDATION_ERROR", "Solicitud inválida.");
+  }
+
+  try {
+    verifyWhatsAppSignature(
+      rawBody,
+      request.headers.get("x-hub-signature-256"),
+    );
+  } catch (error) {
+    if (error instanceof WhatsAppAdapterError) {
+      return errorResponse(403, "VALIDATION_ERROR", "Solicitud inválida.");
+    }
+    return errorResponse(
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operación.",
+    );
+  }
+
   let payload: unknown;
   try {
-    payload = await request.json();
+    payload = JSON.parse(rawBody);
   } catch {
     return errorResponse(400, "VALIDATION_ERROR", "Solicitud inválida.");
   }

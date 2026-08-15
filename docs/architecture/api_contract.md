@@ -842,13 +842,16 @@ responder rápidamente a la plataforma;
 evitar procesamiento duplicado cuando el mismo evento sea recibido nuevamente.
 
 La implementación MVP acepta únicamente mensajes de texto. El webhook valida el
-JSON, ignora eventos no soportados, resuelve el contexto controlado del remitente
-y delega el texto en el Conversation Service. `external_event_id` se reserva de
-forma atómica en `tb_processed_whatsapp_events`; un reintento duplicado se
-confirma sin volver a ejecutar el agente. Las respuestas se envían mediante el
-adaptador server-only de WhatsApp Cloud API. La identidad del remitente se
-resuelve mediante `tb_users.external_identifier` dentro del hogar configurado;
-la configuración de esa relación es necesaria por entorno.
+JSON y la firma HMAC-SHA256 `X-Hub-Signature-256` sobre el body crudo, ignora
+eventos no soportados, resuelve el contexto controlado del remitente y delega el
+texto en el Conversation Service. Una firma ausente, inválida o con formato
+incorrecto se rechaza con `403 VALIDATION_ERROR`; un body no parseable con firma
+válida conserva `400 VALIDATION_ERROR`. `external_event_id` se reserva de forma
+atómica en `tb_processed_whatsapp_events`; un reintento duplicado se confirma
+sin volver a ejecutar el agente. Las respuestas se envían mediante el adaptador
+server-only de WhatsApp Cloud API. La identidad del remitente se resuelve
+mediante `tb_users.external_identifier` dentro del hogar configurado; la
+configuración de esa relación es necesaria por entorno.
 
 El webhook no deberá contener lógica financiera.
 

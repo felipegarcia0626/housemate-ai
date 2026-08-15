@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { createHmac } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const ts = require("typescript");
@@ -31,6 +32,7 @@ const memberId = "42000000-0000-4000-8000-000000000011";
 const sender = "573001234567";
 const unknownSender = "573009999999";
 const proposalId = "52000000-0000-4000-8000-000000000001";
+const appSecret = "whatsapp-app-secret";
 
 const processedEvents = new Set();
 const operations = [];
@@ -190,9 +192,39 @@ function incomingPayload(id, text, from = sender) {
   };
 }
 
+function rawBody(payload) {
+  return typeof payload === "string" ? payload : JSON.stringify(payload);
+}
+
+function signatureFor(body) {
+  return `sha256=${createHmac("sha256", appSecret)
+    .update(body, "utf8")
+    .digest("hex")}`;
+}
+
+function signedRequest(body, signature = signatureFor(body)) {
+  return new Request("https://example.test/api/webhooks/whatsapp", {
+    method: "POST",
+    body,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Hub-Signature-256": signature,
+    },
+  });
+}
+
+function unsignedRequest(body) {
+  return new Request("https://example.test/api/webhooks/whatsapp", {
+    method: "POST",
+    body,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 async function main() {
   process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdId;
   process.env.WHATSAPP_VERIFY_TOKEN = "verify-token";
+  process.env.WHATSAPP_APP_SECRET = appSecret;
   process.env.WHATSAPP_ACCESS_TOKEN = "access-token";
   process.env.WHATSAPP_PHONE_NUMBER_ID = "phone-1";
 
@@ -258,13 +290,50 @@ async function main() {
   assert.ok(!(await invalidVerification.text()).includes("verify-token"));
   console.log("PASS invalid webhook verification is sanitized");
 
-  const first = await route.POST(
-    new Request("https://example.test/api/webhooks/whatsapp", {
-      method: "POST",
-      body: JSON.stringify(incomingPayload("event-1", "Pagué 100")),
-      headers: { "Content-Type": "application/json" },
-    }),
+  const unsignedBody = rawBody(incomingPayload("event-unsigned", "Pagué 100"));
+  const unsigned = await route.POST(unsignedRequest(unsignedBody));
+  assert.equal(unsigned.status, 403);
+  assert.equal(agentCalls.length, 0);
+  assert.equal(sentMessages.length, 0);
+  console.log("PASS unsigned webhook event is rejected before Agent");
+
+  const invalidSignatureBody = rawBody(
+    incomingPayload("event-invalid-signature", "Pagué 100"),
   );
+  const validSignature = signatureFor(invalidSignatureBody);
+  const invalidSignatureValue =
+    validSignature.slice(0, -1) + (validSignature.endsWith("0") ? "1" : "0");
+  const invalidSignature = await route.POST(
+    signedRequest(invalidSignatureBody, invalidSignatureValue),
+  );
+  assert.equal(invalidSignature.status, 403);
+  assert.equal(agentCalls.length, 0);
+  assert.equal(sentMessages.length, 0);
+  console.log("PASS invalid webhook signature is rejected before Agent");
+
+  const malformedSignatureBody = rawBody(
+    incomingPayload("event-malformed-signature", "Pagué 100"),
+  );
+  const malformedSignature = await route.POST(
+    signedRequest(malformedSignatureBody, "invalid-signature"),
+  );
+  assert.equal(malformedSignature.status, 403);
+  assert.equal(agentCalls.length, 0);
+  assert.equal(sentMessages.length, 0);
+  console.log("PASS malformed webhook signature is rejected");
+
+  const originalBody = rawBody(incomingPayload("event-tampered", "Pagué 100"));
+  const tamperedBody = originalBody.replace("Pagué 100", "Pagué 900");
+  const tampered = await route.POST(
+    signedRequest(tamperedBody, signatureFor(originalBody)),
+  );
+  assert.equal(tampered.status, 403);
+  assert.equal(agentCalls.length, 0);
+  assert.equal(sentMessages.length, 0);
+  console.log("PASS modified webhook body is rejected");
+
+  const firstBody = rawBody(incomingPayload("event-1", "Pagué 100"));
+  const first = await route.POST(signedRequest(firstBody));
   assert.equal(first.status, 200);
   assert.deepEqual(await first.json(), { ok: true, status: "PROCESSED" });
   assert.equal(agentCalls.length, 1);
@@ -283,12 +352,7 @@ async function main() {
     "PASS text message resolves controlled context and delegates to Agent",
   );
 
-  const duplicate = await route.POST(
-    new Request("https://example.test/api/webhooks/whatsapp", {
-      method: "POST",
-      body: JSON.stringify(incomingPayload("event-1", "Pagué 100")),
-    }),
-  );
+  const duplicate = await route.POST(signedRequest(firstBody));
   assert.equal(duplicate.status, 200);
   assert.deepEqual(await duplicate.json(), { ok: true, status: "DUPLICATE" });
   assert.equal(agentCalls.length, 1);
@@ -296,12 +360,8 @@ async function main() {
   console.log("PASS duplicate event does not invoke Agent or send again");
 
   agentMode = "confirmed";
-  const confirmation = await route.POST(
-    new Request("https://example.test/api/webhooks/whatsapp", {
-      method: "POST",
-      body: JSON.stringify(incomingPayload("event-2", "Sí")),
-    }),
-  );
+  const confirmationBody = rawBody(incomingPayload("event-2", "Sí"));
+  const confirmation = await route.POST(signedRequest(confirmationBody));
   assert.equal(confirmation.status, 200);
   assert.equal(agentCalls.at(-1).input.proposalId, proposalId);
   console.log(
@@ -309,31 +369,20 @@ async function main() {
   );
 
   const unsupported = await route.POST(
-    new Request("https://example.test/api/webhooks/whatsapp", {
-      method: "POST",
-      body: JSON.stringify({ object: "whatsapp_business_account", entry: [] }),
-    }),
+    signedRequest(rawBody({ object: "whatsapp_business_account", entry: [] })),
   );
   assert.deepEqual(await unsupported.json(), { ok: true, ignored: true });
   assert.equal(agentCalls.length, 2);
   console.log("PASS unsupported event is ignored safely");
 
-  const invalidJson = await route.POST(
-    new Request("https://example.test/api/webhooks/whatsapp", {
-      method: "POST",
-      body: "not-json",
-    }),
-  );
+  const invalidJson = await route.POST(signedRequest("not-json"));
   assert.equal(invalidJson.status, 400);
   console.log("PASS invalid JSON is rejected");
 
   const unknown = await route.POST(
-    new Request("https://example.test/api/webhooks/whatsapp", {
-      method: "POST",
-      body: JSON.stringify(
-        incomingPayload("event-unknown", "Hola", unknownSender),
-      ),
-    }),
+    signedRequest(
+      rawBody(incomingPayload("event-unknown", "Hola", unknownSender)),
+    ),
   );
   assert.equal(unknown.status, 500);
   assert.equal(agentCalls.length, 2);
@@ -341,10 +390,7 @@ async function main() {
 
   agentMode = "error";
   const agentError = await route.POST(
-    new Request("https://example.test/api/webhooks/whatsapp", {
-      method: "POST",
-      body: JSON.stringify(incomingPayload("event-agent-error", "Hola")),
-    }),
+    signedRequest(rawBody(incomingPayload("event-agent-error", "Hola"))),
   );
   assert.equal(agentError.status, 500);
   assert.ok(!(await agentError.text()).includes("internal agent details"));
@@ -353,10 +399,7 @@ async function main() {
   agentMode = "proposal";
   nextSendFails = true;
   const providerError = await route.POST(
-    new Request("https://example.test/api/webhooks/whatsapp", {
-      method: "POST",
-      body: JSON.stringify(incomingPayload("event-provider-error", "Hola")),
-    }),
+    signedRequest(rawBody(incomingPayload("event-provider-error", "Hola"))),
   );
   assert.equal(providerError.status, 500);
   assert.ok(!(await providerError.text()).includes("access-token"));
@@ -376,10 +419,12 @@ async function main() {
     for (const forbidden of [
       "getSupabaseAdminClient",
       "database/client",
-      ".from(",
+      "client.from(",
+      "supabase.from(",
       ".rpc(",
       ".insert(",
-      ".update(",
+      "client.update(",
+      "supabase.update(",
       ".delete(",
     ]) {
       assert.ok(

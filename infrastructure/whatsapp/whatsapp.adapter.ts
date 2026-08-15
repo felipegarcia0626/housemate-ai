@@ -1,3 +1,5 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 export class WhatsAppAdapterError extends Error {
   constructor() {
     super("WhatsApp provider operation failed.");
@@ -80,6 +82,26 @@ export function verifyWhatsAppWebhook(
     throw new WhatsAppAdapterError();
   }
   return challenge;
+}
+
+export function verifyWhatsAppSignature(
+  rawBody: string,
+  signature: string | null,
+): void {
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  const match = signature?.match(/^sha256=([0-9a-f]{64})$/i);
+  if (!appSecret || !match) throw new WhatsAppAdapterError();
+
+  const expected = createHmac("sha256", appSecret)
+    .update(rawBody, "utf8")
+    .digest();
+  const received = Buffer.from(match[1], "hex");
+  if (
+    received.length !== expected.length ||
+    !timingSafeEqual(expected, received)
+  ) {
+    throw new WhatsAppAdapterError();
+  }
 }
 
 export async function sendWhatsAppText(
