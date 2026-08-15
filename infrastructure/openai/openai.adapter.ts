@@ -137,6 +137,13 @@ invent a member name. Read filters must use only the fields available in the
 corresponding intent. Never return household, actor,
 createdBy, source, member ids, or any persistence fields.`;
 
+function logOpenAIDebug(
+  stage: string,
+  details: Record<string, boolean | number | string> = {},
+): void {
+  console.info("[openai-debug]", { stage, ...details });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -259,9 +266,16 @@ export async function interpretExpenseMessage(
   message: string,
 ): Promise<ExpenseInterpretation> {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new OpenAIAdapterError();
+  logOpenAIDebug("runtime_config_checked", {
+    apiKeyPresent: Boolean(apiKey),
+  });
+  if (!apiKey) {
+    logOpenAIDebug("request_blocked", { code: "configuration_error" });
+    throw new OpenAIAdapterError();
+  }
   const currentDate = new Date().toISOString().slice(0, 10);
 
+  logOpenAIDebug("request_started", { apiKeyPresent: true });
   let response: Response;
   try {
     response = await fetch("https://api.openai.com/v1/responses", {
@@ -298,21 +312,68 @@ export async function interpretExpenseMessage(
       }),
     });
   } catch {
+    logOpenAIDebug("request_failed", { code: "request_error" });
     throw new OpenAIAdapterError();
   }
 
-  if (!response.ok) throw new OpenAIAdapterError();
+  logOpenAIDebug("response_received", {
+    status: response.status,
+    ok: response.ok,
+  });
+  if (!response.ok) {
+    logOpenAIDebug("response_rejected", {
+      code: "http_error",
+      status: response.status,
+    });
+    throw new OpenAIAdapterError();
+  }
   let body: unknown;
   try {
     body = await response.json();
   } catch {
+    logOpenAIDebug("response_parse_failed", {
+      code: "response_parse_error",
+    });
     throw new OpenAIAdapterError();
   }
+  logOpenAIDebug("response_json_parsed", { success: true });
   const text = extractText(body);
-  if (!text) throw new OpenAIAdapterError();
+  logOpenAIDebug("output_text_extracted", {
+    present: Boolean(text),
+    length: text?.length ?? 0,
+  });
+  if (!text) {
+    logOpenAIDebug("output_text_missing", {
+      code: "missing_output_text",
+    });
+    throw new OpenAIAdapterError();
+  }
+
+  let parsed: unknown;
   try {
-    return parseInterpretation(JSON.parse(text) as unknown);
+    parsed = JSON.parse(text) as unknown;
+    logOpenAIDebug("result_json_parsed", { success: true });
   } catch {
+    logOpenAIDebug("result_json_parse_failed", {
+      code: "response_parse_error",
+    });
+    throw new OpenAIAdapterError();
+  }
+
+  try {
+    const result = parseInterpretation(parsed);
+    logOpenAIDebug("result_validated", {
+      success: true,
+      resultKind: result.kind,
+    });
+    logOpenAIDebug("interpretation_completed", {
+      resultKind: result.kind,
+    });
+    return result;
+  } catch {
+    logOpenAIDebug("result_validation_failed", {
+      code: "schema_validation_error",
+    });
     throw new OpenAIAdapterError();
   }
 }
