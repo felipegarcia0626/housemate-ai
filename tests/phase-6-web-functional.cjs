@@ -32,6 +32,11 @@ const members = [
   },
   {
     id: "56000000-0000-4000-8000-000000000012",
+    household_id: householdA,
+    display_name: "Alejandra",
+  },
+  {
+    id: "56000000-0000-4000-8000-000000000013",
     household_id: householdB,
     display_name: "Otra persona",
   },
@@ -297,6 +302,35 @@ for (const label of [
 
 if (!page.includes("value={incomeForm.memberId}"))
   throw new Error("UI must preserve member IDs as form values");
+for (const marker of [
+  "members.map((member) =>",
+  "key={member.id}",
+  "value={member.id}",
+  "{member.displayName}",
+  "value={editExpenseForm.paidByMemberId}",
+  "paidByMemberId: editExpenseForm.paidByMemberId",
+]) {
+  if (!page.includes(marker))
+    throw new Error(`Expense payer selector missing marker: ${marker}`);
+}
+assert.deepEqual(
+  members.filter((member) => member.household_id === householdA).map((member) => ({
+    id: member.id,
+    displayName: member.display_name,
+  })),
+  [
+    {
+      id: "56000000-0000-4000-8000-000000000011",
+      displayName: "Felipe",
+    },
+    {
+      id: "56000000-0000-4000-8000-000000000012",
+      displayName: "Alejandra",
+    },
+  ],
+);
+if (page.includes("member.displayName === \"Pareja\""))
+  throw new Error("UI must not rename members with a hardcoded alias");
 
 async function main() {
   const previous = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
@@ -324,12 +358,12 @@ async function main() {
     );
     assert.equal(response.status, 200);
     assert.deepEqual(await readJson(response), {
-      data: [
-        {
-          id: members[0].id,
-          displayName: members[0].display_name,
-        },
-      ],
+      data: members
+        .filter((member) => member.household_id === householdA)
+        .map((member) => ({
+          id: member.id,
+          displayName: member.display_name,
+        })),
     });
     assert.ok(
       operations.some(
