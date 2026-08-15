@@ -90,16 +90,29 @@ export function verifyWhatsAppSignature(
 ): void {
   const appSecret = process.env.WHATSAPP_APP_SECRET;
   const match = signature?.match(/^sha256=([0-9a-f]{64})$/i);
-  if (!appSecret || !match) throw new WhatsAppAdapterError();
+  const signatureHeaderPresent = Boolean(signature);
+  const signatureFormatValid = Boolean(match);
+  let hmacMatches = false;
 
-  const expected = createHmac("sha256", appSecret)
-    .update(rawBody, "utf8")
-    .digest();
-  const received = Buffer.from(match[1], "hex");
-  if (
-    received.length !== expected.length ||
-    !timingSafeEqual(expected, received)
-  ) {
+  if (appSecret && match) {
+    const expected = createHmac("sha256", appSecret)
+      .update(rawBody, "utf8")
+      .digest();
+    const received = Buffer.from(match[1], "hex");
+    hmacMatches =
+      received.length === expected.length &&
+      timingSafeEqual(expected, received);
+  }
+
+  console.info("[whatsapp-hmac-diagnostic]", {
+    appSecretPresent: Boolean(appSecret),
+    signatureHeaderPresent,
+    signatureFormatValid,
+    hmacMatches,
+    bodyByteLength: Buffer.byteLength(rawBody, "utf8"),
+  });
+
+  if (!appSecret || !match || !hmacMatches) {
     throw new WhatsAppAdapterError();
   }
 }
