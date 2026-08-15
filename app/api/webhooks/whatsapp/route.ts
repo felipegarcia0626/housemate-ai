@@ -46,6 +46,7 @@ export async function POST(request: Request): Promise<Response> {
   try {
     rawBody = await request.text();
   } catch {
+    console.info("[whatsapp-debug] stage=body_read_failed");
     return errorResponse(400, "VALIDATION_ERROR", "Solicitud inválida.");
   }
 
@@ -56,6 +57,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   } catch (error) {
     if (error instanceof WhatsAppAdapterError) {
+      console.info("[whatsapp-debug] stage=hmac_rejected");
       return errorResponse(403, "VALIDATION_ERROR", "Solicitud inválida.");
     }
     return errorResponse(
@@ -64,28 +66,56 @@ export async function POST(request: Request): Promise<Response> {
       "No fue posible completar la operación.",
     );
   }
+  console.info("[whatsapp-debug] stage=hmac_validated");
 
   let payload: unknown;
   try {
     payload = JSON.parse(rawBody);
   } catch {
+    console.info("[whatsapp-debug] stage=json_parse_failed");
     return errorResponse(400, "VALIDATION_ERROR", "Solicitud inválida.");
   }
+  console.info("[whatsapp-debug] stage=json_parsed");
 
   const message = parseWhatsAppPayload(payload);
-  if (!message) return Response.json({ ok: true, ignored: true });
+  console.info(
+    `[whatsapp-debug] stage=payload_parsed recognized=${String(Boolean(message))}`,
+  );
+  if (!message) {
+    console.info("[whatsapp-debug] stage=payload_ignored");
+    const response = Response.json({ ok: true, ignored: true });
+    console.info(
+      `[whatsapp-debug] stage=response_sent status=${response.status}`,
+    );
+    return response;
+  }
+  console.info(
+    `[whatsapp-debug] stage=text_extracted event_id_present=${String(Boolean(message.eventId))} event_id_length=${message.eventId.length} text_length=${message.text.length} sender_present=${String(Boolean(message.sender))} phone_number_id_present=${String(Boolean(message.phoneNumberId))}`,
+  );
 
   try {
+    console.info("[whatsapp-debug] stage=processing_started");
     const result = await processWhatsAppTextMessage(message);
-    return Response.json({ ok: true, ...result });
+    console.info(
+      `[whatsapp-debug] stage=processing_completed result_status=${result.status}`,
+    );
+    const response = Response.json({ ok: true, ...result });
+    console.info(
+      `[whatsapp-debug] stage=response_sent status=${response.status}`,
+    );
+    return response;
   } catch (error) {
     if (error instanceof WhatsAppDomainError) {
+      console.info(
+        `[whatsapp-debug] stage=processing_failed code=${error.code}`,
+      );
       return errorResponse(
         500,
         "INTERNAL_ERROR",
         "No fue posible procesar el mensaje.",
       );
     }
+    console.info("[whatsapp-debug] stage=processing_failed code=UNKNOWN");
     return errorResponse(
       500,
       "INTERNAL_ERROR",
