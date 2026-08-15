@@ -63,6 +63,12 @@ type AgentResult = {
   data?: unknown;
 };
 
+const agentSuggestions = [
+  "¿Cuánto gastamos este mes?",
+  "¿Cuál es el balance entre nosotros?",
+  "¿Cuánto gastamos en alimentación?",
+] as const;
+
 const initialExpense = {
   merchant: "",
   description: "",
@@ -171,8 +177,28 @@ export default function HomePage() {
     [members],
   );
 
+  const topCategory = useMemo(() => {
+    if (!dashboard || dashboard.byCategory.length === 0) return null;
+    return dashboard.byCategory.reduce((top, current) =>
+      current.amount > top.amount ? current : top,
+    );
+  }, [dashboard]);
+
+  const maxCategoryAmount = useMemo(
+    () =>
+      Math.max(1, ...(dashboard?.byCategory.map((item) => item.amount) ?? [])),
+    [dashboard],
+  );
+
   function memberLabel(memberId: string): string {
     return memberNames[memberId] ?? memberId;
+  }
+
+  function chooseAgentSuggestion(message: string): void {
+    setSection("agent");
+    setAgentMessage(message);
+    setAgentResult(null);
+    setAgentError("");
   }
 
   async function refresh() {
@@ -463,7 +489,8 @@ export default function HomePage() {
       const total = items.reduce(
         (sum, item) =>
           sum +
-          (typeof item === "object" && item !== null &&
+          (typeof item === "object" &&
+          item !== null &&
           typeof (item as { totalAmount?: unknown }).totalAmount === "number"
             ? (item as { totalAmount: number }).totalAmount
             : 0),
@@ -478,7 +505,11 @@ export default function HomePage() {
         };
         return `• ${expense.merchant ?? "Gasto"} — ${money(expense.totalAmount ?? 0)} — ${humanDate(expense.expenseDate ?? "")} — ${expense.category?.name ?? "Sin categoría"}`;
       });
-      return [`Encontré ${items.length} ${items.length === 1 ? "gasto" : "gastos"}:`, ...lines, `Total: ${money(total)}`].join("\n");
+      return [
+        `Encontré ${items.length} ${items.length === 1 ? "gasto" : "gastos"}:`,
+        ...lines,
+        `Total: ${money(total)}`,
+      ].join("\n");
     }
 
     if (result.operation === "GET_INCOMES") {
@@ -586,7 +617,7 @@ export default function HomePage() {
                   ? "Ingresos"
                   : item === "balance"
                     ? "Balance"
-                    : "HouseMate AI"}
+                    : "Agente IA"}
           </button>
         ))}
       </nav>
@@ -598,6 +629,29 @@ export default function HomePage() {
       {loading && <p className="loading">Cargando información…</p>}
       {!loading && section === "dashboard" && dashboard && (
         <section>
+          <div className="dashboard-heading">
+            <div>
+              <p className="section-kicker">RESUMEN DEL HOGAR</p>
+              <h2>Tu dinero, en una sola vista</h2>
+              <p className="muted">
+                Una lectura rápida de los ingresos, gastos y categorías que
+                alimentan tu balance.
+              </p>
+            </div>
+            <div className="dashboard-insight">
+              <span className="insight-label">Lectura principal</span>
+              <strong>
+                {dashboard.netAmount >= 0
+                  ? "Los ingresos superan los gastos"
+                  : "Los gastos superan los ingresos"}
+              </strong>
+              {topCategory && (
+                <small>
+                  Mayor categoría: {topCategory.categoryName ?? "Sin categoría"}
+                </small>
+              )}
+            </div>
+          </div>
           <div className="cards">
             {[
               ["Ingresos", dashboard.totalIncome],
@@ -626,13 +680,34 @@ export default function HomePage() {
               ))}
             </article>
             <article className="panel">
-              <h2>Gastos por categoría</h2>
-              {dashboard.byCategory.map((item) => (
-                <p className="row" key={item.categoryId ?? "none"}>
-                  <span>{item.categoryName ?? "Sin categoría"}</span>
-                  <strong>{money(item.amount)}</strong>
-                </p>
-              ))}
+              <div className="panel-heading">
+                <div>
+                  <h2>Gastos por categoría</h2>
+                  <p className="muted">Distribución del gasto confirmado</p>
+                </div>
+                <span className="panel-tag">Detalle</span>
+              </div>
+              <div className="category-list">
+                {dashboard.byCategory.map((item) => (
+                  <div
+                    className="category-item"
+                    key={item.categoryId ?? "none"}
+                  >
+                    <div className="category-item-heading">
+                      <span>{item.categoryName ?? "Sin categoría"}</span>
+                      <strong>{money(item.amount)}</strong>
+                    </div>
+                    <div className="bar-track" aria-hidden="true">
+                      <span
+                        className="bar-fill"
+                        style={{
+                          width: `${Math.max(6, (item.amount / maxCategoryAmount) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </article>
           </div>
         </section>
@@ -1043,10 +1118,17 @@ export default function HomePage() {
       )}
       {section === "agent" && (
         <section className="panel">
-          <h2>HouseMate AI</h2>
-          <p className="muted">
-            Consulta tus finanzas o prepara una operación para confirmarla.
-          </p>
+          <div className="agent-heading">
+            <div>
+              <p className="section-kicker">INTERFAZ CONVERSACIONAL</p>
+              <h2>Habla con tus finanzas</h2>
+              <p className="muted">
+                Consulta tus datos o prepara una operación. La IA propone y tú
+                confirmas antes de guardar.
+              </p>
+            </div>
+            <span className="ai-badge">IA + datos del hogar</span>
+          </div>
           <form className="form" onSubmit={sendAgentMessage}>
             <label>
               Mensaje
@@ -1061,13 +1143,42 @@ export default function HomePage() {
               {agentBusy ? "Enviando…" : "Enviar"}
             </button>
           </form>
+          <div className="suggestions">
+            <span>Prueba con:</span>
+            <div className="suggestion-list">
+              {agentSuggestions.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  className="suggestion"
+                  onClick={() => chooseAgentSuggestion(suggestion)}
+                  disabled={agentBusy}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
           {agentError && (
             <p className="alert" role="alert">
               {agentError}
             </p>
           )}
           {agentResult && (
-            <article className="panel" aria-live="polite">
+            <article
+              className={`agent-result ${agentResult.type === "ERROR" ? "is-error" : ""}`}
+              aria-live="polite"
+            >
+              <div className="result-heading">
+                <strong>Respuesta de HouseMate AI</strong>
+                <span>
+                  {agentResult.type === "READ_RESULT"
+                    ? "Consulta completada"
+                    : agentResult.type === "PROPOSAL_CREATED"
+                      ? "Revisión requerida"
+                      : "Estado actualizado"}
+                </span>
+              </div>
               <p style={{ whiteSpace: "pre-line" }}>
                 {presentAgentResult(agentResult)}
               </p>
