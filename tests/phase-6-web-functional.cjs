@@ -194,6 +194,51 @@ for (const marker of ["Encontr", "No encontr", "Estas son las categor"]) {
     throw new Error(`Missing human-readable Agent presentation: ${marker}`);
 }
 
+const initialExpenseStart = page.indexOf("const initialExpense = {");
+const initialExpenseEnd = page.indexOf("};", initialExpenseStart);
+if (initialExpenseStart < 0 || initialExpenseEnd < initialExpenseStart)
+  throw new Error("Missing Expense creation initial state");
+const initialExpenseSource = page.slice(initialExpenseStart, initialExpenseEnd);
+if (!initialExpenseSource.includes('description: ""'))
+  throw new Error("Expense creation description must start empty");
+
+const creationFormStart = page.indexOf(
+  '<form className="panel form" onSubmit={submitExpense}>',
+);
+const creationFormEnd = page.indexOf("</form>", creationFormStart);
+if (creationFormStart < 0 || creationFormEnd < creationFormStart)
+  throw new Error("Missing Expense creation form");
+const creationFormSource = page.slice(creationFormStart, creationFormEnd);
+for (const marker of [
+  "Descripción",
+  "<textarea",
+  "value={expenseForm.description}",
+  "description: e.target.value",
+]) {
+  if (!creationFormSource.includes(marker))
+    throw new Error(`Missing Expense creation description marker: ${marker}`);
+}
+
+const submitExpenseStart = page.indexOf("async function submitExpense");
+const submitExpenseEnd = page.indexOf(
+  "async function startExpenseEdit",
+  submitExpenseStart,
+);
+if (submitExpenseStart < 0 || submitExpenseEnd < submitExpenseStart)
+  throw new Error("Missing Expense creation submit handler");
+const submitExpenseSource = page.slice(submitExpenseStart, submitExpenseEnd);
+for (const marker of [
+  'method: "POST"',
+  "body: JSON.stringify({",
+  "description: expenseForm.description || null",
+]) {
+  if (!submitExpenseSource.includes(marker))
+    throw new Error(`Missing Expense creation payload marker: ${marker}`);
+}
+console.log(
+  "PASS Expense creation UI initializes, edits, and submits optional description",
+);
+
 if (page.includes("JSON.stringify(agentResult"))
   throw new Error("Agent results must not be rendered as technical JSON");
 for (const forbidden of ["agentResult.proposalId", "agentResult.data.id"]) {
