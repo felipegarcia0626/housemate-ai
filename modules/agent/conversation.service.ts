@@ -12,16 +12,21 @@ import { getCategoriesTool } from "./tools/get-categories.tool";
 import { getSharingRulesTool } from "./tools/get-sharing-rules.tool";
 import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
 import {
+  createOperationDraft,
   createCategoryDraft,
+  deleteAgentDraft,
   deleteCategoryDraft,
-  getActiveCategoryDraft,
+  getActiveAgentDraft,
   isCategoryDraftRepositoryError,
+  updateAgentDraft,
   updateCategoryDraft,
 } from "./category-draft.service";
 import type {
+  AgentDraft,
   AgentCategoryDraft,
   CategoryDraftExpensePayload,
   CategoryDraftIncomePayload,
+  AgentOperationDraftPayload,
 } from "./category-draft.types";
 import type { Category } from "@/modules/categories/category.types";
 import type {
@@ -71,28 +76,203 @@ function normalizeCategoryName(value: string): string {
     .toLocaleLowerCase("es");
 }
 
-function isAmbiguousMovementRegistration(message: string): boolean {
-  const normalized = message
+function normalizeOperationMessage(value: string): string {
+  return value
+    .trim()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("es");
-  const hasRegistrationVerb =
-    /\b(registra|registrar|anota|anotar|apunta|apuntar|agrega|agregar)\b/.test(
-      normalized,
-    );
-  const hasAmount = /\b\d+(?:[.,]\d+)?\b/.test(normalized);
-  if (!hasRegistrationVerb || !hasAmount) return false;
+    .toLocaleLowerCase("es")
+    .replace(/[.!?]+$/g, "")
+    .replace(/\s+/g, " ");
+}
 
+function normalizeDraftDate(value: string | null): string {
+  if (!value) return "";
+  const normalized = normalizeOperationMessage(value);
+  const today = new Date();
+  if (normalized === "hoy") return today.toISOString().slice(0, 10);
+  if (normalized === "ayer") {
+    const yesterday = new Date(today);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    return yesterday.toISOString().slice(0, 10);
+  }
+  const months: Record<string, number> = {
+    enero: 0,
+    febrero: 1,
+    marzo: 2,
+    abril: 3,
+    mayo: 4,
+    junio: 5,
+    julio: 6,
+    agosto: 7,
+    septiembre: 8,
+    octubre: 9,
+    noviembre: 10,
+    diciembre: 11,
+  };
+  const match = normalized.match(
+    /^(\d{1,2}) de ([a-z]+)(?: de (\d{4}))?$/,
+  );
+  if (!match || !(match[2] in months)) return value.trim();
+  const year = match[3] ? Number(match[3]) : today.getUTCFullYear();
+  const day = Number(match[1]);
+  const month = months[match[2]];
+  const date = new Date(Date.UTC(year, month, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month ||
+    date.getUTCDate() !== day
+  ) {
+    return value.trim();
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function resolveOperationChoice(
+  message: string,
+): "CREATE_EXPENSE" | "CREATE_INCOME" | null {
+  const normalized = normalizeOperationMessage(message);
+  if (/^(?:un )?gasto$/.test(normalized) || normalized === "registrar gasto") {
+    return "CREATE_EXPENSE";
+  }
+  if (
+    /^(?:un )?ingreso$/.test(normalized) ||
+    normalized === "registrar ingreso"
+  ) {
+    return "CREATE_INCOME";
+  }
+  return null;
+}
+
+function looksLikeMovementRequest(message: string): boolean {
+  const normalized = normalizeOperationMessage(message);
+  if (
+    /^(?:fecha|date|descripci[oó]n|description|monto|valor|categor[ií]a|category|pagado por|payer)\b/.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+  const hasAmount = /\b\d+(?:[.,]\d+)?\b/.test(normalized);
   const hasExpenseSignal =
-    /\b(gasto|gastos|gaste|pague|pago|compra|compras|compre|factura)\b/.test(
+    /\b(gaste|pague|gasto|gastos|compra|compras|compre|factura|registra|registrar|anota|anotar|apunta|apuntar|agrega|agregar)\b/.test(
       normalized,
     );
   const hasIncomeSignal =
-    /\b(ingreso|ingresos|recibi|salario|sueldo|honorario|honorarios|nomina|bonus|bono)\b/.test(
+    /\b(recibi|recibir|ingreso|ingresos|salario|sueldo|honorario|honorarios|nomina|bono|entraron|entro)\b/.test(
       normalized,
     );
+  return hasAmount && (hasExpenseSignal || hasIncomeSignal);
+}
 
-  return !hasExpenseSignal && !hasIncomeSignal;
+function operationClarification(): AgentMessageResult {
+  return clarification(
+    ["operation"],
+    "¿Quieres registrar un gasto o un ingreso?",
+  );
+}
+
+function operationDetailsClarification(
+  operation: "CREATE_EXPENSE" | "CREATE_INCOME",
+  missingFields: string[],
+): AgentMessageResult {
+  const labels = missingFields.map((field) => {
+    if (field === "incomeDate") return "la fecha del ingreso";
+    if (field === "description") return "la descripción del ingreso";
+    if (field === "amount") return "el monto";
+    if (field === "totalAmount") return "el monto";
+    if (field === "paidByMemberName") return "qué integrante pagó";
+    return field;
+  });
+  const subject = operation === "CREATE_INCOME" ? "ingreso" : "gasto";
+  return clarification(
+    missingFields,
+    `Necesito ${labels.join(" y ")} para continuar con el ${subject}.`,
+  );
+}
+
+function operationPayloadFromInterpretation(
+  interpretation: Extract<
+    ExpenseInterpretation,
+    { kind: "AMBIGUOUS_MOVEMENT" }
+  >,
+): AgentOperationDraftPayload {
+  return {
+    amount: interpretation.amount,
+    date: interpretation.date,
+    merchant: interpretation.merchant,
+    description: interpretation.description,
+    paidBySelf: interpretation.paidBySelf,
+    paidByMemberName: interpretation.paidByMemberName,
+    categoryName: interpretation.categoryName,
+  };
+}
+
+function toCategoryExpensePayload(
+  input: ExpenseProposalInput,
+): CategoryDraftExpensePayload["expense"] {
+  const payload = { ...input } as CategoryDraftExpensePayload["expense"];
+  delete payload.splits;
+  return payload;
+}
+
+function toCategoryIncomePayload(
+  input: CategoryDraftIncomePayload["income"] & { memberId: string },
+): CategoryDraftIncomePayload["income"] {
+  const { memberId, ...payload } = input;
+  void memberId;
+  return payload;
+}
+
+function parseDraftDetails(
+  message: string,
+  payload: AgentOperationDraftPayload,
+  pendingFields: string[],
+): AgentOperationDraftPayload {
+  const amountMatch = message.match(
+    /(?:monto|valor|por)\s*[:=]?\s*\$?\s*([\d.,]+)/i,
+  );
+  const dateMatch = message.match(
+    /(?:fecha|date)\s*[:=]?\s*(\d{4}-\d{2}-\d{2})/i,
+  );
+  const descriptionMatch = message.match(
+    /(?:descripci[oó]n|description)\s*[:=]\s*(.*?)(?=\s+(?:categor[ií]a|category)\s*[:=]|$)/i,
+  );
+  const categoryMatch = message.match(
+    /(?:categor[ií]a|category)\s*[:=]\s*(.+)$/i,
+  );
+  const payerMatch = message.match(
+    /(?:pag[oó]|pagado por|payer)\s*[:=]?\s*(.+)$/i,
+  );
+  const updatedPayload = {
+    ...payload,
+    amount: amountMatch?.[1] ?? payload.amount,
+    date: dateMatch?.[1] ?? payload.date,
+    description: descriptionMatch?.[1]?.trim() ?? payload.description,
+    paidByMemberName:
+      payerMatch?.[1]?.trim() ?? payload.paidByMemberName,
+    categoryName: categoryMatch?.[1]?.trim() ?? payload.categoryName,
+  };
+  if (
+    pendingFields.length === 1 &&
+    !amountMatch &&
+    !dateMatch &&
+    !descriptionMatch &&
+    !payerMatch &&
+    !categoryMatch
+  ) {
+    const value = message.trim();
+    if (pendingFields[0] === "amount" || pendingFields[0] === "totalAmount") {
+      updatedPayload.amount = value;
+    } else if (pendingFields[0] === "incomeDate" || pendingFields[0] === "expenseDate") {
+      updatedPayload.date = value;
+    } else if (pendingFields[0] === "description") {
+      updatedPayload.description = value;
+    } else if (pendingFields[0] === "paidByMemberName") {
+      updatedPayload.paidByMemberName = value;
+    }
+  }
+  return updatedPayload;
 }
 
 function resolveCategorySelection(
@@ -141,6 +321,23 @@ async function persistCategoryDraft(
   }
 }
 
+async function persistOperationDraft(
+  context: AgentContext,
+  payload: AgentOperationDraftPayload,
+): Promise<void> {
+  try {
+    await createOperationDraft(context, payload);
+  } catch (error) {
+    if (isCategoryDraftRepositoryError(error)) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The operation clarification could not be persisted.",
+      );
+    }
+    throw error;
+  }
+}
+
 async function completeCategoryDraft(
   context: AgentContext,
   draft: AgentCategoryDraft,
@@ -151,6 +348,9 @@ async function completeCategoryDraft(
       const payload = draft.payload as CategoryDraftExpensePayload;
       const result = await createExpenseTool(context, {
         ...payload.expense,
+        splits: payload.expense.splits ?? [
+          { householdMemberId: context.actorMemberId, percentage: 100 },
+        ],
         categoryId: category.id,
       });
       await deleteCategoryDraft(context, draft.id);
@@ -159,6 +359,7 @@ async function completeCategoryDraft(
     const payload = draft.payload as CategoryDraftIncomePayload;
     const result = await createIncomeTool(context, {
       ...payload.income,
+      memberId: context.actorMemberId,
       categoryId: category.id,
     });
     await deleteCategoryDraft(context, draft.id);
@@ -199,7 +400,8 @@ async function toProposalInput(
 ): Promise<ProposalInputResult> {
   const totalAmount = toAmount(interpretation.totalAmount);
   const expenseDate =
-    interpretation.expenseDate?.trim() || new Date().toISOString().slice(0, 10);
+    normalizeDraftDate(interpretation.expenseDate) ||
+    new Date().toISOString().slice(0, 10);
   const missingFields: string[] = [];
   if (totalAmount === null) missingFields.push("totalAmount");
   if (!expenseDate) missingFields.push("expenseDate");
@@ -264,20 +466,216 @@ async function toProposalInput(
   };
 }
 
+function toIncomeInput(
+  context: AgentContext,
+  payload: AgentOperationDraftPayload,
+): {
+  input: {
+    memberId: string;
+    amount: number;
+    incomeDate: string;
+    description: string;
+    categoryId: null;
+  };
+  missingFields: string[];
+} {
+  const amount = toAmount(payload.amount);
+  const incomeDate = normalizeDraftDate(payload.date);
+  const description = payload.description?.trim() ?? "";
+  const missingFields: string[] = [];
+  if (amount === null) missingFields.push("amount");
+  if (!incomeDate) missingFields.push("incomeDate");
+  if (!description) missingFields.push("description");
+  return {
+    input: {
+      memberId: context.actorMemberId,
+      amount: amount as number,
+      incomeDate,
+      description,
+      categoryId: null,
+    },
+    missingFields,
+  };
+}
+
+async function getDraftMissingFields(
+  context: AgentContext,
+  draft: Extract<AgentDraft, { status: "AWAITING_DETAILS" }>,
+): Promise<string[]> {
+  const payload = draft.payload as AgentOperationDraftPayload;
+  if (draft.operationType === "CREATE_INCOME") {
+    return toIncomeInput(context, payload).missingFields;
+  }
+  return (
+    await toProposalInput(context, {
+      kind: "CREATE_EXPENSE",
+      merchant: payload.merchant,
+      description: payload.description,
+      totalAmount: payload.amount,
+      expenseDate: payload.date,
+      paidBySelf: payload.paidBySelf,
+      paidByMemberName: payload.paidByMemberName,
+      categoryName: payload.categoryName,
+    })
+  ).missingFields;
+}
+
+async function updateDraftOrThrow(
+  context: AgentContext,
+  draft: AgentDraft,
+  operationType: AgentDraft["operationType"],
+  status: AgentDraft["status"],
+  payload: AgentDraft["payload"],
+): Promise<AgentDraft> {
+  try {
+    return await updateAgentDraft(
+      context,
+      draft,
+      operationType,
+      status,
+      payload,
+    );
+  } catch (error) {
+    if (isCategoryDraftRepositoryError(error)) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The conversation draft could not be updated.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function deleteDraftOrThrow(
+  context: AgentContext,
+  draft: AgentDraft,
+): Promise<void> {
+  try {
+    await deleteAgentDraft(context, draft.id);
+  } catch (error) {
+    if (isCategoryDraftRepositoryError(error)) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The conversation draft could not be completed.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function completeOperationDraft(
+  context: AgentContext,
+  draft: AgentDraft,
+  operation: "CREATE_EXPENSE" | "CREATE_INCOME",
+): Promise<AgentMessageResult> {
+  const operationPayload = draft.payload as AgentOperationDraftPayload;
+  if (operation === "CREATE_EXPENSE") {
+    const proposal = await toProposalInput(context, {
+      kind: "CREATE_EXPENSE",
+      merchant: operationPayload.merchant,
+      description: operationPayload.description,
+      totalAmount: operationPayload.amount,
+      expenseDate: operationPayload.date,
+      paidBySelf: operationPayload.paidBySelf,
+      paidByMemberName: operationPayload.paidByMemberName,
+      categoryName: operationPayload.categoryName,
+    });
+    if (proposal.missingFields.length > 0) {
+      await updateDraftOrThrow(
+        context,
+        draft,
+        operation,
+        "AWAITING_DETAILS",
+        operationPayload,
+      );
+      return operationDetailsClarification(
+        operation,
+        proposal.missingFields,
+      );
+    }
+    const categories = await getCategoriesTool(context);
+    const category = operationPayload.categoryName
+      ? resolveCategorySelection(operationPayload.categoryName, categories)
+      : null;
+    if (!category) {
+      await updateDraftOrThrow(
+        context,
+        draft,
+        operation,
+        "AWAITING_CATEGORY",
+        {
+          expense: toCategoryExpensePayload(proposal.input),
+        },
+      );
+      return categoryClarification(
+        context,
+        operationPayload.categoryName
+          ? "No tengo esa categoría disponible. Elige una de estas opciones:"
+          : "Claro. ¿En qué categoría lo quieres registrar?",
+      );
+    }
+    const result = await createExpenseTool(context, {
+      ...proposal.input,
+      categoryId: category.id,
+    });
+    await deleteDraftOrThrow(context, draft);
+    return { type: "PROPOSAL_CREATED", ...result };
+  }
+
+  const income = toIncomeInput(context, operationPayload);
+  if (income.missingFields.length > 0) {
+    await updateDraftOrThrow(
+      context,
+      draft,
+      operation,
+      "AWAITING_DETAILS",
+      operationPayload,
+    );
+    return operationDetailsClarification(operation, income.missingFields);
+  }
+  const categories = await getCategoriesTool(context);
+  const category = operationPayload.categoryName
+    ? resolveCategorySelection(operationPayload.categoryName, categories)
+    : null;
+  if (!category) {
+    await updateDraftOrThrow(
+      context,
+      draft,
+      operation,
+      "AWAITING_CATEGORY",
+      {
+        income: toCategoryIncomePayload(income.input),
+      },
+    );
+    return categoryClarification(
+      context,
+      operationPayload.categoryName
+        ? "No tengo esa categoría disponible. Elige una de estas opciones:"
+        : "¿En qué categoría quieres registrar el ingreso?",
+    );
+  }
+  const result = await createIncomeTool(context, {
+    ...income.input,
+    categoryId: category.id,
+  });
+  await deleteDraftOrThrow(context, draft);
+  return { type: "PROPOSAL_CREATED", ...result };
+}
+
 export async function processAgentMessage(
   context: AgentContext,
   input: AgentMessageInput,
   interpreter: Interpreter = interpretExpenseMessage,
 ): Promise<AgentMessageResult> {
   const message = input.message.trim();
-  let categoryDraft: AgentCategoryDraft | null;
+  let activeDraft: AgentDraft | null;
   try {
-    categoryDraft = await getActiveCategoryDraft(context);
+    activeDraft = await getActiveAgentDraft(context);
   } catch (error) {
     if (isCategoryDraftRepositoryError(error)) {
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
-        "The category clarification could not be loaded.",
+        "The conversation draft could not be loaded.",
       );
     }
     throw error;
@@ -289,7 +687,19 @@ export async function processAgentMessage(
       const result = await confirmAgentProposal(context, proposalId);
       return { type: "CONFIRMED", ...result };
     }
-    if (categoryDraft) return categoryClarification(context);
+    if (activeDraft?.status === "AWAITING_CATEGORY") {
+      return categoryClarification(context);
+    }
+    if (activeDraft?.status === "AWAITING_OPERATION") {
+      return operationClarification();
+    }
+    if (activeDraft?.status === "AWAITING_DETAILS") {
+      const missingFields = await getDraftMissingFields(context, activeDraft);
+      return operationDetailsClarification(
+        activeDraft.operationType,
+        missingFields,
+      );
+    }
     return clarification(["proposalId"]);
   }
   if (isRejection(message)) {
@@ -299,11 +709,11 @@ export async function processAgentMessage(
       const result = await rejectAgentProposal(context, proposalId);
       return { type: "REJECTED", ...result };
     }
-    if (categoryDraft) {
-      await deleteCategoryDraft(context, categoryDraft.id);
+    if (activeDraft) {
+      await deleteDraftOrThrow(context, activeDraft);
       return {
         type: "REJECTED",
-        proposalId: categoryDraft.id,
+        proposalId: activeDraft.id,
         status: "REJECTED",
         message: "Operación cancelada.",
       };
@@ -313,12 +723,18 @@ export async function processAgentMessage(
   if (!message)
     return { type: "UNSUPPORTED", message: "No pude interpretar el mensaje." };
 
-  if (categoryDraft) {
+  if (activeDraft?.status === "AWAITING_CATEGORY") {
+    const categoryDraft = activeDraft as AgentCategoryDraft;
     const categories = await getCategoriesTool(context);
     const category = resolveCategorySelection(message, categories);
     if (!category) {
       try {
-        await updateCategoryDraft(context, categoryDraft.id, categoryDraft.payload);
+        await updateCategoryDraft(
+          context,
+          categoryDraft.id,
+          categoryDraft.payload,
+          categoryDraft.updatedAt,
+        );
       } catch (error) {
         if (isCategoryDraftRepositoryError(error)) {
           throw new AgentDomainError(
@@ -336,10 +752,51 @@ export async function processAgentMessage(
     return completeCategoryDraft(context, categoryDraft, category);
   }
 
-  if (isAmbiguousMovementRegistration(message)) {
-    return clarification(
-      ["operation"],
-      "¿Quieres registrar un gasto o un ingreso?",
+  if (activeDraft?.status === "AWAITING_OPERATION") {
+    const operation = resolveOperationChoice(message);
+    if (operation) return completeOperationDraft(context, activeDraft, operation);
+    if (looksLikeMovementRequest(message)) {
+      return clarification(
+        ["operation"],
+        'Primero necesito resolver la operación anterior. Responde "gasto", "ingreso" o "cancelar".',
+      );
+    }
+    await updateDraftOrThrow(
+      context,
+      activeDraft,
+      null,
+      "AWAITING_OPERATION",
+      activeDraft.payload,
+    );
+    return operationClarification();
+  }
+
+  if (activeDraft?.status === "AWAITING_DETAILS") {
+    if (looksLikeMovementRequest(message)) {
+      return clarification(
+        [],
+        'Primero completa la operación anterior. Responde con los datos solicitados o "cancelar".',
+      );
+    }
+    const operationPayload =
+      activeDraft.payload as AgentOperationDraftPayload;
+    const pendingFields = await getDraftMissingFields(context, activeDraft);
+    const updatedPayload = parseDraftDetails(
+      message,
+      operationPayload,
+      pendingFields,
+    );
+    const updatedDraft = await updateDraftOrThrow(
+      context,
+      activeDraft,
+      activeDraft.operationType,
+      "AWAITING_DETAILS",
+      updatedPayload,
+    );
+    return completeOperationDraft(
+      context,
+      updatedDraft,
+      activeDraft.operationType,
     );
   }
 
@@ -360,6 +817,13 @@ export async function processAgentMessage(
       type: "UNSUPPORTED",
       message: "No pude interpretarlo como un gasto.",
     };
+  }
+  if (interpretation.kind === "AMBIGUOUS_MOVEMENT") {
+    await persistOperationDraft(
+      context,
+      operationPayloadFromInterpretation(interpretation),
+    );
+    return operationClarification();
   }
   if (interpretation.kind === "GET_EXPENSES") {
     return {
@@ -418,9 +882,7 @@ export async function processAgentMessage(
       await persistCategoryDraft(
         context,
         {
-          actorMemberId: context.actorMemberId,
-          source: context.source,
-          income: incomeInput,
+          income: toCategoryIncomePayload(incomeInput),
         },
         "CREATE_INCOME",
       );
@@ -446,13 +908,11 @@ export async function processAgentMessage(
     ? resolveCategorySelection(interpretation.categoryName, categories)
     : null;
   if (!category) {
-    await persistCategoryDraft(
-      context,
-      {
-        actorMemberId: context.actorMemberId,
-        source: context.source,
-        expense: proposal.input,
-      },
+      await persistCategoryDraft(
+        context,
+        {
+          expense: toCategoryExpensePayload(proposal.input),
+        },
       "CREATE_EXPENSE",
     );
     return categoryClarification(

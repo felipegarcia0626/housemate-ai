@@ -40,6 +40,7 @@ const agentCalls = [];
 const sentMessages = [];
 let agentMode = "proposal";
 let nextSendFails = false;
+let operationStep = 0;
 
 class FakeQuery {
   constructor(table) {
@@ -293,6 +294,107 @@ async function main() {
           message: "¿Quieres registrar un gasto o un ingreso?",
         };
       }
+      if (agentMode === "operation") {
+        if (operationStep === 0) {
+          assert.equal(input.message, "Registra 50000 en Éxito");
+          operationStep = 1;
+          return {
+            type: "CLARIFICATION_REQUIRED",
+            missingFields: ["operation"],
+            message: "¿Quieres registrar un gasto o un ingreso?",
+          };
+        }
+        if (operationStep === 1) {
+          assert.equal(input.message, "gasto");
+          operationStep = 2;
+          return {
+            type: "CLARIFICATION_REQUIRED",
+            missingFields: ["categoryId"],
+            message: "¿En qué categoría lo quieres registrar?",
+          };
+        }
+        if (operationStep === 2) {
+          assert.equal(input.message, "Food");
+          operationStep = 3;
+          return {
+            type: "PROPOSAL_CREATED",
+            proposalId,
+            status: "AWAITING_CONFIRMATION",
+          };
+        }
+        assert.equal(input.message, "Sí");
+        return {
+          type: "CONFIRMED",
+          proposalId,
+          status: "CONFIRMED",
+          expenseId: "expense-operation-1",
+          expense: {},
+        };
+      }
+      if (agentMode === "operation-income") {
+        if (operationStep === 0) {
+          assert.equal(input.message, "Registra 50000 en Éxito");
+          operationStep = 1;
+          return {
+            type: "CLARIFICATION_REQUIRED",
+            missingFields: ["operation"],
+            message: "¿Quieres registrar un gasto o un ingreso?",
+          };
+        }
+        if (operationStep === 1) {
+          assert.equal(input.message, "ingreso");
+          operationStep = 2;
+          return {
+            type: "CLARIFICATION_REQUIRED",
+            missingFields: ["incomeDate", "description"],
+            message: "Necesito la fecha y descripción del ingreso.",
+          };
+        }
+        if (operationStep === 2) {
+          assert.equal(input.message, "fecha: 2026-08-16; descripción: trabajo");
+          operationStep = 3;
+          return {
+            type: "CLARIFICATION_REQUIRED",
+            missingFields: ["categoryId"],
+            message: "¿En qué categoría quieres registrar el ingreso?",
+          };
+        }
+        if (operationStep === 3) {
+          assert.equal(input.message, "Salario");
+          operationStep = 4;
+          return {
+            type: "PROPOSAL_CREATED",
+            proposalId,
+            status: "AWAITING_CONFIRMATION",
+          };
+        }
+        assert.equal(input.message, "Sí");
+        return {
+          type: "CONFIRMED",
+          proposalId,
+          status: "CONFIRMED",
+          incomeId: "income-operation-1",
+          income: {},
+        };
+      }
+      if (agentMode === "operation-cancel") {
+        if (operationStep === 0) {
+          assert.equal(input.message, "Registra 50000 en Éxito");
+          operationStep = 1;
+          return {
+            type: "CLARIFICATION_REQUIRED",
+            missingFields: ["operation"],
+            message: "¿Quieres registrar un gasto o un ingreso?",
+          };
+        }
+        assert.equal(input.message, "cancelar");
+        return {
+          type: "REJECTED",
+          proposalId,
+          status: "REJECTED",
+          message: "Operación cancelada.",
+        };
+      }
       return {
         type: "PROPOSAL_CREATED",
         proposalId,
@@ -507,6 +609,76 @@ async function main() {
   assert.equal(providerError.status, 500);
   assert.ok(!(await providerError.text()).includes("access-token"));
   console.log("PASS WhatsApp provider errors are sanitized");
+
+  agentMode = "operation";
+  operationStep = 0;
+  const operationEvents = [
+    ["event-operation-start", "Registra 50000 en Éxito"],
+    ["event-operation-choice", "gasto"],
+    ["event-operation-category", "Food"],
+    ["event-operation-confirm", "Sí"],
+  ];
+  for (const [eventId, text] of operationEvents) {
+    const response = await route.POST(
+      signedRequest(rawBody(incomingPayload(eventId, text))),
+    );
+    assert.equal(response.status, 200);
+  }
+  const operationCalls = agentCalls.slice(-4);
+  assert.deepEqual(
+    operationCalls.map(({ input }) => input.message),
+    operationEvents.map(([, text]) => text),
+  );
+  assert.equal(
+    new Set(operationCalls.map(({ context }) => context.conversationKey)).size,
+    1,
+  );
+  assert.equal(operationStep, 3);
+  console.log(
+    "PASS WhatsApp operation continuation preserves context through category and confirmation",
+  );
+
+  agentMode = "operation-income";
+  operationStep = 0;
+  const incomeOperationEvents = [
+    ["event-income-operation-start", "Registra 50000 en Éxito"],
+    ["event-income-operation-choice", "ingreso"],
+    [
+      "event-income-operation-details",
+      "fecha: 2026-08-16; descripción: trabajo",
+    ],
+    ["event-income-operation-category", "Salario"],
+    ["event-income-operation-confirm", "Sí"],
+  ];
+  for (const [eventId, text] of incomeOperationEvents) {
+    const response = await route.POST(
+      signedRequest(rawBody(incomingPayload(eventId, text))),
+    );
+    assert.equal(response.status, 200);
+  }
+  const incomeOperationCalls = agentCalls.slice(-5);
+  assert.deepEqual(
+    incomeOperationCalls.map(({ input }) => input.message),
+    incomeOperationEvents.map(([, text]) => text),
+  );
+  assert.equal(operationStep, 4);
+  console.log(
+    "PASS WhatsApp income operation continuation reaches confirmation",
+  );
+
+  agentMode = "operation-cancel";
+  operationStep = 0;
+  const cancelOperationEvents = [
+    ["event-cancel-operation-start", "Registra 50000 en Éxito"],
+    ["event-cancel-operation", "cancelar"],
+  ];
+  for (const [eventId, text] of cancelOperationEvents) {
+    const response = await route.POST(
+      signedRequest(rawBody(incomingPayload(eventId, text))),
+    );
+    assert.equal(response.status, 200);
+  }
+  console.log("PASS WhatsApp operation cancellation preserves safe flow");
 
   for (const source of [
     fs.readFileSync(routeModule, "utf8"),

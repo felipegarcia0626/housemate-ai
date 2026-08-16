@@ -17,6 +17,16 @@ type IncomeReadFilters = {
 
 export type ExpenseInterpretation =
   | {
+      kind: "AMBIGUOUS_MOVEMENT";
+      amount: string | null;
+      date: string | null;
+      merchant: string | null;
+      description: string | null;
+      paidBySelf: boolean | null;
+      paidByMemberName: string | null;
+      categoryName: string | null;
+    }
+  | {
       kind: "CREATE_EXPENSE";
       merchant: string | null;
       description: string | null;
@@ -64,6 +74,7 @@ const responseSchema = {
       enum: [
         "CREATE_EXPENSE",
         "CREATE_INCOME",
+        "AMBIGUOUS_MOVEMENT",
         "GET_EXPENSES",
         "GET_INCOMES",
         "GET_BALANCE",
@@ -80,6 +91,7 @@ const responseSchema = {
     paidByMemberName: { type: ["string", "null"] },
     categoryName: { type: ["string", "null"] },
     amount: { type: ["string", "null"] },
+    date: { type: ["string", "null"] },
     incomeDate: { type: ["string", "null"] },
     incomeDescription: { type: ["string", "null"] },
     filters: {
@@ -115,6 +127,7 @@ const responseSchema = {
     "paidByMemberName",
     "categoryName",
     "amount",
+    "date",
     "incomeDate",
     "incomeDescription",
     "filters",
@@ -123,8 +136,12 @@ const responseSchema = {
 
 const systemPrompt = `Interpret the user's message using only the supported HouseMate
 intents: create expense, create income, get expenses, get incomes, get balance,
-get categories, get sharing rules, or unsupported. Return only the requested JSON
+get categories, get sharing rules, ambiguous movement, or unsupported. Return only the requested JSON
 schema. Use null when a value is absent. Do not invent financial values.
+When the user asks to register a movement with an amount but does not say whether
+it is an expense or income, return AMBIGUOUS_MOVEMENT and preserve the available
+amount, date, merchant, description, payer and category fields without choosing
+an operation. Do not infer income from a generic registration verb.
 Expense totalAmount and income amount must be decimal strings with at most two
 decimal places. Dates must be ISO dates when explicitly known. Categories are
 closed and must never be invented; return the category name only when the user
@@ -192,6 +209,29 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
     throw new OpenAIAdapterError();
   }
   if (value.kind === "UNSUPPORTED") return { kind: "UNSUPPORTED" };
+  if (value.kind === "AMBIGUOUS_MOVEMENT") {
+    if (
+      !isNullableString(value.amount) ||
+      !isNullableString(value.date) ||
+      !isNullableString(value.merchant) ||
+      !isNullableString(value.description) ||
+      !isNullableString(value.paidByMemberName) ||
+      !isNullableString(value.categoryName) ||
+      (value.paidBySelf !== null && typeof value.paidBySelf !== "boolean")
+    ) {
+      throw new OpenAIAdapterError();
+    }
+    return {
+      kind: "AMBIGUOUS_MOVEMENT",
+      amount: value.amount,
+      date: value.date,
+      merchant: value.merchant,
+      description: value.description,
+      paidBySelf: value.paidBySelf,
+      paidByMemberName: value.paidByMemberName,
+      categoryName: value.categoryName,
+    };
+  }
   if (value.kind === "CREATE_INCOME") {
     if (
       !isNullableString(value.amount) ||

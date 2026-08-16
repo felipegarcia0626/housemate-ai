@@ -192,9 +192,14 @@ class FakeQuery {
         const row = categoryDrafts.find((candidate) =>
           matches(candidate, this.filters),
         );
-        if (!row) return { data: [], error: null };
+        if (!row) return { data: null, error: { code: "PGRST116" } };
+        const previousUpdatedAt = Date.parse(row.updated_at);
+        const nextUpdatedAt = Math.max(
+          Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0,
+          Date.now(),
+        );
         Object.assign(row, this.updatePayload, {
-          updated_at: new Date().toISOString(),
+          updated_at: new Date(nextUpdatedAt).toISOString(),
         });
         return { data: [row], error: null };
       }
@@ -993,8 +998,22 @@ async function main() {
 
   const beforeAmbiguousMovementExpenses = createdExpenses.length;
   const beforeAmbiguousMovementIncomes = createdIncomes.length;
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "50000",
+    date: null,
+    merchant: "Éxito",
+    description: "mercado de la semana",
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const ambiguousMovementContext = {
+    ...contextA,
+    conversationKey: "agent-ambiguous-movement",
+  };
   const ambiguousMovement = await conversation.processAgentMessage(
-    { ...contextA, conversationKey: "agent-ambiguous-movement" },
+    ambiguousMovementContext,
     {
       message: "Registra 50000 en Éxito. Descripción: mercado de la semana.",
     },
@@ -1005,11 +1024,516 @@ async function main() {
     ambiguousMovement.message,
     "¿Quieres registrar un gasto o un ingreso?",
   );
+  const operationDraft = categoryDrafts.find(
+    (row) => row.conversation_key === ambiguousMovementContext.conversationKey,
+  );
+  assert.ok(operationDraft);
+  assert.equal(operationDraft.status, "AWAITING_OPERATION");
+  assert.equal(operationDraft.operation_type, null);
+  assert.deepEqual(Object.keys(operationDraft.payload).sort(), [
+    "amount",
+    "categoryName",
+    "date",
+    "description",
+    "merchant",
+    "paidByMemberName",
+    "paidBySelf",
+  ]);
+  assert.ok(!JSON.stringify(operationDraft.payload).includes("Registra"));
   assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses);
   assert.equal(createdIncomes.length, beforeAmbiguousMovementIncomes);
   console.log(
-    "PASS ambiguous registration asks whether it is an expense or income without persisting",
+    "PASS ambiguous registration persists operation choice without financial persistence",
   );
+
+  const beforeCategoryResolutionCalls = operations.length;
+  const expenseOperationChoice = await conversation.processAgentMessage(
+    ambiguousMovementContext,
+    { message: "gasto" },
+    async () => {
+      throw new Error("OpenAI must not receive operation choices");
+    },
+  );
+  assert.equal(expenseOperationChoice.type, "CLARIFICATION_REQUIRED");
+  assert.equal(operationDraft.status, "AWAITING_CATEGORY");
+  assert.equal(operationDraft.operation_type, "CREATE_EXPENSE");
+  assert.equal("actorMemberId" in operationDraft.payload, false);
+  assert.equal("source" in operationDraft.payload, false);
+  assert.equal("splits" in operationDraft.payload.expense, false);
+  assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses);
+  assert.equal(createdIncomes.length, beforeAmbiguousMovementIncomes);
+  assert.ok(operations.length > beforeCategoryResolutionCalls);
+  console.log("PASS gasto resolves the persisted operation without OpenAI");
+
+  const expenseCategoryProposal = await conversation.processAgentMessage(
+    ambiguousMovementContext,
+    { message: "Food" },
+  );
+  assert.equal(expenseCategoryProposal.type, "PROPOSAL_CREATED");
+  assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses);
+  const expenseCategoryConfirmation = await conversation.processAgentMessage(
+    ambiguousMovementContext,
+    { message: "si" },
+  );
+  assert.equal(expenseCategoryConfirmation.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses + 1);
+  assert.deepEqual(createdExpenses.at(-1).input.splits, [
+    { householdMemberId: memberA, percentage: 100 },
+  ]);
+  console.log("PASS ambiguous expense reaches proposal and confirms once");
+
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "50000",
+    date: null,
+    merchant: "Éxito",
+    description: null,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const incomeOperationContext = {
+    ...contextA,
+    conversationKey: "agent-ambiguous-income",
+  };
+  const beforeAmbiguousIncomeCount = createdIncomes.length;
+  const incomeAmbiguous = await conversation.processAgentMessage(
+    incomeOperationContext,
+    { message: "Registra 50000 en Éxito" },
+  );
+  assert.equal(incomeAmbiguous.type, "CLARIFICATION_REQUIRED");
+  const incomeOperationDraft = categoryDrafts.find(
+    (row) => row.conversation_key === incomeOperationContext.conversationKey,
+  );
+  assert.equal(incomeOperationDraft.status, "AWAITING_OPERATION");
+  const incomeChoice = await conversation.processAgentMessage(
+    incomeOperationContext,
+    { message: "ingreso" },
+    async () => {
+      throw new Error("OpenAI must not receive operation choices");
+    },
+  );
+  assert.equal(incomeChoice.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(incomeChoice.missingFields, ["incomeDate", "description"]);
+  assert.equal(incomeOperationDraft.status, "AWAITING_DETAILS");
+  assert.equal(incomeOperationDraft.operation_type, "CREATE_INCOME");
+  const prematureIncomeConfirmation = await conversation.processAgentMessage(
+    incomeOperationContext,
+    { message: "sí" },
+    async () => {
+      throw new Error("OpenAI must not receive premature confirmations");
+    },
+  );
+  assert.equal(prematureIncomeConfirmation.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(prematureIncomeConfirmation.missingFields, [
+    "incomeDate",
+    "description",
+  ]);
+  assert.match(prematureIncomeConfirmation.message, /fecha del ingreso/);
+  assert.match(prematureIncomeConfirmation.message, /descripción del ingreso/);
+  console.log("PASS premature confirmation reports the actual missing fields");
+  const incomeDraftAmountBeforeNewRequest = incomeOperationDraft.payload.amount;
+  const incomeNewRequestReply = await conversation.processAgentMessage(
+    incomeOperationContext,
+    { message: "Registra 30000 en Carulla" },
+    async () => {
+      throw new Error("OpenAI must not receive a new request while details are pending");
+    },
+  );
+  assert.equal(incomeNewRequestReply.type, "CLARIFICATION_REQUIRED");
+  assert.equal(incomeOperationDraft.status, "AWAITING_DETAILS");
+  assert.equal(incomeOperationDraft.payload.amount, incomeDraftAmountBeforeNewRequest);
+  for (const newRequest of ["Gasté 30000 en Carulla", "Recibí 200000"]) {
+    const protectedReply = await conversation.processAgentMessage(
+      incomeOperationContext,
+      { message: newRequest },
+      async () => {
+        throw new Error("OpenAI must not receive a new request while details are pending");
+      },
+    );
+    assert.equal(protectedReply.type, "CLARIFICATION_REQUIRED");
+    assert.equal(incomeOperationDraft.status, "AWAITING_DETAILS");
+    assert.equal(
+      incomeOperationDraft.payload.amount,
+      incomeDraftAmountBeforeNewRequest,
+    );
+  }
+  console.log("PASS active details drafts are not overwritten by new requests");
+  const incomeDetails = await conversation.processAgentMessage(
+    incomeOperationContext,
+    {
+      message: "fecha: 2026-08-16; descripción: ingreso por trabajo",
+    },
+    async () => {
+      throw new Error("OpenAI must not receive persisted details");
+    },
+  );
+  assert.equal(incomeDetails.type, "CLARIFICATION_REQUIRED");
+  assert.equal(incomeOperationDraft.status, "AWAITING_CATEGORY");
+  assert.equal("memberId" in incomeOperationDraft.payload.income, false);
+  const incomeDraftProposal = await conversation.processAgentMessage(
+    incomeOperationContext,
+    { message: "Food" },
+  );
+  assert.equal(incomeDraftProposal.type, "PROPOSAL_CREATED");
+  assert.equal(createdIncomes.length, beforeAmbiguousIncomeCount);
+  assert.equal("memberId" in incomeOperationDraft.payload.income, false);
+  const incomeDraftConfirmation = await conversation.processAgentMessage(
+    incomeOperationContext,
+    { message: "si" },
+  );
+  assert.equal(incomeDraftConfirmation.type, "CONFIRMED");
+  assert.equal(createdIncomes.length, beforeAmbiguousIncomeCount + 1);
+  assert.equal(createdIncomes.at(-1).input.memberId, memberA);
+  console.log(
+    "PASS ambiguous income persists details, category and confirmation flow",
+  );
+
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "120",
+    date: "2026-08-16",
+    merchant: "Carulla",
+    description: null,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const plainDescriptionContext = {
+    ...contextA,
+    conversationKey: "agent-plain-description-detail",
+  };
+  await conversation.processAgentMessage(plainDescriptionContext, {
+    message: "Registra 120 en Carulla",
+  });
+  const plainDescriptionChoice = await conversation.processAgentMessage(
+    plainDescriptionContext,
+    { message: "ingreso" },
+  );
+  assert.deepEqual(plainDescriptionChoice.missingFields, ["description"]);
+  const plainDescriptionResult = await conversation.processAgentMessage(
+    plainDescriptionContext,
+    { message: "mercado" },
+    async () => {
+      throw new Error("OpenAI must not receive plain details");
+    },
+  );
+  assert.equal(plainDescriptionResult.type, "CLARIFICATION_REQUIRED");
+  assert.equal(
+    categoryDrafts.find(
+      (row) => row.conversation_key === plainDescriptionContext.conversationKey,
+    ).status,
+    "AWAITING_CATEGORY",
+  );
+  await conversation.processAgentMessage(plainDescriptionContext, {
+    message: "cancelar",
+  });
+
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "121",
+    date: null,
+    merchant: "Carulla",
+    description: "nómina",
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const plainDateContext = {
+    ...contextA,
+    conversationKey: "agent-plain-date-detail",
+  };
+  await conversation.processAgentMessage(plainDateContext, {
+    message: "Registra 121 en Carulla",
+  });
+  const plainDateChoice = await conversation.processAgentMessage(
+    plainDateContext,
+    { message: "ingreso" },
+  );
+  assert.deepEqual(plainDateChoice.missingFields, ["incomeDate"]);
+  const plainDateResult = await conversation.processAgentMessage(
+    plainDateContext,
+    { message: "hoy" },
+    async () => {
+      throw new Error("OpenAI must not receive plain dates");
+    },
+  );
+  assert.equal(plainDateResult.type, "CLARIFICATION_REQUIRED");
+  const plainDateDraft = categoryDrafts.find(
+    (row) => row.conversation_key === plainDateContext.conversationKey,
+  );
+  assert.equal(plainDateDraft.status, "AWAITING_CATEGORY");
+  assert.equal(
+    plainDateDraft.payload.income.incomeDate,
+    new Date().toISOString().slice(0, 10),
+  );
+  await conversation.processAgentMessage(plainDateContext, {
+    message: "cancelar",
+  });
+  console.log("PASS plain description and natural date details continue drafts");
+
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "100",
+    date: null,
+    merchant: "Prueba",
+    description: null,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const ambiguousReplyContext = {
+    ...contextA,
+    conversationKey: "agent-ambiguous-reply",
+  };
+  await conversation.processAgentMessage(ambiguousReplyContext, {
+    message: "Registra 100 en Prueba",
+  });
+  const ambiguousReply = await conversation.processAgentMessage(
+    ambiguousReplyContext,
+    { message: "los dos" },
+    async () => {
+      throw new Error("OpenAI must not receive ambiguous operation replies");
+    },
+  );
+  assert.equal(ambiguousReply.type, "CLARIFICATION_REQUIRED");
+  assert.equal(
+    categoryDrafts.find(
+      (row) => row.conversation_key === ambiguousReplyContext.conversationKey,
+    ).status,
+    "AWAITING_OPERATION",
+  );
+  const dependsReply = await conversation.processAgentMessage(
+    ambiguousReplyContext,
+    { message: "depende" },
+    async () => {
+      throw new Error("OpenAI must not receive operation replies");
+    },
+  );
+  assert.equal(dependsReply.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(dependsReply.missingFields, ["operation"]);
+  const cancelledOperation = await conversation.processAgentMessage(
+    ambiguousReplyContext,
+    { message: "cancelar" },
+  );
+  assert.equal(cancelledOperation.type, "REJECTED");
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === ambiguousReplyContext.conversationKey,
+    ),
+    false,
+  );
+  console.log("PASS ambiguous operation stays pending and can be cancelled");
+
+  const expiryContext = {
+    ...contextA,
+    conversationKey: "agent-operation-expiry",
+  };
+  await conversation.processAgentMessage(expiryContext, {
+    message: "Registra 100 en Expirado",
+  });
+  const expiredDraft = categoryDrafts.find(
+    (row) => row.conversation_key === expiryContext.conversationKey,
+  );
+  expiredDraft.updated_at = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+  const expiredReply = await conversation.processAgentMessage(
+    expiryContext,
+    { message: "gasto" },
+    async () => ({ kind: "UNSUPPORTED" }),
+  );
+  assert.equal(expiredReply.type, "UNSUPPORTED");
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === expiryContext.conversationKey,
+    ),
+    false,
+  );
+  console.log("PASS expired operation drafts do not continue");
+
+  const migrationSource = fs.readFileSync(
+    path.join(root, "database", "migrations", "0015_extend_agent_draft_states.sql"),
+    "utf8",
+  );
+  assert.match(
+    migrationSource,
+    /status IN \('AWAITING_DETAILS', 'AWAITING_CATEGORY'\)[\s\S]*operation_type IS NOT NULL/,
+  );
+  assert.equal(migrationSource.includes("pending_operation_type"), false);
+  const stateMatrix = [
+    ["AWAITING_OPERATION", null, true],
+    ["AWAITING_OPERATION", "CREATE_EXPENSE", false],
+    ["AWAITING_OPERATION", "CREATE_INCOME", false],
+    ["AWAITING_DETAILS", null, false],
+    ["AWAITING_DETAILS", "CREATE_EXPENSE", true],
+    ["AWAITING_DETAILS", "CREATE_INCOME", true],
+    ["AWAITING_CATEGORY", null, false],
+    ["AWAITING_CATEGORY", "CREATE_EXPENSE", true],
+    ["AWAITING_CATEGORY", "CREATE_INCOME", true],
+  ];
+  for (const [status, operationType, valid] of stateMatrix) {
+    assert.equal(
+      (status === "AWAITING_OPERATION" && operationType === null) ||
+        (status !== "AWAITING_OPERATION" &&
+          operationType !== null &&
+          (operationType === "CREATE_EXPENSE" || operationType === "CREATE_INCOME")),
+      valid,
+    );
+  }
+  console.log("PASS migration state matrix is explicit and does not alter pending proposal enums");
+
+  const invalidDraftPayload = {
+    amount: "100",
+    date: "2026-08-16",
+    merchant: "Invalid draft",
+    description: null,
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const invalidDraftRows = [
+    ["AWAITING_OPERATION", "CREATE_EXPENSE"],
+    ["AWAITING_OPERATION", "CREATE_INCOME"],
+    ["AWAITING_DETAILS", null],
+    ["AWAITING_CATEGORY", null],
+  ];
+  const beforeInvalidDraftExpenses = createdExpenses.length;
+  const beforeInvalidDraftIncomes = createdIncomes.length;
+  const beforeInvalidDraftProposals = proposals.length;
+  for (const [status, operationType] of invalidDraftRows) {
+    const invalidContext = {
+      ...contextA,
+      conversationKey: `agent-invalid-row-${status}-${operationType ?? "null"}`,
+    };
+    const invalidId = `invalid-${status}-${operationType ?? "null"}`;
+    categoryDrafts.push({
+      id: invalidId,
+      household_id: invalidContext.householdId,
+      actor_member_id: invalidContext.actorMemberId,
+      conversation_key: invalidContext.conversationKey,
+      operation_type: operationType,
+      payload: invalidDraftPayload,
+      status,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await expectAgentError(
+      conversation.processAgentMessage(invalidContext, { message: "test" }),
+      "PERSISTENCE_ERROR",
+    );
+    assert.equal(
+      categoryDrafts.some((row) => row.id === invalidId),
+      true,
+    );
+    categoryDrafts = categoryDrafts.filter((row) => row.id !== invalidId);
+  }
+  assert.equal(createdExpenses.length, beforeInvalidDraftExpenses);
+  assert.equal(createdIncomes.length, beforeInvalidDraftIncomes);
+  assert.equal(proposals.length, beforeInvalidDraftProposals);
+  console.log("PASS invalid persisted draft states fail safely without financial writes");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Concurrency",
+    description: null,
+    totalAmount: "100",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    categoryName: null,
+  };
+  const concurrentDraftContext = {
+    ...contextA,
+    conversationKey: "agent-draft-concurrency",
+  };
+  await conversation.processAgentMessage(concurrentDraftContext, {
+    message: "Registra 100 en Concurrency",
+  });
+  const beforeConcurrentProposalCount = proposals.length;
+  const concurrentResults = await Promise.allSettled([
+    conversation.processAgentMessage(concurrentDraftContext, {
+      message: "Categoría inexistente",
+    }),
+    conversation.processAgentMessage(concurrentDraftContext, {
+      message: "Otra categoría inexistente",
+    }),
+  ]);
+  assert.equal(
+    concurrentResults.filter((result) => result.status === "fulfilled").length,
+    1,
+  );
+  assert.equal(
+    concurrentResults.filter((result) => result.status === "rejected").length,
+    1,
+  );
+  const concurrentError = concurrentResults.find(
+    (result) => result.status === "rejected",
+  ).reason;
+  assert.equal(concurrentError.code, "PERSISTENCE_ERROR");
+  assert.equal(proposals.length, beforeConcurrentProposalCount);
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === concurrentDraftContext.conversationKey,
+    ),
+    true,
+  );
+  await conversation.processAgentMessage(concurrentDraftContext, {
+    message: "cancelar",
+  });
+  console.log("PASS optimistic draft updates prevent lost concurrent transitions");
+
+  const isolatedOperationContext = {
+    ...contextA,
+    conversationKey: "agent-operation-isolation",
+  };
+  await conversation.processAgentMessage(isolatedOperationContext, {
+    message: "Registra 100 en Aislado",
+  });
+  const isolatedOperationReply = await conversation.processAgentMessage(
+    { ...isolatedOperationContext, householdId: householdB, actorMemberId: memberB },
+    { message: "gasto" },
+    async () => ({ kind: "UNSUPPORTED" }),
+  );
+  assert.equal(isolatedOperationReply.type, "UNSUPPORTED");
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === isolatedOperationContext.conversationKey,
+    ),
+    true,
+  );
+  await conversation.processAgentMessage(isolatedOperationContext, {
+    message: "cancelar",
+  });
+  console.log("PASS operation drafts are isolated by household and actor");
+
+  const pendingNewRequestContext = {
+    ...contextA,
+    conversationKey: "agent-operation-new-request",
+  };
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "100",
+    date: null,
+    merchant: "Pendiente",
+    description: null,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  await conversation.processAgentMessage(pendingNewRequestContext, {
+    message: "Registra 100 en Pendiente",
+  });
+  const newRequestReply = await conversation.processAgentMessage(
+    pendingNewRequestContext,
+    { message: "Registra 30000 en Carulla" },
+    async () => {
+      throw new Error("OpenAI must not receive a new request while draft is active");
+    },
+  );
+  assert.equal(newRequestReply.type, "CLARIFICATION_REQUIRED");
+  assert.match(newRequestReply.message, /operación anterior/);
+  await conversation.processAgentMessage(pendingNewRequestContext, {
+    message: "cancelar",
+  });
+  console.log("PASS active operation drafts are not overwritten by new requests");
 
   mockInterpretation = {
     kind: "CREATE_INCOME",
@@ -1142,6 +1666,7 @@ async function main() {
     ...contextA,
     conversationKey: "agent-income-create",
   };
+  const beforeDirectIncomeCount = createdIncomes.length;
   const incomeProposal = await createIncome.createIncomeTool(incomeContext, {
     memberId: memberB,
     amount: 75,
@@ -1150,7 +1675,7 @@ async function main() {
     categoryId: null,
   });
   assert.equal(incomeProposal.status, "AWAITING_CONFIRMATION");
-  assert.equal(createdIncomes.length, 0);
+  assert.equal(createdIncomes.length, beforeDirectIncomeCount);
   const incomeConfirmed = await conversation.processAgentMessage(
     incomeContext,
     {
@@ -1159,10 +1684,10 @@ async function main() {
     },
   );
   assert.equal(incomeConfirmed.type, "CONFIRMED");
-  assert.equal(createdIncomes.length, 1);
-  assert.equal(createdIncomes[0].context.householdId, householdA);
-  assert.equal(createdIncomes[0].context.memberId, memberA);
-  assert.equal(createdIncomes[0].input.memberId, memberB);
+  assert.equal(createdIncomes.length, beforeDirectIncomeCount + 1);
+  assert.equal(createdIncomes.at(-1).context.householdId, householdA);
+  assert.equal(createdIncomes.at(-1).context.memberId, memberA);
+  assert.equal(createdIncomes.at(-1).input.memberId, memberB);
   await expectAgentError(
     conversation.processAgentMessage(incomeContext, {
       message: "si",
@@ -1295,7 +1820,8 @@ async function main() {
     { message: "Recibí un bonus de 125" },
   );
   assert.equal(conversationalIncomeProposal.type, "PROPOSAL_CREATED");
-  assert.equal(createdIncomes.length, 1);
+  const beforeConversationalIncomeCount = createdIncomes.length;
+  assert.equal(createdIncomes.length, beforeConversationalIncomeCount);
   console.log("PASS textual Income creation proposes without writing");
 
   const conversationalIncomeRejected = await conversation.processAgentMessage(
@@ -1303,7 +1829,7 @@ async function main() {
     { message: "no", proposalId: conversationalIncomeProposal.proposalId },
   );
   assert.equal(conversationalIncomeRejected.type, "REJECTED");
-  assert.equal(createdIncomes.length, 1);
+  assert.equal(createdIncomes.length, beforeConversationalIncomeCount);
   console.log("PASS textual Income rejection does not write");
 
   const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
