@@ -455,6 +455,84 @@ async function main() {
   const getCategories = load(getCategoriesToolModule);
   const getSharingRules = load(getSharingRulesToolModule);
 
+  const previousOpenAIKey = process.env.OPENAI_API_KEY;
+  const previousFetch = global.fetch;
+  process.env.OPENAI_API_KEY = "test-only-openai-key";
+  const ambiguousModelOutput = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    merchant: "Éxito",
+    description: null,
+    totalAmount: "50000",
+    expenseDate: null,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+    amount: null,
+    date: null,
+    incomeDate: null,
+    incomeDescription: null,
+    filters: null,
+  };
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return {
+        output_text: JSON.stringify(ambiguousModelOutput),
+      };
+    },
+  });
+  try {
+    const realOpenAIAdapter = createLoader()(openaiAdapterModule);
+    const ambiguousCases = [
+      { amount: "50000", totalAmount: null, expectedAmount: "50000" },
+      { amount: null, totalAmount: "50000", expectedAmount: "50000" },
+      {
+        amount: "50000",
+        totalAmount: "60000",
+        expectedAmount: "50000",
+      },
+      { amount: null, totalAmount: null, expectedError: true },
+    ];
+    for (const testCase of ambiguousCases) {
+      ambiguousModelOutput.amount = testCase.amount;
+      ambiguousModelOutput.totalAmount = testCase.totalAmount;
+      if (testCase.expectedError) {
+        await assert.rejects(
+          () =>
+            realOpenAIAdapter.interpretExpenseMessage(
+              "Registra un movimiento",
+            ),
+          (error) => error?.code === "INTERPRETATION_ERROR",
+        );
+        const beforeInvalidDraftCount = categoryDrafts.length;
+        const invalidResult = await conversation.processAgentMessage(
+          {
+            ...contextA,
+            conversationKey: "agent-invalid-ambiguous",
+          },
+          { message: "Registra un movimiento" },
+          realOpenAIAdapter.interpretExpenseMessage,
+        );
+        assert.equal(invalidResult.type, "ERROR");
+        assert.equal(categoryDrafts.length, beforeInvalidDraftCount);
+        continue;
+      }
+      const ambiguousInterpretation =
+        await realOpenAIAdapter.interpretExpenseMessage(
+          "Registra 50000 en Éxito",
+        );
+      assert.equal(ambiguousInterpretation.kind, "AMBIGUOUS_MOVEMENT");
+      assert.equal(ambiguousInterpretation.amount, testCase.expectedAmount);
+      assert.equal(ambiguousInterpretation.merchant, "Éxito");
+    }
+    console.log("PASS ambiguous OpenAI amount matrix");
+  } finally {
+    global.fetch = previousFetch;
+    if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAIKey;
+  }
+
   const toolSource = fs.readFileSync(toolModule, "utf8");
   for (const forbidden of [
     "getSupabaseAdminClient",
@@ -1039,6 +1117,8 @@ async function main() {
     "paidByMemberName",
     "paidBySelf",
   ]);
+  assert.equal(operationDraft.payload.amount, "50000");
+  assert.equal(operationDraft.payload.merchant, "Éxito");
   assert.ok(!JSON.stringify(operationDraft.payload).includes("Registra"));
   assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses);
   assert.equal(createdIncomes.length, beforeAmbiguousMovementIncomes);
@@ -1070,6 +1150,11 @@ async function main() {
     { message: "Food" },
   );
   assert.equal(expenseCategoryProposal.type, "PROPOSAL_CREATED");
+  assert.equal(
+    proposals.at(-1).payload.expense.totalAmount,
+    50000,
+  );
+  assert.equal(proposals.at(-1).payload.expense.merchant, "Éxito");
   assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses);
   const expenseCategoryConfirmation = await conversation.processAgentMessage(
     ambiguousMovementContext,
@@ -1114,6 +1199,7 @@ async function main() {
     },
   );
   assert.equal(incomeChoice.type, "CLARIFICATION_REQUIRED");
+  assert.equal(incomeOperationDraft.payload.amount, "50000");
   assert.deepEqual(incomeChoice.missingFields, ["incomeDate", "description"]);
   assert.equal(incomeOperationDraft.status, "AWAITING_DETAILS");
   assert.equal(incomeOperationDraft.operation_type, "CREATE_INCOME");

@@ -215,15 +215,23 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
       !isNullableString(value.date) ||
       !isNullableString(value.merchant) ||
       !isNullableString(value.description) ||
+      !isNullableString(value.totalAmount) ||
       !isNullableString(value.paidByMemberName) ||
       !isNullableString(value.categoryName) ||
       (value.paidBySelf !== null && typeof value.paidBySelf !== "boolean")
     ) {
       throw new OpenAIAdapterError();
     }
+    const amount =
+      typeof value.amount === "string" && value.amount.trim()
+        ? value.amount
+        : value.totalAmount;
+    if (typeof amount !== "string" || !amount.trim()) {
+      throw new OpenAIAdapterError();
+    }
     return {
       kind: "AMBIGUOUS_MOVEMENT",
-      amount: value.amount,
+      amount,
       date: value.date,
       merchant: value.merchant,
       description: value.description,
