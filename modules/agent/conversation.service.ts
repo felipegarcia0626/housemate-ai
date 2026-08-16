@@ -862,15 +862,18 @@ export async function processAgentMessage(
   }
   if (interpretation.kind === "CREATE_INCOME") {
     const amount = toAmount(interpretation.amount);
+    const incomeDate = normalizeDraftDate(interpretation.incomeDate);
     const missingFields: string[] = [];
     if (amount === null) missingFields.push("amount");
-    if (!interpretation.incomeDate) missingFields.push("incomeDate");
+    if (!incomeDate) missingFields.push("incomeDate");
     if (!interpretation.description?.trim()) missingFields.push("description");
-    if (missingFields.length > 0) return clarification(missingFields);
+    if (missingFields.length > 0) {
+      return operationDetailsClarification("CREATE_INCOME", missingFields);
+    }
     const incomeInput = {
       memberId: context.actorMemberId,
       amount: amount as number,
-      incomeDate: interpretation.incomeDate as string,
+      incomeDate,
       description: interpretation.description as string,
       categoryId: null,
     };

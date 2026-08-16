@@ -527,6 +527,68 @@ async function main() {
       assert.equal(ambiguousInterpretation.merchant, "Éxito");
     }
     console.log("PASS ambiguous OpenAI amount matrix");
+
+    const incomeModelOutput = {
+      kind: "CREATE_INCOME",
+      amount: "3000000",
+      incomeDate: "2026-08-16",
+      description: null,
+      incomeDescription: "Salario",
+      categoryName: "Salario",
+      merchant: null,
+      totalAmount: null,
+      expenseDate: null,
+      paidBySelf: null,
+      paidByMemberName: null,
+      date: null,
+      filters: null,
+    };
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return { output_text: JSON.stringify(incomeModelOutput) };
+      },
+    });
+    const incomeDescriptionCases = [
+      {
+        description: null,
+        incomeDescription: "Salario",
+        expectedDescription: "Salario",
+      },
+      {
+        description: "Salario",
+        incomeDescription: null,
+        expectedDescription: "Salario",
+      },
+      {
+        description: "Descripción A",
+        incomeDescription: "Descripción B",
+        expectedDescription: "Descripción B",
+      },
+      {
+        description: null,
+        incomeDescription: null,
+        expectedDescription: null,
+      },
+    ];
+    for (const testCase of incomeDescriptionCases) {
+      incomeModelOutput.description = testCase.description;
+      incomeModelOutput.incomeDescription = testCase.incomeDescription;
+      const incomeInterpretation =
+        await realOpenAIAdapter.interpretExpenseMessage(
+          "Recibí un salario de 3000000",
+        );
+      assert.equal(incomeInterpretation.kind, "CREATE_INCOME");
+      assert.equal(incomeInterpretation.amount, "3000000");
+      assert.equal(
+        incomeInterpretation.description,
+        testCase.expectedDescription,
+      );
+    }
+    console.log(
+      "PASS CREATE_INCOME description fields normalize to the internal contract",
+    );
   } finally {
     global.fetch = previousFetch;
     if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -1917,6 +1979,182 @@ async function main() {
   assert.equal(conversationalIncomeRejected.type, "REJECTED");
   assert.equal(createdIncomes.length, beforeConversationalIncomeCount);
   console.log("PASS textual Income rejection does not write");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "3000000",
+    incomeDate: "2026-08-16",
+    description: "Salario",
+    categoryName: "Food",
+  };
+  const directIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-direct-income-complete",
+  };
+  const beforeDirectIncomeProposalCount = proposals.length;
+  const beforeDirectIncomeCreatedCount = createdIncomes.length;
+  const directIncomeProposal = await conversation.processAgentMessage(
+    directIncomeContext,
+    { message: "Recibí un salario de 3000000" },
+  );
+  assert.equal(directIncomeProposal.type, "PROPOSAL_CREATED");
+  assert.equal(proposals.length, beforeDirectIncomeProposalCount + 1);
+  assert.equal(createdIncomes.length, beforeDirectIncomeCreatedCount);
+  const directIncomeStored = proposals.find(
+    (row) => row.id === directIncomeProposal.proposalId,
+  );
+  assert.equal(directIncomeStored.payload.income.amount, 3000000);
+  assert.equal(directIncomeStored.payload.income.incomeDate, "2026-08-16");
+  assert.equal(directIncomeStored.payload.income.description, "Salario");
+  assert.equal(directIncomeStored.payload.income.categoryId, "category-1");
+  const directIncomeConfirmation = await conversation.processAgentMessage(
+    directIncomeContext,
+    { message: "sí" },
+  );
+  assert.equal(directIncomeConfirmation.type, "CONFIRMED");
+  assert.equal(createdIncomes.length, beforeDirectIncomeCreatedCount + 1);
+  assert.equal(createdIncomes.at(-1).input.amount, 3000000);
+  console.log(
+    "PASS direct CREATE_INCOME reaches PendingProposal and writes only after confirmation",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "3000000",
+    incomeDate: null,
+    description: "Salario",
+    categoryName: "Food",
+  };
+  const missingIncomeDateContext = {
+    ...contextA,
+    conversationKey: "agent-direct-income-missing-date",
+  };
+  const beforeMissingIncomeDateProposals = proposals.length;
+  const beforeMissingIncomeDateIncomes = createdIncomes.length;
+  const missingIncomeDate = await conversation.processAgentMessage(
+    missingIncomeDateContext,
+    { message: "Recibí un salario de 3000000" },
+  );
+  assert.equal(missingIncomeDate.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(missingIncomeDate.missingFields, ["incomeDate"]);
+  assert.match(missingIncomeDate.message, /ingreso/);
+  assert.doesNotMatch(missingIncomeDate.message, /gasto/);
+  assert.equal(proposals.length, beforeMissingIncomeDateProposals);
+  assert.equal(createdIncomes.length, beforeMissingIncomeDateIncomes);
+  console.log("PASS incomplete CREATE_INCOME asks for the income date");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "3000000",
+    incomeDate: "2026-08-16",
+    description: null,
+    categoryName: "Food",
+  };
+  const missingIncomeDescriptionContext = {
+    ...contextA,
+    conversationKey: "agent-direct-income-missing-description",
+  };
+  const beforeMissingIncomeDescriptionProposals = proposals.length;
+  const beforeMissingIncomeDescriptionIncomes = createdIncomes.length;
+  const missingIncomeDescription = await conversation.processAgentMessage(
+    missingIncomeDescriptionContext,
+    { message: "Recibí un salario de 3000000" },
+  );
+  assert.equal(missingIncomeDescription.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(missingIncomeDescription.missingFields, ["description"]);
+  assert.match(missingIncomeDescription.message, /ingreso/);
+  assert.doesNotMatch(missingIncomeDescription.message, /gasto/);
+  assert.equal(proposals.length, beforeMissingIncomeDescriptionProposals);
+  assert.equal(createdIncomes.length, beforeMissingIncomeDescriptionIncomes);
+  console.log("PASS incomplete CREATE_INCOME asks for the description");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: null,
+    incomeDate: null,
+    description: null,
+    categoryName: null,
+  };
+  const incompleteIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-direct-income-incomplete",
+  };
+  const beforeIncompleteIncomeProposals = proposals.length;
+  const beforeIncompleteIncomeCount = createdIncomes.length;
+  const incompleteIncome = await conversation.processAgentMessage(
+    incompleteIncomeContext,
+    { message: "Recibí algo" },
+  );
+  assert.equal(incompleteIncome.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(incompleteIncome.missingFields, [
+    "amount",
+    "incomeDate",
+    "description",
+  ]);
+  assert.match(incompleteIncome.message, /ingreso/);
+  assert.doesNotMatch(incompleteIncome.message, /gasto/);
+  assert.equal(proposals.length, beforeIncompleteIncomeProposals);
+  assert.equal(createdIncomes.length, beforeIncompleteIncomeCount);
+  console.log("PASS fully incomplete CREATE_INCOME remains non-persistent");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "500000",
+    incomeDate: "hoy",
+    description: "Honorarios",
+    categoryName: "Food",
+  };
+  const naturalIncomeDateContext = {
+    ...contextA,
+    conversationKey: "agent-direct-income-natural-date",
+  };
+  const naturalIncomeDateProposal = await conversation.processAgentMessage(
+    naturalIncomeDateContext,
+    { message: "Recibí honorarios" },
+  );
+  assert.equal(naturalIncomeDateProposal.type, "PROPOSAL_CREATED");
+  const naturalIncomeDateStored = proposals.find(
+    (row) => row.id === naturalIncomeDateProposal.proposalId,
+  );
+  assert.equal(
+    naturalIncomeDateStored.payload.income.incomeDate,
+    new Date().toISOString().slice(0, 10),
+  );
+  await conversation.processAgentMessage(naturalIncomeDateContext, {
+    message: "no",
+  });
+  console.log("PASS direct CREATE_INCOME normalizes natural dates");
+
+  const reportedIncomePhrases = [
+    "Recibí un salario de 3000000",
+    "Me consignaron 3000000",
+    "Recibí honorarios",
+    "Entró un ingreso de 500000",
+  ];
+  for (const [index, phrase] of reportedIncomePhrases.entries()) {
+    mockInterpretation = {
+      kind: "CREATE_INCOME",
+      amount: "500000",
+      incomeDate: "2026-08-16",
+      description: "Ingreso de prueba",
+      categoryName: "Food",
+    };
+    const phraseContext = {
+      ...contextA,
+      conversationKey: `agent-reported-income-phrase-${index}`,
+    };
+    const beforePhraseIncomes = createdIncomes.length;
+    const phraseResult = await conversation.processAgentMessage(
+      phraseContext,
+      { message: phrase },
+    );
+    assert.equal(phraseResult.type, "PROPOSAL_CREATED");
+    assert.equal(createdIncomes.length, beforePhraseIncomes);
+    await conversation.processAgentMessage(phraseContext, { message: "no" });
+  }
+  console.log(
+    "PASS reported Income phrases exercise the flow with a controlled CREATE_INCOME result",
+  );
 
   const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
   const createExpenseTypeStart = openaiSource.indexOf('kind: "CREATE_EXPENSE"');

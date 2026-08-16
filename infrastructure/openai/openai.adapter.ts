@@ -244,6 +244,7 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
     if (
       !isNullableString(value.amount) ||
       !isNullableString(value.incomeDate) ||
+      !isNullableString(value.description) ||
       !isNullableString(value.incomeDescription) ||
       !isNullableString(value.categoryName)
     ) {
@@ -253,7 +254,7 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
       kind: "CREATE_INCOME",
       amount: value.amount,
       incomeDate: value.incomeDate,
-      description: value.incomeDescription,
+      description: value.incomeDescription ?? value.description,
       categoryName: value.categoryName,
     };
   }
