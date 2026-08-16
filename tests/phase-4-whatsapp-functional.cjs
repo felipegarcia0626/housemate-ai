@@ -250,6 +250,42 @@ async function main() {
           income: {},
         };
       }
+      if (agentMode === "read-expenses") {
+        return {
+          type: "READ_RESULT",
+          operation: "GET_EXPENSES",
+          data: [
+            {
+              id: "expense-1",
+              merchant: "Carulla",
+              totalAmount: 80000,
+              expenseDate: "2026-08-16",
+              category: { id: "category-1", name: "Alimentación" },
+            },
+            {
+              id: "expense-2",
+              merchant: null,
+              totalAmount: 50000,
+              expenseDate: "2026-08-15",
+              category: null,
+            },
+          ],
+        };
+      }
+      if (agentMode === "read-expenses-empty") {
+        return {
+          type: "READ_RESULT",
+          operation: "GET_EXPENSES",
+          data: [],
+        };
+      }
+      if (agentMode === "clarification") {
+        return {
+          type: "CLARIFICATION_REQUIRED",
+          missingFields: ["totalAmount"],
+          message: "¿Cuál fue el monto del gasto?",
+        };
+      }
       return {
         type: "PROPOSAL_CREATED",
         proposalId,
@@ -359,6 +395,51 @@ async function main() {
   assert.equal(sentMessages.length, 1);
   console.log("PASS duplicate event does not invoke Agent or send again");
 
+  agentMode = "read-expenses";
+  const expenseRead = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-read-expenses", "¿Cuánto gasté?")),
+    ),
+  );
+  assert.equal(expenseRead.status, 200);
+  const expenseReadBody = JSON.parse(sentMessages.at(-1).init.body).text.body;
+  assert.ok(expenseReadBody.includes("Encontré 2 gastos:"));
+  assert.ok(expenseReadBody.includes("1. Carulla"));
+  assert.ok(expenseReadBody.includes("2. Gasto"));
+  assert.ok(expenseReadBody.includes("Alimentación"));
+  assert.ok(expenseReadBody.includes("Sin categoría"));
+  assert.ok(expenseReadBody.includes("16/08/2026"));
+  assert.ok(expenseReadBody.includes("15/08/2026"));
+  assert.ok(expenseReadBody.includes("Total:"));
+  assert.ok(expenseReadBody.includes("130.000"));
+  console.log("PASS WhatsApp expense reads render details and total");
+
+  agentMode = "read-expenses-empty";
+  const emptyExpenseRead = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-read-expenses-empty", "¿Cuánto gasté?")),
+    ),
+  );
+  assert.equal(emptyExpenseRead.status, 200);
+  assert.equal(
+    JSON.parse(sentMessages.at(-1).init.body).text.body,
+    "No encontré gastos con esos criterios.",
+  );
+  console.log("PASS empty WhatsApp expense reads are rendered clearly");
+
+  agentMode = "clarification";
+  const clarification = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-clarification", "Pagué algo")),
+    ),
+  );
+  assert.equal(clarification.status, 200);
+  assert.equal(
+    JSON.parse(sentMessages.at(-1).init.body).text.body,
+    "¿Cuál fue el monto del gasto?",
+  );
+  console.log("PASS WhatsApp clarification preserves Agent message");
+
   agentMode = "confirmed";
   const confirmationBody = rawBody(incomingPayload("event-2", "Sí"));
   const confirmation = await route.POST(signedRequest(confirmationBody));
@@ -372,7 +453,7 @@ async function main() {
     signedRequest(rawBody({ object: "whatsapp_business_account", entry: [] })),
   );
   assert.deepEqual(await unsupported.json(), { ok: true, ignored: true });
-  assert.equal(agentCalls.length, 2);
+  assert.equal(agentCalls.length, 5);
   console.log("PASS unsupported event is ignored safely");
 
   const invalidJson = await route.POST(signedRequest("not-json"));
@@ -385,7 +466,7 @@ async function main() {
     ),
   );
   assert.equal(unknown.status, 500);
-  assert.equal(agentCalls.length, 2);
+  assert.equal(agentCalls.length, 5);
   console.log("PASS unknown sender cannot select a household or actor");
 
   agentMode = "error";

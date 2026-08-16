@@ -51,6 +51,41 @@ function extractProposalId(text: string): string | undefined {
   return candidate && UUID_PATTERN.test(candidate) ? candidate : undefined;
 }
 
+function formatWhatsAppMoney(value: number): string {
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatWhatsAppDate(value: string): string {
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es-CO", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function renderWhatsAppExpenses(data: ExpenseListItem[]): string {
+  if (data.length === 0) return "No encontré gastos con esos criterios.";
+
+  const total = data.reduce((sum, expense) => sum + expense.totalAmount, 0);
+  const lines = data.map(
+    (expense, index) =>
+      `${index + 1}. ${expense.merchant ?? "Gasto"} — ${formatWhatsAppMoney(expense.totalAmount)} — ${formatWhatsAppDate(expense.expenseDate)} — ${expense.category?.name ?? "Sin categoría"}`,
+  );
+
+  return [
+    `Encontré ${data.length} ${data.length === 1 ? "gasto" : "gastos"}:`,
+    ...lines,
+    `Total: ${formatWhatsAppMoney(total)}`,
+  ].join("\n");
+}
+
 function renderAgentResult(
   result: Awaited<ReturnType<typeof processAgentMessage>>,
 ): string {
@@ -62,7 +97,7 @@ function renderAgentResult(
     case "REJECTED":
       return "Operación rechazada.";
     case "CLARIFICATION_REQUIRED":
-      return "Necesito más información para continuar.";
+      return result.message || "Necesito más información para continuar.";
     case "READ_RESULT":
       if (result.operation === "GET_CATEGORIES") {
         const data = (result as AgentReadResult).data as Category[];
@@ -78,7 +113,7 @@ function renderAgentResult(
       }
       if (result.operation === "GET_EXPENSES") {
         const data = (result as AgentReadResult).data as ExpenseListItem[];
-        return `Gastos encontrados: ${data.length}.`;
+        return renderWhatsAppExpenses(data);
       }
       return "Balance consultado correctamente.";
     case "UNSUPPORTED":
