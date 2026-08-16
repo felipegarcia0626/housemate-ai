@@ -23,29 +23,6 @@ import {
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const EXPECTED_MVP_HOUSEHOLD_ID =
-  "00000000-0000-4000-8000-000000000001";
-
-function configuredSupabaseHost(): string {
-  const configuredUrl = process.env.SUPABASE_URL;
-  if (!configuredUrl) return "absent";
-
-  try {
-    return new URL(configuredUrl).hostname || "invalid";
-  } catch {
-    return "invalid";
-  }
-}
-
-function logContextConfiguration(householdId: string | undefined): void {
-  const householdIdPresent = Boolean(householdId);
-  const householdIdValid = Boolean(
-    householdId && UUID_PATTERN.test(householdId),
-  );
-  console.info(
-    `[whatsapp-context] stage=config householdIdPresent=${String(householdIdPresent)} householdIdValid=${String(householdIdValid)} householdIdMatchesExpected=${String(householdId === EXPECTED_MVP_HOUSEHOLD_ID)} supabaseUrlPresent=${String(Boolean(process.env.SUPABASE_URL))} supabaseHost=${configuredSupabaseHost()} serviceRoleKeyPresent=${String(Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY))}`,
-  );
-}
 
 function contextUnavailable(): WhatsAppDomainError {
   return new WhatsAppDomainError(
@@ -115,31 +92,19 @@ async function resolveWhatsAppContext(
   message: WhatsAppTextMessage,
 ): Promise<WhatsAppContext> {
   const householdId = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-  logContextConfiguration(householdId);
   if (!householdId || !UUID_PATTERN.test(householdId)) {
-    console.info(
-      `[whatsapp-context] contextResolution=not_found reason=${householdId ? "household_invalid" : "household_missing"}`,
-    );
     throw contextUnavailable();
   }
 
   let memberId: string | null;
   try {
     memberId = await findWhatsAppMember(householdId, message.sender);
-  } catch (error) {
-    console.info(
-      `[whatsapp-context] contextResolution=error error_stage=${error instanceof WhatsAppRepositoryError ? "repository" : "unknown"}`,
-    );
+  } catch {
     throw contextUnavailable();
   }
   if (!memberId) {
-    console.info(
-      "[whatsapp-context] contextResolution=not_found reason=member_not_found",
-    );
     throw contextUnavailable();
   }
-
-  console.info("[whatsapp-context] contextResolution=result_found");
 
   return {
     householdId,

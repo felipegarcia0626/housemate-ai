@@ -137,26 +137,6 @@ invent a member name. Read filters must use only the fields available in the
 corresponding intent. Never return household, actor,
 createdBy, source, member ids, or any persistence fields.`;
 
-type ValidationIssue = {
-  path: string;
-  expected: string;
-  received: string;
-};
-
-type OpenAIDebugValue =
-  | boolean
-  | number
-  | string
-  | readonly string[]
-  | readonly ValidationIssue[];
-
-function logOpenAIDebug(
-  stage: string,
-  details: Record<string, OpenAIDebugValue> = {},
-): void {
-  console.info("[openai-debug]", { stage, ...details });
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -205,149 +185,6 @@ function parseFilters(value: unknown): ExpenseReadFilters {
     minAmount: nullableFilterValue(value, "minAmount", isNullableNumber),
     maxAmount: nullableFilterValue(value, "maxAmount", isNullableNumber),
   };
-}
-
-type ValidationDiagnostics = {
-  presentFields: string[];
-  filterFields: string[];
-  issues: ValidationIssue[];
-};
-
-function valueType(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  return typeof value;
-}
-
-function issueForValue(
-  path: string,
-  expected: string,
-  value: unknown,
-): ValidationIssue | null {
-  if (value === undefined) {
-    return { path, expected, received: "missing" };
-  }
-  return valueType(value) === expected
-    ? null
-    : { path, expected, received: valueType(value) };
-}
-
-function collectValidationDiagnostics(value: unknown): ValidationDiagnostics {
-  if (!isRecord(value)) {
-    return {
-      presentFields: [],
-      filterFields: [],
-      issues: [
-        {
-          path: "$",
-          expected: "object",
-          received: valueType(value),
-        },
-      ],
-    };
-  }
-
-  const presentFields = Object.keys(value);
-  const issues: ValidationIssue[] = [];
-  const addNullableStringIssue = (path: string, fieldValue: unknown) => {
-    if (fieldValue !== null && typeof fieldValue !== "string") {
-      issues.push({
-        path,
-        expected: "string|null",
-        received: fieldValue === undefined ? "missing" : valueType(fieldValue),
-      });
-    }
-  };
-
-  if (typeof value.kind !== "string") {
-    const issue = issueForValue("kind", "string", value.kind);
-    if (issue) issues.push(issue);
-    return { presentFields, filterFields: [], issues };
-  }
-
-  if (value.kind === "UNSUPPORTED") {
-    return { presentFields, filterFields: [], issues };
-  }
-
-  if (value.kind === "CREATE_INCOME") {
-    addNullableStringIssue("amount", value.amount);
-    addNullableStringIssue("incomeDate", value.incomeDate);
-    addNullableStringIssue("incomeDescription", value.incomeDescription);
-    addNullableStringIssue("categoryName", value.categoryName);
-    return { presentFields, filterFields: [], issues };
-  }
-
-  if (value.kind === "GET_EXPENSES" || value.kind === "GET_INCOMES") {
-    if (!isRecord(value.filters)) {
-      issues.push({
-        path: "filters",
-        expected: "object",
-        received: value.filters === undefined ? "missing" : valueType(value.filters),
-      });
-      return { presentFields, filterFields: [], issues };
-    }
-
-    const filterFields = Object.keys(value.filters);
-    const filterChecks: Array<[
-      string,
-      (filterValue: unknown) => boolean,
-      string,
-    ]> = [
-      ["from", isNullableString, "string|null"],
-      ["to", isNullableString, "string|null"],
-      ["categoryId", isNullableString, "string|null"],
-      ["memberId", isNullableString, "string|null"],
-      ["merchant", isNullableString, "string|null"],
-      ["minAmount", isNullableNumber, "number|null"],
-      ["maxAmount", isNullableNumber, "number|null"],
-    ];
-    for (const [field, guard, expected] of filterChecks) {
-      const filterValue = value.filters[field];
-      if (!guard(filterValue)) {
-        issues.push({
-          path: `filters.${field}`,
-          expected,
-          received:
-            filterValue === undefined ? "missing" : valueType(filterValue),
-        });
-      }
-    }
-    return { presentFields, filterFields, issues };
-  }
-
-  if (
-    value.kind === "GET_BALANCE" ||
-    value.kind === "GET_CATEGORIES" ||
-    value.kind === "GET_SHARING_RULES"
-  ) {
-    return { presentFields, filterFields: [], issues };
-  }
-
-  if (value.kind !== "CREATE_EXPENSE") {
-    issues.push({
-      path: "kind",
-      expected:
-        "CREATE_EXPENSE|CREATE_INCOME|GET_EXPENSES|GET_INCOMES|GET_BALANCE|GET_CATEGORIES|GET_SHARING_RULES|UNSUPPORTED",
-      received: "string",
-    });
-    return { presentFields, filterFields: [], issues };
-  }
-
-  addNullableStringIssue("merchant", value.merchant);
-  addNullableStringIssue("description", value.description);
-  addNullableStringIssue("totalAmount", value.totalAmount);
-  addNullableStringIssue("expenseDate", value.expenseDate);
-  addNullableStringIssue("paidByMemberName", value.paidByMemberName);
-  addNullableStringIssue("categoryName", value.categoryName);
-  if (value.paidBySelf !== null && typeof value.paidBySelf !== "boolean") {
-    issues.push({
-      path: "paidBySelf",
-      expected: "boolean|null",
-      received:
-        value.paidBySelf === undefined ? "missing" : valueType(value.paidBySelf),
-    });
-  }
-  return { presentFields, filterFields: [], issues };
 }
 
 function parseInterpretation(value: unknown): ExpenseInterpretation {
@@ -422,16 +259,11 @@ export async function interpretExpenseMessage(
   message: string,
 ): Promise<ExpenseInterpretation> {
   const apiKey = process.env.OPENAI_API_KEY;
-  logOpenAIDebug("runtime_config_checked", {
-    apiKeyPresent: Boolean(apiKey),
-  });
   if (!apiKey) {
-    logOpenAIDebug("request_blocked", { code: "configuration_error" });
     throw new OpenAIAdapterError();
   }
   const currentDate = new Date().toISOString().slice(0, 10);
 
-  logOpenAIDebug("request_started", { apiKeyPresent: true });
   let response: Response;
   try {
     response = await fetch("https://api.openai.com/v1/responses", {
@@ -468,75 +300,34 @@ export async function interpretExpenseMessage(
       }),
     });
   } catch {
-    logOpenAIDebug("request_failed", { code: "request_error" });
     throw new OpenAIAdapterError();
   }
 
-  logOpenAIDebug("response_received", {
-    status: response.status,
-    ok: response.ok,
-  });
   if (!response.ok) {
-    logOpenAIDebug("response_rejected", {
-      code: "http_error",
-      status: response.status,
-    });
     throw new OpenAIAdapterError();
   }
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    logOpenAIDebug("response_parse_failed", {
-      code: "response_parse_error",
-    });
     throw new OpenAIAdapterError();
   }
-  logOpenAIDebug("response_json_parsed", { success: true });
   const text = extractText(body);
-  logOpenAIDebug("output_text_extracted", {
-    present: Boolean(text),
-    length: text?.length ?? 0,
-  });
   if (!text) {
-    logOpenAIDebug("output_text_missing", {
-      code: "missing_output_text",
-    });
     throw new OpenAIAdapterError();
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text) as unknown;
-    logOpenAIDebug("result_json_parsed", { success: true });
   } catch {
-    logOpenAIDebug("result_json_parse_failed", {
-      code: "response_parse_error",
-    });
     throw new OpenAIAdapterError();
   }
 
   try {
     const result = parseInterpretation(parsed);
-    logOpenAIDebug("result_validated", {
-      success: true,
-      resultKind: result.kind,
-    });
-    logOpenAIDebug("interpretation_completed", {
-      resultKind: result.kind,
-    });
     return result;
   } catch {
-    const diagnostics = collectValidationDiagnostics(parsed);
-    logOpenAIDebug("result_validation_failed", {
-      code: "schema_validation_error",
-      schema: "expense_intent",
-      resultType: valueType(parsed),
-      issueCount: diagnostics.issues.length,
-      presentFields: diagnostics.presentFields,
-      filterFields: diagnostics.filterFields,
-      issues: diagnostics.issues,
-    });
     throw new OpenAIAdapterError();
   }
 }
