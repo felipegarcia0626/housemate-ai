@@ -71,6 +71,30 @@ function normalizeCategoryName(value: string): string {
     .toLocaleLowerCase("es");
 }
 
+function isAmbiguousMovementRegistration(message: string): boolean {
+  const normalized = message
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es");
+  const hasRegistrationVerb =
+    /\b(registra|registrar|anota|anotar|apunta|apuntar|agrega|agregar)\b/.test(
+      normalized,
+    );
+  const hasAmount = /\b\d+(?:[.,]\d+)?\b/.test(normalized);
+  if (!hasRegistrationVerb || !hasAmount) return false;
+
+  const hasExpenseSignal =
+    /\b(gasto|gastos|gaste|pague|pago|compra|compras|compre|factura)\b/.test(
+      normalized,
+    );
+  const hasIncomeSignal =
+    /\b(ingreso|ingresos|recibi|salario|sueldo|honorario|honorarios|nomina|bonus|bono)\b/.test(
+      normalized,
+    );
+
+  return !hasExpenseSignal && !hasIncomeSignal;
+}
+
 function resolveCategorySelection(
   message: string,
   categories: Category[],
@@ -310,6 +334,13 @@ export async function processAgentMessage(
       );
     }
     return completeCategoryDraft(context, categoryDraft, category);
+  }
+
+  if (isAmbiguousMovementRegistration(message)) {
+    return clarification(
+      ["operation"],
+      "¿Quieres registrar un gasto o un ingreso?",
+    );
   }
 
   let interpretation: ExpenseInterpretation;

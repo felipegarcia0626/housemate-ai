@@ -991,6 +991,26 @@ async function main() {
   });
   console.log("PASS category drafts are isolated by household and actor");
 
+  const beforeAmbiguousMovementExpenses = createdExpenses.length;
+  const beforeAmbiguousMovementIncomes = createdIncomes.length;
+  const ambiguousMovement = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-ambiguous-movement" },
+    {
+      message: "Registra 50000 en Éxito. Descripción: mercado de la semana.",
+    },
+  );
+  assert.equal(ambiguousMovement.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(ambiguousMovement.missingFields, ["operation"]);
+  assert.equal(
+    ambiguousMovement.message,
+    "¿Quieres registrar un gasto o un ingreso?",
+  );
+  assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses);
+  assert.equal(createdIncomes.length, beforeAmbiguousMovementIncomes);
+  console.log(
+    "PASS ambiguous registration asks whether it is an expense or income without persisting",
+  );
+
   mockInterpretation = {
     kind: "CREATE_INCOME",
     amount: "125",

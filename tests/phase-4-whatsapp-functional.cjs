@@ -286,6 +286,13 @@ async function main() {
           message: "¿Cuál fue el monto del gasto?",
         };
       }
+      if (agentMode === "ambiguous") {
+        return {
+          type: "CLARIFICATION_REQUIRED",
+          missingFields: ["operation"],
+          message: "¿Quieres registrar un gasto o un ingreso?",
+        };
+      }
       return {
         type: "PROPOSAL_CREATED",
         proposalId,
@@ -440,6 +447,21 @@ async function main() {
   );
   console.log("PASS WhatsApp clarification preserves Agent message");
 
+  agentMode = "ambiguous";
+  const ambiguous = await route.POST(
+    signedRequest(
+      rawBody(
+        incomingPayload("event-ambiguous-movement", "Registra 50000 en Éxito"),
+      ),
+    ),
+  );
+  assert.equal(ambiguous.status, 200);
+  assert.equal(
+    JSON.parse(sentMessages.at(-1).init.body).text.body,
+    "¿Quieres registrar un gasto o un ingreso?",
+  );
+  console.log("PASS WhatsApp ambiguous registrations ask for operation");
+
   agentMode = "confirmed";
   const confirmationBody = rawBody(incomingPayload("event-2", "Sí"));
   const confirmation = await route.POST(signedRequest(confirmationBody));
@@ -453,7 +475,7 @@ async function main() {
     signedRequest(rawBody({ object: "whatsapp_business_account", entry: [] })),
   );
   assert.deepEqual(await unsupported.json(), { ok: true, ignored: true });
-  assert.equal(agentCalls.length, 5);
+  assert.equal(agentCalls.length, 6);
   console.log("PASS unsupported event is ignored safely");
 
   const invalidJson = await route.POST(signedRequest("not-json"));
@@ -466,7 +488,7 @@ async function main() {
     ),
   );
   assert.equal(unknown.status, 500);
-  assert.equal(agentCalls.length, 5);
+  assert.equal(agentCalls.length, 6);
   console.log("PASS unknown sender cannot select a household or actor");
 
   agentMode = "error";
