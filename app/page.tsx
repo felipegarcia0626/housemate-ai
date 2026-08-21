@@ -641,9 +641,11 @@ export default function HomePage() {
             <div className="dashboard-insight">
               <span className="insight-label">Lectura principal</span>
               <strong>
-                {dashboard.netAmount >= 0
+                {dashboard.netAmount > 0
                   ? "Los ingresos superan los gastos"
-                  : "Los gastos superan los ingresos"}
+                  : dashboard.netAmount < 0
+                    ? "Los gastos superan los ingresos"
+                    : "Los ingresos y los gastos son iguales"}
               </strong>
               {topCategory && (
                 <small>
