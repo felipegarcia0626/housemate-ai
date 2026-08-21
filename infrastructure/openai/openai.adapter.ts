@@ -264,7 +264,11 @@ function parseInterpretation(value: unknown): ExpenseInterpretation {
       kind: "CREATE_INCOME",
       amount: value.amount,
       incomeDate: value.incomeDate,
-      description: value.incomeDescription ?? value.description,
+      description:
+        typeof value.incomeDescription === "string" &&
+        value.incomeDescription.trim()
+          ? value.incomeDescription
+          : value.description,
       categoryName: value.categoryName,
     };
   }

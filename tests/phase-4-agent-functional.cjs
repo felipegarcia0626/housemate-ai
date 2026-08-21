@@ -567,6 +567,11 @@ async function main() {
         expectedDescription: "Descripción B",
       },
       {
+        description: "Salario",
+        incomeDescription: "",
+        expectedDescription: "Salario",
+      },
+      {
         description: null,
         incomeDescription: null,
         expectedDescription: null,
@@ -2082,6 +2087,69 @@ async function main() {
   assert.equal(createdIncomes.at(-1).input.amount, 3000000);
   console.log(
     "PASS direct CREATE_INCOME reaches PendingProposal and writes only after confirmation",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "2750000",
+    incomeDate: "2026-08-20",
+    description: "Salario de agosto",
+    categoryName: null,
+  };
+  const incomeWithoutCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-income-complete-without-category",
+  };
+  const beforeIncomeWithoutCategoryProposals = proposals.length;
+  const beforeIncomeWithoutCategoryCount = createdIncomes.length;
+  const completeIncomeCategoryClarification =
+    await conversation.processAgentMessage(incomeWithoutCategoryContext, {
+      message: "Recibí 2750000 el 20 de agosto de 2026, salario de agosto",
+    });
+  assert.equal(
+    completeIncomeCategoryClarification.type,
+    "CLARIFICATION_REQUIRED",
+  );
+  assert.deepEqual(completeIncomeCategoryClarification.missingFields, [
+    "categoryId",
+  ]);
+  assert.ok(
+    completeIncomeCategoryClarification.options.some(
+      ({ name }) => name === "Food",
+    ),
+  );
+  assert.equal(proposals.length, beforeIncomeWithoutCategoryProposals);
+  assert.equal(createdIncomes.length, beforeIncomeWithoutCategoryCount);
+  const completeIncomeCategoryProposal =
+    await conversation.processAgentMessage(incomeWithoutCategoryContext, {
+      message: "Food",
+    });
+  assert.equal(completeIncomeCategoryProposal.type, "PROPOSAL_CREATED");
+  const completeIncomeCategoryStoredProposal = proposals.find(
+    (row) => row.id === completeIncomeCategoryProposal.proposalId,
+  );
+  assert.equal(
+    completeIncomeCategoryStoredProposal.payload.income.amount,
+    2750000,
+  );
+  assert.equal(
+    completeIncomeCategoryStoredProposal.payload.income.incomeDate,
+    "2026-08-20",
+  );
+  assert.equal(
+    completeIncomeCategoryStoredProposal.payload.income.description,
+    "Salario de agosto",
+  );
+  assert.equal(createdIncomes.length, beforeIncomeWithoutCategoryCount);
+  const completeIncomeCategoryConfirmation =
+    await conversation.processAgentMessage(incomeWithoutCategoryContext, {
+      message: "sí",
+    });
+  assert.equal(completeIncomeCategoryConfirmation.type, "CONFIRMED");
+  assert.equal(createdIncomes.length, beforeIncomeWithoutCategoryCount + 1);
+  assert.equal(createdIncomes.at(-1).input.amount, 2750000);
+  console.log(
+    "PASS complete CREATE_INCOME without category asks, proposes and confirms",
   );
 
   mockInterpretation = {
