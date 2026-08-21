@@ -589,6 +589,72 @@ async function main() {
     console.log(
       "PASS CREATE_INCOME description fields normalize to the internal contract",
     );
+
+    const semanticRecognitionCases = [
+      ["Recibí un salario de 3000000", "CREATE_INCOME"],
+      ["Me consignaron 3000000", "CREATE_INCOME"],
+      ["Recibí honorarios", "CREATE_INCOME"],
+      ["Entró un ingreso de 500000", "CREATE_INCOME"],
+      ["Me pagaron 800000", "CREATE_INCOME"],
+      ["Recibí mi sueldo", "CREATE_INCOME"],
+      ["Me consignaron la nómina", "CREATE_INCOME"],
+      ["Gasté 50000", "CREATE_EXPENSE"],
+      ["Pagué 50000", "CREATE_EXPENSE"],
+      ["Compré comida por 50000", "CREATE_EXPENSE"],
+      ["Registra 50000", "AMBIGUOUS_MOVEMENT"],
+      ["Anota 50000", "AMBIGUOUS_MOVEMENT"],
+      ["Agrega 50000", "AMBIGUOUS_MOVEMENT"],
+    ];
+    global.fetch = async (_url, request) => {
+      const body = JSON.parse(request.body);
+      const userMessage = body.input.find(({ role }) => role === "user")
+        ?.content?.[0]?.text;
+      const testCase = semanticRecognitionCases.find(
+        ([message]) => message === userMessage,
+      );
+      assert.ok(testCase, `Unexpected semantic recognition message: ${userMessage}`);
+      const [, kind] = testCase;
+      const output = {
+        ...incomeModelOutput,
+        kind,
+        amount:
+          kind === "CREATE_INCOME" && /\d/.test(userMessage)
+            ? "3000000"
+            : null,
+        totalAmount:
+          kind === "CREATE_EXPENSE" || kind === "AMBIGUOUS_MOVEMENT"
+            ? "50000"
+            : null,
+        incomeDate: null,
+        incomeDescription: null,
+        description: null,
+        merchant: kind === "CREATE_EXPENSE" ? "Comercio" : null,
+        expenseDate: null,
+        paidBySelf: kind === "CREATE_EXPENSE" ? true : null,
+        paidByMemberName: null,
+        categoryName: null,
+        date: null,
+        filters: null,
+      };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { output_text: JSON.stringify(output) };
+        },
+      };
+    };
+    for (const [message, expectedKind] of semanticRecognitionCases) {
+      const interpretation =
+        await realOpenAIAdapter.interpretExpenseMessage(message);
+      assert.equal(interpretation.kind, expectedKind);
+      if (expectedKind === "CREATE_INCOME" && !/\d/.test(message)) {
+        assert.equal(interpretation.amount, null);
+      }
+    }
+    console.log(
+      "PASS semantic Income, Expense and ambiguous movement recognition matrix",
+    );
   } finally {
     global.fetch = previousFetch;
     if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;

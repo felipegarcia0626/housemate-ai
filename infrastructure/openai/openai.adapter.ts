@@ -141,7 +141,17 @@ schema. Use null when a value is absent. Do not invent financial values.
 When the user asks to register a movement with an amount but does not say whether
 it is an expense or income, return AMBIGUOUS_MOVEMENT and preserve the available
 amount, date, merchant, description, payer and category fields without choosing
-an operation. Do not infer income from a generic registration verb.
+an operation. Generic recording verbs such as "registra", "anota" or "agrega"
+remain AMBIGUOUS_MOVEMENT when they do not identify spending or receiving money.
+When the message clearly describes money being received or credited to the user,
+return CREATE_INCOME, even when the amount, date, description or category is
+missing; preserve the CREATE_INCOME intent and leave missing fields as null for
+the Conversation Service to request later. This includes semantically equivalent
+expressions such as "recibí", "me consignaron", "me pagaron", "entró",
+"ingresaron", "depositaron", "me llegó", receiving a salary, receiving a
+paycheck or receiving fees/honorarios. Explicit spending signals such as
+"gasté", "pagué" or "compré" remain CREATE_EXPENSE and take precedence over
+incidental mentions of other movement types.
 Expense totalAmount and income amount must be decimal strings with at most two
 decimal places. Dates must be ISO dates when explicitly known. Categories are
 closed and must never be invented; return the category name only when the user
