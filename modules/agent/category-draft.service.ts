@@ -59,6 +59,22 @@ export async function createOperationDraft(
   });
 }
 
+export async function createDetailsDraft(
+  context: AgentContext,
+  operationType: AgentCategoryDraftOperation,
+  payload: AgentOperationDraftPayload,
+): Promise<AgentDraft> {
+  return createOperationDraftInRepository({
+    id: randomUUID(),
+    householdId: context.householdId,
+    actorMemberId: context.actorMemberId,
+    conversationKey: context.conversationKey,
+    operationType,
+    status: "AWAITING_DETAILS",
+    payload,
+  });
+}
+
 export async function getActiveAgentDraft(
   context: AgentContext,
 ): Promise<AgentDraft | null> {

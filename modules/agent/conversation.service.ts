@@ -16,6 +16,7 @@ import {
   createCategoryDraft,
   deleteAgentDraft,
   deleteCategoryDraft,
+  createDetailsDraft,
   getActiveAgentDraft,
   isCategoryDraftRepositoryError,
   updateAgentDraft,
@@ -208,6 +209,20 @@ function operationPayloadFromInterpretation(
   };
 }
 
+function operationPayloadFromIncomeInterpretation(
+  interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_INCOME" }>,
+): AgentOperationDraftPayload {
+  return {
+    amount: interpretation.amount,
+    date: interpretation.incomeDate,
+    merchant: null,
+    description: interpretation.description,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: interpretation.categoryName,
+  };
+}
+
 function toCategoryExpensePayload(
   input: ExpenseProposalInput,
 ): CategoryDraftExpensePayload["expense"] {
@@ -253,6 +268,24 @@ function parseDraftDetails(
       payerMatch?.[1]?.trim() ?? payload.paidByMemberName,
     categoryName: categoryMatch?.[1]?.trim() ?? payload.categoryName,
   };
+  if (pendingFields.includes("incomeDate") && pendingFields.includes("description")) {
+    const parts = message
+      .split(/\s*[,;]\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length === 2) {
+      const date = normalizeDraftDate(parts[0]);
+      const normalizedDate = normalizeOperationMessage(parts[0]);
+      const isDate =
+        normalizedDate === "hoy" ||
+        normalizedDate === "ayer" ||
+        /^\d{4}-\d{2}-\d{2}$/.test(date);
+      if (isDate && parts[1]) {
+        updatedPayload.date = date;
+        updatedPayload.description = parts[1];
+      }
+    }
+  }
   if (
     pendingFields.length === 1 &&
     !amountMatch &&
@@ -332,6 +365,24 @@ async function persistOperationDraft(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The operation clarification could not be persisted.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function persistDetailsDraft(
+  context: AgentContext,
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME",
+  payload: AgentOperationDraftPayload,
+): Promise<void> {
+  try {
+    await createDetailsDraft(context, operationType, payload);
+  } catch (error) {
+    if (isCategoryDraftRepositoryError(error)) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The conversation details could not be persisted.",
       );
     }
     throw error;
@@ -868,6 +919,11 @@ export async function processAgentMessage(
     if (!incomeDate) missingFields.push("incomeDate");
     if (!interpretation.description?.trim()) missingFields.push("description");
     if (missingFields.length > 0) {
+      await persistDetailsDraft(
+        context,
+        "CREATE_INCOME",
+        operationPayloadFromIncomeInterpretation(interpretation),
+      );
       return operationDetailsClarification("CREATE_INCOME", missingFields);
     }
     const incomeInput = {

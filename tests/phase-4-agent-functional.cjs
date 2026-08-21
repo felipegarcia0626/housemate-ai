@@ -2161,7 +2161,87 @@ async function main() {
   assert.doesNotMatch(incompleteIncome.message, /gasto/);
   assert.equal(proposals.length, beforeIncompleteIncomeProposals);
   assert.equal(createdIncomes.length, beforeIncompleteIncomeCount);
-  console.log("PASS fully incomplete CREATE_INCOME remains non-persistent");
+  const incompleteIncomeDraft = categoryDrafts.find(
+    (row) => row.conversation_key === incompleteIncomeContext.conversationKey,
+  );
+  assert.equal(incompleteIncomeDraft.status, "AWAITING_DETAILS");
+  assert.equal(incompleteIncomeDraft.operation_type, "CREATE_INCOME");
+  assert.equal(incompleteIncomeDraft.payload.amount, null);
+  console.log("PASS fully incomplete CREATE_INCOME remains non-financially persistent");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "3000000",
+    incomeDate: null,
+    description: null,
+    categoryName: null,
+  };
+  const incomeDetailsContext = {
+    ...contextA,
+    conversationKey: "agent-income-details-continuation",
+  };
+  const beforeIncomeDetailsProposals = proposals.length;
+  const beforeIncomeDetailsIncomes = createdIncomes.length;
+  const incomeDetailsInitial = await conversation.processAgentMessage(
+    incomeDetailsContext,
+    { message: "Recibí un salario de 3000000" },
+  );
+  assert.equal(incomeDetailsInitial.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(incomeDetailsInitial.missingFields, [
+    "incomeDate",
+    "description",
+  ]);
+  const incomeDetailsDraft = categoryDrafts.find(
+    (row) => row.conversation_key === incomeDetailsContext.conversationKey,
+  );
+  assert.equal(incomeDetailsDraft.status, "AWAITING_DETAILS");
+  assert.equal(incomeDetailsDraft.operation_type, "CREATE_INCOME");
+  assert.equal(incomeDetailsDraft.payload.amount, "3000000");
+  const incomeDetailsCompleted = await conversation.processAgentMessage(
+    incomeDetailsContext,
+    { message: "Hoy, salario" },
+    async () => {
+      throw new Error("OpenAI must not receive persisted income details");
+    },
+  );
+  assert.equal(incomeDetailsCompleted.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(incomeDetailsCompleted.missingFields, ["categoryId"]);
+  assert.equal(incomeDetailsDraft.status, "AWAITING_CATEGORY");
+  assert.equal(incomeDetailsDraft.operation_type, "CREATE_INCOME");
+  assert.equal(incomeDetailsDraft.payload.income.amount, 3000000);
+  assert.equal(
+    incomeDetailsDraft.payload.income.incomeDate,
+    new Date().toISOString().slice(0, 10),
+  );
+  assert.equal(incomeDetailsDraft.payload.income.description, "salario");
+  assert.equal(proposals.length, beforeIncomeDetailsProposals);
+  assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes);
+  const incomeDetailsProposal = await conversation.processAgentMessage(
+    incomeDetailsContext,
+    { message: "Food" },
+  );
+  assert.equal(incomeDetailsProposal.type, "PROPOSAL_CREATED");
+  const incomeDetailsStoredProposal = proposals.find(
+    (row) => row.id === incomeDetailsProposal.proposalId,
+  );
+  assert.equal(incomeDetailsStoredProposal.payload.income.amount, 3000000);
+  assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes);
+  const incomeDetailsConfirmation = await conversation.processAgentMessage(
+    incomeDetailsContext,
+    { message: "sí" },
+  );
+  assert.equal(incomeDetailsConfirmation.type, "CONFIRMED");
+  assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes + 1);
+  assert.equal(createdIncomes.at(-1).input.amount, 3000000);
+  const repeatedIncomeDetailsConfirmation = await conversation.processAgentMessage(
+    incomeDetailsContext,
+    { message: "sí" },
+  );
+  assert.notEqual(repeatedIncomeDetailsConfirmation.type, "CONFIRMED");
+  assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes + 1);
+  console.log(
+    "PASS incomplete CREATE_INCOME preserves amount through details, category and confirmation",
+  );
 
   mockInterpretation = {
     kind: "CREATE_INCOME",
