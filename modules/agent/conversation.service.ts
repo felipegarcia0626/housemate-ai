@@ -736,6 +736,7 @@ export async function processAgentMessage(
       input.proposalId ?? (await findActiveProposalId(context));
     if (proposalId) {
       const result = await confirmAgentProposal(context, proposalId);
+      if (activeDraft) await deleteDraftOrThrow(context, activeDraft);
       return { type: "CONFIRMED", ...result };
     }
     if (activeDraft?.status === "AWAITING_CATEGORY") {
@@ -758,6 +759,7 @@ export async function processAgentMessage(
       input.proposalId ?? (await findActiveProposalId(context));
     if (proposalId) {
       const result = await rejectAgentProposal(context, proposalId);
+      if (activeDraft) await deleteDraftOrThrow(context, activeDraft);
       return { type: "REJECTED", ...result };
     }
     if (activeDraft) {

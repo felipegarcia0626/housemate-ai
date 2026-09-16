@@ -1869,6 +1869,332 @@ async function main() {
   assert.equal(createdExpenses.length, beforeRejectionExpenses);
   console.log("PASS explicit rejection consumes the proposal without writing");
 
+  const staleStateContext = {
+    ...contextA,
+    conversationKey: "agent-stale-draft-proposal",
+  };
+  const staleDraft = {
+    id: "stale-draft-1",
+    household_id: staleStateContext.householdId,
+    actor_member_id: staleStateContext.actorMemberId,
+    conversation_key: staleStateContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_DETAILS",
+    payload: {
+      amount: "321",
+      date: null,
+      merchant: "Stale Market",
+      description: null,
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: null,
+    },
+    created_at: "2026-08-12T12:00:00.000Z",
+    updated_at: "2026-08-12T12:00:00.000Z",
+  };
+  const staleProposal = {
+    id: "62000000-0000-4000-8000-000000000001",
+    household_id: staleStateContext.householdId,
+    conversation_key: staleStateContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_CONFIRMATION",
+    payload: {
+      actorMemberId: staleStateContext.actorMemberId,
+      source: staleStateContext.source,
+      expense: {
+        paidByMemberId: staleStateContext.actorMemberId,
+        totalAmount: 321,
+        expenseDate: "2026-08-12",
+        description: "Stale proposal",
+        items: [],
+        splits: [
+          {
+            householdMemberId: staleStateContext.actorMemberId,
+            percentage: 100,
+          },
+        ],
+      },
+    },
+    created_at: "2026-08-12T12:00:00.000Z",
+    updated_at: "2026-08-12T12:00:00.000Z",
+  };
+  categoryDrafts.push(staleDraft);
+  proposals.push(staleProposal);
+  const createdExpensesBeforeStaleRejection = createdExpenses.length;
+  const staleRejected = await conversation.processAgentMessage(
+    staleStateContext,
+    { message: "no" },
+  );
+  assert.equal(staleRejected.type, "REJECTED");
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === staleStateContext.conversationKey,
+    ),
+    false,
+  );
+  assert.equal(
+    proposals.some(
+      (row) => row.conversation_key === staleStateContext.conversationKey,
+    ),
+    false,
+  );
+  assert.equal(createdExpenses.length, createdExpensesBeforeStaleRejection);
+  console.log(
+    "PASS rejecting a proposal clears a stale draft in the same conversation",
+  );
+
+  categoryDrafts.push(staleDraft);
+  proposals.push(staleProposal);
+  const createdExpensesBeforeStaleConfirmation = createdExpenses.length;
+  const staleConfirmed = await conversation.processAgentMessage(
+    staleStateContext,
+    { message: "si" },
+  );
+  assert.equal(staleConfirmed.type, "CONFIRMED");
+  assert.equal(
+    createdExpenses.length,
+    createdExpensesBeforeStaleConfirmation + 1,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === staleStateContext.conversationKey,
+    ),
+    false,
+  );
+  console.log(
+    "PASS confirming a proposal clears a stale draft in the same conversation",
+  );
+
+  function seedLifecycleState(context, index) {
+    const timestamp = new Date().toISOString();
+    const suffix = String(index).padStart(12, "0");
+    const draft = {
+      id: `62000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`,
+      household_id: context.householdId,
+      actor_member_id: context.actorMemberId,
+      conversation_key: context.conversationKey,
+      operation_type: "CREATE_EXPENSE",
+      status: "AWAITING_DETAILS",
+      payload: {
+        amount: "321",
+        date: null,
+        merchant: "Lifecycle Market",
+        description: null,
+        paidBySelf: true,
+        paidByMemberName: null,
+        categoryName: null,
+      },
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+    const proposal = {
+      id: `62000000-0000-4000-8000-${suffix}`,
+      household_id: context.householdId,
+      conversation_key: context.conversationKey,
+      operation_type: "CREATE_EXPENSE",
+      status: "AWAITING_CONFIRMATION",
+      payload: {
+        actorMemberId: context.actorMemberId,
+        source: context.source,
+        expense: {
+          paidByMemberId: context.actorMemberId,
+          totalAmount: 321,
+          expenseDate: "2026-08-12",
+          description: "Lifecycle proposal",
+          items: [],
+          splits: [
+            {
+              householdMemberId: context.actorMemberId,
+              percentage: 100,
+            },
+          ],
+        },
+      },
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+    categoryDrafts.push(draft);
+    proposals.push(proposal);
+    return { draft, proposal };
+  }
+
+  const confirmationFailureContext = {
+    ...contextA,
+    conversationKey: "agent-stale-confirm-failure",
+  };
+  const confirmationFailureFixture = seedLifecycleState(
+    confirmationFailureContext,
+    2,
+  );
+  const createdExpensesBeforeConfirmationFailure = createdExpenses.length;
+  const originalCreateExpense = fakeExpenseService.createExpense;
+  fakeExpenseService.createExpense = async () => {
+    throw new expenseDomainErrorClass(
+      "VALIDATION_ERROR",
+      "simulated confirmation failure",
+    );
+  };
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(confirmationFailureContext, {
+        message: "si",
+      }),
+      "VALIDATION_ERROR",
+    );
+  } finally {
+    fakeExpenseService.createExpense = originalCreateExpense;
+  }
+  assert.equal(
+    createdExpenses.length,
+    createdExpensesBeforeConfirmationFailure,
+  );
+  assert.equal(
+    categoryDrafts.some((row) => row.id === confirmationFailureFixture.draft.id),
+    true,
+  );
+  assert.equal(
+    proposals.find((row) => row.id === confirmationFailureFixture.proposal.id)
+      ?.status,
+    "AWAITING_CONFIRMATION",
+  );
+  console.log("PASS confirmation failure preserves draft and proposal");
+
+  const rejectionFailureContext = {
+    ...contextA,
+    conversationKey: "agent-stale-rejection-failure",
+  };
+  const rejectionFailureFixture = seedLifecycleState(
+    rejectionFailureContext,
+    3,
+  );
+  const createdExpensesBeforeRejectionFailure = createdExpenses.length;
+  const originalRejectAgentProposal = agentService.rejectAgentProposal;
+  agentService.rejectAgentProposal = async () => {
+    const error = new Error("simulated rejection failure");
+    error.code = "PERSISTENCE_ERROR";
+    throw error;
+  };
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(rejectionFailureContext, {
+        message: "no",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    agentService.rejectAgentProposal = originalRejectAgentProposal;
+  }
+  assert.equal(
+    createdExpenses.length,
+    createdExpensesBeforeRejectionFailure,
+  );
+  assert.equal(
+    categoryDrafts.some((row) => row.id === rejectionFailureFixture.draft.id),
+    true,
+  );
+  assert.equal(
+    proposals.find((row) => row.id === rejectionFailureFixture.proposal.id)
+      ?.status,
+    "AWAITING_CONFIRMATION",
+  );
+  console.log("PASS rejection failure preserves draft and proposal");
+
+  const reviveContext = {
+    ...contextA,
+    conversationKey: "agent-stale-no-revive",
+  };
+  const reviveFixture = seedLifecycleState(reviveContext, 4);
+  const createdExpensesBeforeReviveCheck = createdExpenses.length;
+  const reviveRejection = await conversation.processAgentMessage(reviveContext, {
+    message: "no",
+  });
+  assert.equal(reviveRejection.type, "REJECTED");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === reviveFixture.draft.id),
+    false,
+  );
+  assert.equal(
+    proposals.some((row) => row.id === reviveFixture.proposal.id),
+    false,
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "New Market",
+    description: null,
+    totalAmount: "444",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    categoryName: "Food",
+  };
+  const newOperation = await conversation.processAgentMessage(reviveContext, {
+    message: "Pagué 444 en New Market",
+  });
+  assert.equal(newOperation.type, "PROPOSAL_CREATED");
+  assert.equal(createdExpenses.length, createdExpensesBeforeReviveCheck);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === reviveFixture.draft.id),
+    false,
+  );
+  const replacementProposal = proposals.find(
+    (row) => row.conversation_key === reviveContext.conversationKey,
+  );
+  assert.ok(replacementProposal);
+  assert.notEqual(replacementProposal.id, reviveFixture.proposal.id);
+  assert.equal(replacementProposal.payload.expense.totalAmount, 444);
+  assert.equal(replacementProposal.payload.expense.merchant, "New Market");
+  await conversation.processAgentMessage(reviveContext, { message: "no" });
+  console.log("PASS rejected proposal cannot revive its old draft");
+
+  const duplicateLifecycleContext = {
+    ...contextA,
+    conversationKey: "agent-stale-duplicate-confirmation",
+  };
+  const duplicateLifecycleFixture = seedLifecycleState(
+    duplicateLifecycleContext,
+    5,
+  );
+  const createdExpensesBeforeDuplicateLifecycle = createdExpenses.length;
+  const duplicateFirstConfirmation = await conversation.processAgentMessage(
+    duplicateLifecycleContext,
+    { message: "si" },
+  );
+  assert.equal(duplicateFirstConfirmation.type, "CONFIRMED");
+  assert.equal(
+    createdExpenses.length,
+    createdExpensesBeforeDuplicateLifecycle + 1,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.id === duplicateLifecycleFixture.draft.id,
+    ),
+    false,
+  );
+  assert.equal(
+    proposals.some(
+      (row) => row.id === duplicateLifecycleFixture.proposal.id,
+    ),
+    false,
+  );
+  const duplicateSecondConfirmation = await conversation.processAgentMessage(
+    duplicateLifecycleContext,
+    { message: "si" },
+  );
+  assert.equal(duplicateSecondConfirmation.type, "CLARIFICATION_REQUIRED");
+  assert.equal(
+    createdExpenses.length,
+    createdExpensesBeforeDuplicateLifecycle + 1,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.id === duplicateLifecycleFixture.draft.id,
+    ),
+    false,
+  );
+  console.log(
+    "PASS duplicate confirmation with stale draft cannot create a second Expense",
+  );
+
   const providerError = await conversation.processAgentMessage(
     { ...contextA, conversationKey: "agent-provider-error" },
     { message: "Pagué 100" },
