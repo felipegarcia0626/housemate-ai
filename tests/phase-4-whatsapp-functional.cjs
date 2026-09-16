@@ -29,6 +29,7 @@ const agentServiceModule = path.join(
 
 const householdId = "42000000-0000-4000-8000-000000000001";
 const memberId = "42000000-0000-4000-8000-000000000011";
+const secondMemberId = "42000000-0000-4000-8000-000000000012";
 const sender = "573001234567";
 const unknownSender = "573009999999";
 const proposalId = "52000000-0000-4000-8000-000000000001";
@@ -41,6 +42,16 @@ const sentMessages = [];
 let agentMode = "proposal";
 let nextSendFails = false;
 let operationStep = 0;
+let updatedProposalAmount = 70000;
+let updatedProposalDate = "2026-08-16";
+let updatedProposalDescription = "Mercado de la semana";
+let updatedProposalCategoryId = "category-food";
+let updatedProposalPayerId = secondMemberId;
+
+const proposalCategories = [
+  { id: "category-food", name: "Alimentación" },
+  { id: "category-salary", name: "Salario" },
+];
 
 class FakeQuery {
   constructor(table) {
@@ -103,6 +114,24 @@ class FakeQuery {
   }
 
   execute() {
+    if (this.table === "tb_categories") {
+      return { data: proposalCategories, error: null };
+    }
+    if (this.table === "tb_household_members") {
+      return {
+        data: [
+          { id: memberId, household_id: householdId, display_name: "Felipe" },
+          {
+            id: secondMemberId,
+            household_id: householdId,
+            display_name: "Alejandra",
+          },
+        ].filter((row) =>
+          this.filters.every((filter) => row[filter.column] === filter.value),
+        ),
+        error: null,
+      };
+    }
     if (this.table !== "tb_processed_whatsapp_events") {
       throw new Error(`Unexpected table: ${this.table}`);
     }
@@ -278,6 +307,45 @@ async function main() {
           type: "READ_RESULT",
           operation: "GET_EXPENSES",
           data: [],
+        };
+      }
+      if (agentMode === "proposal-updated-expense") {
+        return {
+          type: "PROPOSAL_UPDATED",
+          proposalId,
+          operationType: "CREATE_EXPENSE",
+          status: "AWAITING_CONFIRMATION",
+          payload: {
+            actorMemberId: memberId,
+            source: "WHATSAPP",
+            expense: {
+              merchant: "Éxito",
+              description: updatedProposalDescription,
+              totalAmount: updatedProposalAmount,
+              expenseDate: updatedProposalDate,
+              paidByMemberId: updatedProposalPayerId,
+              categoryId: updatedProposalCategoryId,
+            },
+          },
+        };
+      }
+      if (agentMode === "proposal-updated-income") {
+        return {
+          type: "PROPOSAL_UPDATED",
+          proposalId,
+          operationType: "CREATE_INCOME",
+          status: "AWAITING_CONFIRMATION",
+          payload: {
+            actorMemberId: memberId,
+            source: "WHATSAPP",
+            income: {
+              memberId,
+              amount: updatedProposalAmount,
+              incomeDate: updatedProposalDate,
+              description: updatedProposalDescription,
+              categoryId: updatedProposalCategoryId,
+            },
+          },
         };
       }
       if (agentMode === "clarification") {
@@ -549,6 +617,68 @@ async function main() {
   );
   console.log("PASS WhatsApp clarification preserves Agent message");
 
+  agentMode = "proposal-updated-expense";
+  updatedProposalAmount = 70000;
+  updatedProposalDate = "2026-08-16";
+  updatedProposalDescription = "Mercado de la semana";
+  updatedProposalCategoryId = "category-food";
+  updatedProposalPayerId = secondMemberId;
+  const updatedExpense = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-proposal-updated-expense", "Fueron 70000")),
+    ),
+  );
+  assert.equal(updatedExpense.status, 200);
+  const updatedExpenseText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+  assert.match(updatedExpenseText, /Propuesta actualizada/);
+  assert.match(updatedExpenseText, /70[.,]000/);
+  assert.match(updatedExpenseText, /16\/08\/2026/);
+  assert.match(updatedExpenseText, /Mercado de la semana/);
+  assert.match(updatedExpenseText, /Alimentación/);
+  assert.match(updatedExpenseText, /Alejandra/);
+  assert.match(updatedExpenseText, /Responde "sí" para confirmar/);
+  assert.doesNotMatch(updatedExpenseText, /42000000-/);
+  console.log("PASS WhatsApp corrected Expense proposal renders updated fields");
+
+  updatedProposalAmount = 80000;
+  updatedProposalDescription = "Mercado actualizado";
+  const secondUpdatedExpense = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-proposal-updated-expense-2", "Fueron 80000")),
+    ),
+  );
+  assert.equal(secondUpdatedExpense.status, 200);
+  const secondUpdatedExpenseText = JSON.parse(
+    sentMessages.at(-1).init.body,
+  ).text.body;
+  assert.match(secondUpdatedExpenseText, /80[.,]000/);
+  assert.doesNotMatch(secondUpdatedExpenseText, /70[.,]000/);
+  assert.match(secondUpdatedExpenseText, /Mercado actualizado/);
+  console.log("PASS consecutive WhatsApp corrections render the latest proposal");
+
+  agentMode = "proposal-updated-income";
+  updatedProposalAmount = 3000000;
+  updatedProposalDate = "2026-08-20";
+  updatedProposalDescription = "Salario de agosto";
+  updatedProposalCategoryId = "category-salary";
+  const updatedIncome = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-proposal-updated-income", "Fueron 3000000")),
+    ),
+  );
+  assert.equal(updatedIncome.status, 200);
+  const updatedIncomeText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+  assert.match(updatedIncomeText, /Propuesta actualizada/);
+  assert.match(updatedIncomeText, /3[.,]000[.,]000/);
+  assert.match(updatedIncomeText, /20\/08\/2026/);
+  assert.match(updatedIncomeText, /Salario de agosto/);
+  assert.match(updatedIncomeText, /Salario/);
+  assert.match(updatedIncomeText, /Felipe/);
+  assert.doesNotMatch(updatedIncomeText, /Comercio:/);
+  assert.doesNotMatch(updatedIncomeText, /Pagador:/);
+  assert.doesNotMatch(updatedIncomeText, /42000000-/);
+  console.log("PASS WhatsApp corrected Income proposal renders updated fields");
+
   agentMode = "ambiguous";
   const ambiguous = await route.POST(
     signedRequest(
@@ -577,7 +707,7 @@ async function main() {
     signedRequest(rawBody({ object: "whatsapp_business_account", entry: [] })),
   );
   assert.deepEqual(await unsupported.json(), { ok: true, ignored: true });
-  assert.equal(agentCalls.length, 6);
+  assert.equal(agentCalls.length, 9);
   console.log("PASS unsupported event is ignored safely");
 
   const invalidJson = await route.POST(signedRequest("not-json"));
@@ -590,7 +720,7 @@ async function main() {
     ),
   );
   assert.equal(unknown.status, 500);
-  assert.equal(agentCalls.length, 6);
+  assert.equal(agentCalls.length, 9);
   console.log("PASS unknown sender cannot select a household or actor");
 
   agentMode = "error";

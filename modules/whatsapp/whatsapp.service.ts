@@ -5,6 +5,8 @@ import {
 } from "@/infrastructure/whatsapp/whatsapp.adapter";
 import { processAgentMessage } from "@/modules/agent/conversation.service";
 import { findActiveProposalId } from "@/modules/agent/agent.service";
+import { getCategoriesTool } from "@/modules/agent/tools/get-categories.tool";
+import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
 import type { AgentReadResult } from "@/modules/agent/agent.types";
 import type { Category } from "@/modules/categories/category.types";
 import type { IncomeListResult } from "@/modules/incomes/income.types";
@@ -86,14 +88,127 @@ function renderWhatsAppExpenses(data: ExpenseListItem[]): string {
   ].join("\n");
 }
 
+type AgentResult = Awaited<ReturnType<typeof processAgentMessage>>;
+type ProposalUpdatedResult = Extract<AgentResult, { type: "PROPOSAL_UPDATED" }>;
+type ProposalPresentationLabels = {
+  categories: Map<string, string>;
+  members: Map<string, string>;
+};
+
+function emptyProposalPresentationLabels(): ProposalPresentationLabels {
+  return { categories: new Map(), members: new Map() };
+}
+
+function renderUpdatedProposal(
+  result: ProposalUpdatedResult,
+  labels: ProposalPresentationLabels,
+): string {
+  const lines = [
+    "Propuesta actualizada. Revisa la información antes de confirmar:",
+  ];
+  const payload = result.payload;
+  if (!payload || typeof payload !== "object")
+    return 'Propuesta actualizada. Responde "sí" para confirmar o "no" para rechazar.';
+
+  if (
+    result.operationType === "CREATE_EXPENSE" &&
+    "expense" in payload &&
+    payload.expense
+  ) {
+    const expense = payload.expense;
+    if (expense.merchant?.trim())
+      lines.push(`Comercio: ${expense.merchant.trim()}`);
+    if (typeof expense.totalAmount === "number")
+      lines.push(`Monto: ${formatWhatsAppMoney(expense.totalAmount)}`);
+    if (expense.expenseDate?.trim())
+      lines.push(`Fecha: ${formatWhatsAppDate(expense.expenseDate)}`);
+    if (expense.description?.trim())
+      lines.push(`Descripción: ${expense.description.trim()}`);
+    const categoryName = expense.categoryId
+      ? labels.categories.get(expense.categoryId)
+      : undefined;
+    if (categoryName) lines.push(`Categoría: ${categoryName}`);
+    const payerName = expense.paidByMemberId
+      ? labels.members.get(expense.paidByMemberId)
+      : undefined;
+    if (payerName) lines.push(`Pagador: ${payerName}`);
+  } else if (
+    result.operationType === "CREATE_INCOME" &&
+    "income" in payload &&
+    payload.income
+  ) {
+    const income = payload.income;
+    if (typeof income.amount === "number")
+      lines.push(`Monto: ${formatWhatsAppMoney(income.amount)}`);
+    if (income.incomeDate?.trim())
+      lines.push(`Fecha: ${formatWhatsAppDate(income.incomeDate)}`);
+    if (income.description?.trim())
+      lines.push(`Descripción: ${income.description.trim()}`);
+    const categoryName = income.categoryId
+      ? labels.categories.get(income.categoryId)
+      : undefined;
+    if (categoryName) lines.push(`Categoría: ${categoryName}`);
+    const memberName = income.memberId
+      ? labels.members.get(income.memberId)
+      : undefined;
+    if (memberName) lines.push(`Integrante: ${memberName}`);
+  } else {
+    return 'Propuesta actualizada. Responde "sí" para confirmar o "no" para rechazar.';
+  }
+
+  lines.push('Responde "sí" para confirmar o "no" para rechazar.');
+  return lines.join("\n");
+}
+
+async function loadProposalPresentationLabels(
+  context: WhatsAppContext,
+  result: AgentResult,
+): Promise<ProposalPresentationLabels> {
+  const labels = emptyProposalPresentationLabels();
+  if (result.type !== "PROPOSAL_UPDATED" || !result.payload) return labels;
+
+  const payload = result.payload;
+  if (typeof payload !== "object") return labels;
+  const categoryId =
+    "expense" in payload && payload.expense
+      ? payload.expense.categoryId
+      : "income" in payload && payload.income
+        ? payload.income.categoryId
+        : null;
+  const memberId =
+    "expense" in payload && payload.expense
+      ? payload.expense.paidByMemberId
+      : "income" in payload && payload.income
+        ? payload.income.memberId
+        : null;
+  const [categories, members] = await Promise.all([
+    categoryId
+      ? getCategoriesTool(context).catch(() => [])
+      : Promise.resolve([]),
+    memberId
+      ? listHouseholdMembers({ householdId: context.householdId }).catch(
+          () => [],
+        )
+      : Promise.resolve([]),
+  ]);
+  categories.forEach((category) =>
+    labels.categories.set(category.id, category.name),
+  );
+  members.forEach((member) =>
+    labels.members.set(member.id, member.displayName),
+  );
+  return labels;
+}
+
 function renderAgentResult(
-  result: Awaited<ReturnType<typeof processAgentMessage>>,
+  result: AgentResult,
+  labels = emptyProposalPresentationLabels(),
 ): string {
   switch (result.type) {
     case "PROPOSAL_CREATED":
       return 'Propuesta creada. Responde "sí" para confirmar o "no" para rechazar.';
     case "PROPOSAL_UPDATED":
-      return 'Propuesta actualizada. Responde "sí" para confirmar o "no" para rechazar.';
+      return renderUpdatedProposal(result, labels);
     case "CONFIRMED":
       return "Operación confirmada.";
     case "REJECTED":
@@ -187,8 +302,17 @@ export async function processWhatsAppTextMessage(
     );
   }
 
+  let labels = emptyProposalPresentationLabels();
+  if (result.type === "PROPOSAL_UPDATED") {
+    try {
+      labels = await loadProposalPresentationLabels(context, result);
+    } catch {
+      labels = emptyProposalPresentationLabels();
+    }
+  }
+
   try {
-    await sendWhatsAppText(message.sender, renderAgentResult(result));
+    await sendWhatsAppText(message.sender, renderAgentResult(result, labels));
   } catch {
     throw new WhatsAppDomainError(
       "PROVIDER_ERROR",

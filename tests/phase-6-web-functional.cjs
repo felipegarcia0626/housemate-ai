@@ -173,6 +173,13 @@ for (const marker of [
   '"GET_BALANCE"',
   '"GET_CATEGORIES"',
   '"GET_SHARING_RULES"',
+  '"PROPOSAL_UPDATED"',
+  "presentUpdatedProposal",
+  "operationType",
+  "payload?.expense",
+  "payload?.income",
+  "Propuesta actualizada",
+  'Responde "Sí" para confirmar o "No" para rechazar.',
   "EncontrÃ©",
   "No encontrÃ© gastos con esos criterios.",
   "Estas son las categorÃ­as disponibles:",
@@ -186,6 +193,42 @@ for (const marker of [
   if (!page.includes(marker))
     throw new Error(`Missing partial-load handling: ${marker}`);
 }
+
+const updatedProposalStart = page.indexOf("function presentUpdatedProposal");
+const updatedProposalEnd = page.indexOf(
+  "function presentAgentResult",
+  updatedProposalStart,
+);
+if (updatedProposalStart < 0 || updatedProposalEnd < updatedProposalStart)
+  throw new Error("Missing Web PROPOSAL_UPDATED presentation");
+const updatedProposalSource = page.slice(
+  updatedProposalStart,
+  updatedProposalEnd,
+);
+for (const marker of [
+  "expense.totalAmount",
+  "expense.expenseDate",
+  "expense.description",
+  "expense.categoryId",
+  "expense.paidByMemberId",
+  "income.amount",
+  "income.incomeDate",
+  "income.description",
+  "income.categoryId",
+  "income.memberId",
+  "categories.find",
+  "members.find",
+]) {
+  if (!updatedProposalSource.includes(marker))
+    throw new Error(`Missing Web corrected proposal field: ${marker}`);
+}
+if (updatedProposalSource.includes("proposalId"))
+  throw new Error("Web corrected proposal must not render proposal IDs");
+if (updatedProposalSource.includes("JSON.stringify"))
+  throw new Error("Web corrected proposal must not render technical JSON");
+console.log(
+  "PASS Web PROPOSAL_UPDATED renders corrected fields without technical identifiers",
+);
 
 if (!page.includes("Total:"))
   throw new Error("Expense presentation must include a human-readable total");
