@@ -15,6 +15,15 @@ type IncomeReadFilters = {
   categoryId?: string;
 };
 
+export type CorrectionField =
+  "amount" | "date" | "description" | "category" | "payer";
+
+export type CorrectionInterpretation = {
+  kind: "CORRECTION";
+  field: CorrectionField;
+  value: string;
+};
+
 export type ExpenseInterpretation =
   | {
       kind: "AMBIGUOUS_MOVEMENT";
@@ -56,6 +65,8 @@ export type ExpenseInterpretation =
   | { kind: "GET_SHARING_RULES" }
   | { kind: "UNSUPPORTED" };
 
+type ParsedInterpretation = ExpenseInterpretation | CorrectionInterpretation;
+
 export class OpenAIAdapterError extends Error {
   readonly code = "INTERPRETATION_ERROR" as const;
 
@@ -74,6 +85,7 @@ const responseSchema = {
       enum: [
         "CREATE_EXPENSE",
         "CREATE_INCOME",
+        "CORRECTION",
         "AMBIGUOUS_MOVEMENT",
         "GET_EXPENSES",
         "GET_INCOMES",
@@ -94,6 +106,11 @@ const responseSchema = {
     date: { type: ["string", "null"] },
     incomeDate: { type: ["string", "null"] },
     incomeDescription: { type: ["string", "null"] },
+    correctionField: {
+      type: ["string", "null"],
+      enum: ["amount", "date", "description", "category", "payer", null],
+    },
+    correctionValue: { type: ["string", "null"] },
     filters: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -130,14 +147,28 @@ const responseSchema = {
     "date",
     "incomeDate",
     "incomeDescription",
+    "correctionField",
+    "correctionValue",
     "filters",
   ],
 } as const;
 
 const systemPrompt = `Interpret the user's message using only the supported HouseMate
-intents: create expense, create income, get expenses, get incomes, get balance,
+intents: create expense, create income, correction, get expenses, get incomes, get balance,
 get categories, get sharing rules, ambiguous movement, or unsupported. Return only the requested JSON
 schema. Use null when a value is absent. Do not invent financial values.
+When the user clearly corrects one field of a previously proposed operation, return
+CORRECTION with exactly one correctionField and its correctionValue as text. Use only
+the fields amount, date, description, category or payer. Do not include an operation,
+proposal id, household id, conversation key, source or any internal identifier.
+Do not use CORRECTION for a complete rejection such as "No", "No gracias",
+"rechazo", "rechazar", "cancelar", "cancela eso" or "cancelo". A message beginning
+with "No" is a correction only when the remaining text clearly identifies one field
+and its replacement value. Return null for correctionField and correctionValue for
+every non-CORRECTION intent. Support only one corrected field per message; when the
+field is ambiguous or several fields are corrected at once, return UNSUPPORTED.
+For CORRECTION, preserve the value as text for server-side validation; do not convert
+amounts to numbers, dates to ISO, categories to ids or payers to member ids.
 When the user asks to register a movement with an amount but does not say whether
 it is an expense or income, return AMBIGUOUS_MOVEMENT and preserve the available
 amount, date, merchant, description, payer and category fields without choosing
@@ -191,6 +222,16 @@ function isNullableNumber(value: unknown): value is number | null {
   return value === null || typeof value === "number";
 }
 
+function isCorrectionField(value: unknown): value is CorrectionField {
+  return (
+    value === "amount" ||
+    value === "date" ||
+    value === "description" ||
+    value === "category" ||
+    value === "payer"
+  );
+}
+
 function nullableFilterValue<T extends string | number>(
   filters: Record<string, unknown>,
   key: string,
@@ -214,8 +255,31 @@ function parseFilters(value: unknown): ExpenseReadFilters {
   };
 }
 
-function parseInterpretation(value: unknown): ExpenseInterpretation {
+function parseInterpretation(value: unknown): ParsedInterpretation {
   if (!isRecord(value) || typeof value.kind !== "string") {
+    throw new OpenAIAdapterError();
+  }
+  if (
+    !isNullableString(value.correctionField) ||
+    !isNullableString(value.correctionValue)
+  ) {
+    throw new OpenAIAdapterError();
+  }
+  if (value.kind === "CORRECTION") {
+    if (
+      !isCorrectionField(value.correctionField) ||
+      typeof value.correctionValue !== "string" ||
+      !value.correctionValue.trim()
+    ) {
+      throw new OpenAIAdapterError();
+    }
+    return {
+      kind: "CORRECTION",
+      field: value.correctionField,
+      value: value.correctionValue.trim(),
+    };
+  }
+  if (value.correctionField !== null || value.correctionValue !== null) {
     throw new OpenAIAdapterError();
   }
   if (value.kind === "UNSUPPORTED") return { kind: "UNSUPPORTED" };
@@ -389,7 +453,7 @@ export async function interpretExpenseMessage(
 
   try {
     const result = parseInterpretation(parsed);
-    return result;
+    return result as ExpenseInterpretation;
   } catch {
     throw new OpenAIAdapterError();
   }
