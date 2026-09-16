@@ -489,6 +489,8 @@ async function main() {
     date: null,
     incomeDate: null,
     incomeDescription: null,
+    correctionField: null,
+    correctionValue: null,
     filters: null,
   };
   global.fetch = async () => ({
@@ -559,6 +561,8 @@ async function main() {
       paidBySelf: null,
       paidByMemberName: null,
       date: null,
+      correctionField: null,
+      correctionValue: null,
       filters: null,
     };
     global.fetch = async () => ({
@@ -650,6 +654,8 @@ async function main() {
             : null,
         incomeDate: null,
         incomeDescription: null,
+        correctionField: null,
+        correctionValue: null,
         description: null,
         merchant: kind === "CREATE_EXPENSE" ? "Comercio" : null,
         expenseDate: null,
@@ -678,6 +684,123 @@ async function main() {
     console.log(
       "PASS semantic Income, Expense and ambiguous movement recognition matrix",
     );
+
+    const correctionCases = [
+      ["No, fueron 70000", "amount", "70000"],
+      ["En realidad fueron 70000", "amount", "70000"],
+      ["Corrige el monto a 70000", "amount", "70000"],
+      ["No, fue ayer", "date", "ayer"],
+      ["No, era mercado", "description", "mercado"],
+      ["No, era comida", "category", "comida"],
+      ["La categoría correcta es transporte", "category", "transporte"],
+      ["No, pagó Alejandra", "payer", "Alejandra"],
+    ];
+    const nonCorrectionMessages = [
+      "No",
+      "No gracias",
+      "rechazo",
+      "rechazar",
+      "cancelar",
+      "cancela eso",
+      "cancelo",
+      "70000",
+      "Ayer",
+      "Comida",
+      "No, fueron 70000 y fue ayer",
+      "No, era mercado y pagó Alejandra",
+    ];
+    const correctionByMessage = new Map(
+      correctionCases.map(([message, field, value]) => [
+        message,
+        { field, value },
+      ]),
+    );
+    global.fetch = async (_url, request) => {
+      const body = JSON.parse(request.body);
+      const userMessage = body.input.find(({ role }) => role === "user")
+        ?.content?.[0]?.text;
+      const correction = correctionByMessage.get(userMessage);
+      const output = {
+        ...incomeModelOutput,
+        kind: correction ? "CORRECTION" : "UNSUPPORTED",
+        correctionField: correction?.field ?? null,
+        correctionValue: correction?.value ?? null,
+        amount: null,
+        totalAmount: null,
+        incomeDate: null,
+        incomeDescription: null,
+        description: null,
+        merchant: null,
+        expenseDate: null,
+        paidBySelf: null,
+        paidByMemberName: null,
+        categoryName: null,
+        date: null,
+        filters: null,
+      };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { output_text: JSON.stringify(output) };
+        },
+      };
+    };
+    for (const [message, field, value] of correctionCases) {
+      const interpretation =
+        await realOpenAIAdapter.interpretExpenseMessage(message);
+      assert.deepEqual(interpretation, {
+        kind: "CORRECTION",
+        field,
+        value,
+      });
+    }
+    for (const message of nonCorrectionMessages) {
+      const interpretation =
+        await realOpenAIAdapter.interpretExpenseMessage(message);
+      assert.notEqual(interpretation.kind, "CORRECTION");
+    }
+    console.log("PASS correction contract and rejection distinction");
+
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          output_text: JSON.stringify({
+            ...incomeModelOutput,
+            kind: "CORRECTION",
+            correctionField: "amount",
+            correctionValue: "   ",
+          }),
+        };
+      },
+    });
+    await assert.rejects(
+      () => realOpenAIAdapter.interpretExpenseMessage("No, fueron"),
+      (error) => error?.code === "INTERPRETATION_ERROR",
+    );
+    console.log("PASS empty correction values are rejected");
+
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          output_text: JSON.stringify({
+            ...incomeModelOutput,
+            kind: "CREATE_EXPENSE",
+            correctionField: "amount",
+            correctionValue: "70000",
+          }),
+        };
+      },
+    });
+    await assert.rejects(
+      () => realOpenAIAdapter.interpretExpenseMessage("Pagué 70000"),
+      (error) => error?.code === "INTERPRETATION_ERROR",
+    );
+    console.log("PASS non-correction outputs cannot carry correction fields");
   } finally {
     global.fetch = previousFetch;
     if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -2907,6 +3030,438 @@ async function main() {
   console.log(
     "PASS reported Income phrases exercise the flow with a controlled CREATE_INCOME result",
   );
+
+  const correctionContext = {
+    ...contextA,
+    conversationKey: "agent-pending-correction-flow",
+  };
+  const correctionExpenseBefore = createdExpenses.length;
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Éxito",
+    description: "Compra original",
+    totalAmount: "50000",
+    expenseDate: "2026-09-14",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const correctionProposal = await conversation.processAgentMessage(
+    correctionContext,
+    { message: "Pagué 50000 en Éxito" },
+  );
+  assert.equal(correctionProposal.type, "PROPOSAL_CREATED");
+  const correctionStored = proposals.find(
+    (row) => row.id === correctionProposal.proposalId,
+  );
+  assert.ok(correctionStored);
+  const correctionProposalId = correctionStored.id;
+  const correctionDraft = {
+    id: "63000000-0000-4000-8000-000000000001",
+    household_id: correctionContext.householdId,
+    actor_member_id: correctionContext.actorMemberId,
+    conversation_key: correctionContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_DETAILS",
+    payload: {
+      amount: "50000",
+      date: "2026-09-14",
+      merchant: "Éxito",
+      description: "Compra original",
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: "Food",
+    },
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  categoryDrafts.push(correctionDraft);
+  const correctionDraftSnapshot = JSON.stringify(correctionDraft);
+  const correctionCases = [
+    ["fueron 70000", "amount", "70000"],
+    ["en realidad fue 2026-09-15", "date", "2026-09-15"],
+    ["era mercado de septiembre", "description", "mercado de septiembre"],
+    ["la categoría correcta es Vivienda", "category", "Vivienda"],
+    ["pagó Alejandra", "payer", "Alejandra"],
+  ];
+  for (const [message, field, value] of correctionCases) {
+    mockInterpretation = { kind: "CORRECTION", field, value };
+    const updated = await conversation.processAgentMessage(correctionContext, {
+      message,
+    });
+    assert.equal(updated.type, "PROPOSAL_UPDATED");
+    assert.equal(updated.proposalId, correctionProposalId);
+    assert.equal(updated.operationType, "CREATE_EXPENSE");
+    assert.equal(updated.payload.actorMemberId, correctionContext.actorMemberId);
+    assert.equal(updated.payload.source, correctionContext.source);
+    assert.equal(updated.payload.expense.merchant, "Éxito");
+    if (field === "amount") assert.equal(updated.payload.expense.totalAmount, 70000);
+    if (field === "date") assert.equal(updated.payload.expense.expenseDate, "2026-09-15");
+    if (field === "description") {
+      assert.equal(updated.payload.expense.description, "mercado de septiembre");
+    }
+    if (field === "category") {
+      assert.equal(updated.payload.expense.categoryId, "category-vivienda");
+    }
+    if (field === "payer") {
+      assert.equal(updated.payload.expense.paidByMemberId, memberB);
+    }
+    assert.equal(updated.status, "AWAITING_CONFIRMATION");
+    assert.equal(createdExpenses.length, correctionExpenseBefore);
+    assert.equal(JSON.stringify(correctionDraft), correctionDraftSnapshot);
+  }
+  mockInterpretation = { kind: "CORRECTION", field: "amount", value: "80000" };
+  const negatedCorrection = await conversation.processAgentMessage(
+    correctionContext,
+    { message: "No, fueron 80000" },
+  );
+  assert.equal(negatedCorrection.type, "PROPOSAL_UPDATED");
+  assert.equal(negatedCorrection.proposalId, correctionProposalId);
+  assert.equal(negatedCorrection.payload.expense.totalAmount, 80000);
+  const correctionConfirmed = await conversation.processAgentMessage(
+    correctionContext,
+    { message: "sí" },
+  );
+  assert.equal(correctionConfirmed.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, correctionExpenseBefore + 1);
+  assert.equal(createdExpenses.at(-1).input.totalAmount, 80000);
+  assert.equal(createdExpenses.at(-1).input.paidByMemberId, memberB);
+  assert.equal(createdExpenses.at(-1).input.categoryId, "category-vivienda");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === correctionDraft.id),
+    false,
+  );
+  assert.equal(
+    proposals.some((row) => row.id === correctionProposalId),
+    false,
+  );
+  console.log(
+    "PASS expense correction updates one proposal, preserves draft and confirms once",
+  );
+
+  const rejectionCorrectionContext = {
+    ...contextA,
+    conversationKey: "agent-pending-correction-rejection",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Mercado",
+    description: "Original",
+    totalAmount: "25000",
+    expenseDate: "2026-09-14",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const rejectionCorrectionProposal = await conversation.processAgentMessage(
+    rejectionCorrectionContext,
+    { message: "Pagué 25000 en Mercado" },
+  );
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "description",
+    value: "Compra cancelada",
+  };
+  const rejectedCorrection = await conversation.processAgentMessage(
+    rejectionCorrectionContext,
+    { message: "era compra cancelada" },
+  );
+  assert.equal(rejectedCorrection.type, "PROPOSAL_UPDATED");
+  const beforeCorrectionRejectionExpenses = createdExpenses.length;
+  const rejectedAfterCorrection = await conversation.processAgentMessage(
+    rejectionCorrectionContext,
+    { message: "no" },
+  );
+  assert.equal(rejectedAfterCorrection.type, "REJECTED");
+  assert.equal(createdExpenses.length, beforeCorrectionRejectionExpenses);
+  assert.equal(
+    proposals.some((row) => row.id === rejectionCorrectionProposal.proposalId),
+    false,
+  );
+  console.log("PASS corrected proposal can be rejected without financial writes");
+
+  const incomeCorrectionContext = {
+    ...contextA,
+    conversationKey: "agent-pending-income-correction",
+  };
+  const beforeIncomeCorrection = createdIncomes.length;
+  const incomeCorrectionProposal = await createIncome.createIncomeTool(
+    incomeCorrectionContext,
+    {
+      memberId: memberA,
+      amount: 300,
+      incomeDate: "2026-09-14",
+      description: "Ingreso original",
+      categoryId: "category-1",
+    },
+  );
+  mockInterpretation = { kind: "CORRECTION", field: "amount", value: "600" };
+  const incomeCorrection = await conversation.processAgentMessage(
+    incomeCorrectionContext,
+    { message: "fueron 600" },
+  );
+  assert.equal(incomeCorrection.type, "PROPOSAL_UPDATED");
+  assert.equal(incomeCorrection.proposalId, incomeCorrectionProposal.proposalId);
+  assert.equal(incomeCorrection.operationType, "CREATE_INCOME");
+  assert.equal(incomeCorrection.payload.income.amount, 600);
+  assert.equal(incomeCorrection.payload.income.description, "Ingreso original");
+  assert.equal(createdIncomes.length, beforeIncomeCorrection);
+  const incomeCorrectionConfirmed = await conversation.processAgentMessage(
+    incomeCorrectionContext,
+    { message: "sí" },
+  );
+  assert.equal(incomeCorrectionConfirmed.type, "CONFIRMED");
+  assert.equal(createdIncomes.length, beforeIncomeCorrection + 1);
+  assert.equal(createdIncomes.at(-1).input.amount, 600);
+  console.log("PASS income correction preserves operation and confirms once");
+
+  const incompatibleIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-income-correction-incompatible",
+  };
+  const incompatibleIncomeProposal = await createIncome.createIncomeTool(
+    incompatibleIncomeContext,
+    {
+      memberId: memberA,
+      amount: 700,
+      incomeDate: "2026-09-14",
+      description: "Income payer test",
+      categoryId: "category-1",
+    },
+  );
+  const incompatibleIncomeRow = proposals.find(
+    (row) => row.id === incompatibleIncomeProposal.proposalId,
+  );
+  const incompatibleIncomeUpdatedAt = incompatibleIncomeRow.updated_at;
+  mockInterpretation = { kind: "CORRECTION", field: "payer", value: "Felipe" };
+  const incompatibleIncomeCorrection = await conversation.processAgentMessage(
+    incompatibleIncomeContext,
+    { message: "pagó Felipe" },
+  );
+  assert.equal(incompatibleIncomeCorrection.type, "CLARIFICATION_REQUIRED");
+  assert.equal(incompatibleIncomeRow.updated_at, incompatibleIncomeUpdatedAt);
+  assert.equal(incompatibleIncomeRow.payload.income.amount, 700);
+  await conversation.processAgentMessage(incompatibleIncomeContext, {
+    message: "no",
+  });
+  console.log("PASS payer correction is rejected for CREATE_INCOME");
+
+  const noPendingCorrectionContext = {
+    ...contextA,
+    conversationKey: "agent-correction-without-pending",
+  };
+  const noPendingDraft = {
+    ...correctionDraft,
+    id: "63000000-0000-4000-8000-000000000002",
+    conversation_key: noPendingCorrectionContext.conversationKey,
+  };
+  categoryDrafts.push(noPendingDraft);
+  const beforeNoPending = {
+    proposals: proposals.length,
+    expenses: createdExpenses.length,
+    draft: JSON.stringify(noPendingDraft),
+  };
+  mockInterpretation = { kind: "CORRECTION", field: "amount", value: "70000" };
+  const noPendingCorrection = await conversation.processAgentMessage(
+    noPendingCorrectionContext,
+    { message: "fueron 70000" },
+  );
+  assert.equal(noPendingCorrection.type, "CLARIFICATION_REQUIRED");
+  assert.match(noPendingCorrection.message, /propuesta activa/);
+  assert.equal(proposals.length, beforeNoPending.proposals);
+  assert.equal(createdExpenses.length, beforeNoPending.expenses);
+  assert.equal(JSON.stringify(noPendingDraft), beforeNoPending.draft);
+  await conversation.processAgentMessage(noPendingCorrectionContext, {
+    message: "cancelar",
+  });
+  console.log("PASS correction without pending proposal does not mutate draft");
+
+  const invalidCorrectionContext = {
+    ...contextA,
+    conversationKey: "agent-invalid-pending-correction",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Invalid Correction Market",
+    description: "Original",
+    totalAmount: "1000",
+    expenseDate: "2026-09-14",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const invalidCorrectionProposal = await conversation.processAgentMessage(
+    invalidCorrectionContext,
+    { message: "Pagué 1000" },
+  );
+  const invalidCorrectionRow = proposals.find(
+    (row) => row.id === invalidCorrectionProposal.proposalId,
+  );
+  const invalidCorrectionUpdatedAt = invalidCorrectionRow.updated_at;
+  const invalidCorrectionCases = [
+    { field: "amount", value: "-5", message: "fueron -5" },
+    { field: "date", value: "fecha inválida", message: "fue fecha inválida" },
+    { field: "category", value: "No existe", message: "la categoría correcta es No existe" },
+    { field: "payer", value: "No existe", message: "pagó No existe" },
+    { field: "unknown", value: "valor", message: "corrige valor" },
+  ];
+  for (const testCase of invalidCorrectionCases) {
+    mockInterpretation = {
+      kind: "CORRECTION",
+      field: testCase.field,
+      value: testCase.value,
+    };
+    const invalidResult = await conversation.processAgentMessage(
+      invalidCorrectionContext,
+      { message: testCase.message },
+    );
+    assert.equal(invalidResult.type, "CLARIFICATION_REQUIRED");
+    assert.equal(invalidCorrectionRow.updated_at, invalidCorrectionUpdatedAt);
+    assert.equal(invalidCorrectionRow.payload.expense.totalAmount, 1000);
+  }
+  await conversation.processAgentMessage(invalidCorrectionContext, {
+    message: "no",
+  });
+  console.log("PASS invalid and incompatible corrections do not mutate proposals");
+
+  mockInterpretation = { kind: "UNSUPPORTED" };
+  const shortInputContext = {
+    ...contextA,
+    conversationKey: "agent-short-input-with-pending",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Short Input Market",
+    description: "Original",
+    totalAmount: "900",
+    expenseDate: "2026-09-14",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const shortInputProposal = await conversation.processAgentMessage(
+    shortInputContext,
+    { message: "Pagué 900" },
+  );
+  const shortInputRow = proposals.find(
+    (row) => row.id === shortInputProposal.proposalId,
+  );
+  const shortInputUpdatedAt = shortInputRow.updated_at;
+  mockInterpretation = { kind: "UNSUPPORTED" };
+  for (const message of ["70000", "Ayer", "Comida"]) {
+    const shortResult = await conversation.processAgentMessage(
+      shortInputContext,
+      { message },
+    );
+    assert.equal(shortResult.type, "UNSUPPORTED");
+    assert.equal(shortInputRow.updated_at, shortInputUpdatedAt);
+  }
+  await conversation.processAgentMessage(shortInputContext, { message: "no" });
+  console.log("PASS short ambiguous messages do not trigger corrections");
+
+  const paymentVerbContext = {
+    ...contextA,
+    conversationKey: "agent-payment-verb-without-pending",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Carulla",
+    description: null,
+    totalAmount: "10000",
+    expenseDate: "2026-09-15",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const paymentVerbResult = await conversation.processAgentMessage(
+    paymentVerbContext,
+    { message: "Pago 10000 en Carulla" },
+  );
+  assert.equal(paymentVerbResult.type, "PROPOSAL_CREATED");
+  assert.notEqual(paymentVerbResult.message, "No hay una propuesta activa para corregir.");
+  await conversation.processAgentMessage(paymentVerbContext, { message: "no" });
+
+  const paymentVerbPendingContext = {
+    ...contextA,
+    conversationKey: "agent-payment-verb-with-pending",
+  };
+  const paymentVerbPending = await conversation.processAgentMessage(
+    paymentVerbPendingContext,
+    { message: "Pagué 20000 en Carulla" },
+  );
+  const paymentVerbPendingRow = proposals.find(
+    (row) => row.id === paymentVerbPending.proposalId,
+  );
+  assert.ok(paymentVerbPendingRow);
+  const paymentVerbPendingSnapshot = JSON.stringify(paymentVerbPendingRow);
+  const proposalsBeforePaymentVerb = proposals.length;
+  const expensesBeforePaymentVerb = createdExpenses.length;
+  const paymentVerbConflict = await expectAgentError(
+    conversation.processAgentMessage(paymentVerbPendingContext, {
+      message: "Pago 10000 en Carulla",
+    }),
+    "PENDING_PROPOSAL_EXISTS",
+  );
+  assert.equal(paymentVerbConflict, undefined);
+  assert.equal(proposals.length, proposalsBeforePaymentVerb);
+  assert.equal(createdExpenses.length, expensesBeforePaymentVerb);
+  assert.equal(JSON.stringify(paymentVerbPendingRow), paymentVerbPendingSnapshot);
+  await conversation.processAgentMessage(paymentVerbPendingContext, {
+    message: "no",
+  });
+  console.log("PASS payment verb is not treated as correction");
+
+  const correctionPrefixContext = {
+    ...contextA,
+    conversationKey: "agent-correction-prefixes",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Prefix Market",
+    description: "Original",
+    totalAmount: "50000",
+    expenseDate: "2026-09-15",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const correctionPrefixProposal = await conversation.processAgentMessage(
+    correctionPrefixContext,
+    { message: "Pagué 50000 en Prefix Market" },
+  );
+  const correctionPrefixBeforeExpenses = createdExpenses.length;
+  const correctionPrefixCases = [
+    ["No, eran 70000", "70000"],
+    ["No, fueron 80000", "80000"],
+  ];
+  for (const [message, value] of correctionPrefixCases) {
+    mockInterpretation = { kind: "CORRECTION", field: "amount", value };
+    const corrected = await conversation.processAgentMessage(
+      correctionPrefixContext,
+      { message },
+    );
+    assert.equal(corrected.type, "PROPOSAL_UPDATED");
+    assert.equal(corrected.proposalId, correctionPrefixProposal.proposalId);
+    assert.equal(corrected.payload.expense.totalAmount, Number(value));
+    assert.equal(createdExpenses.length, correctionPrefixBeforeExpenses);
+  }
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "payer",
+    value: "Felipe",
+  };
+  const payerCorrection = await conversation.processAgentMessage(
+    correctionPrefixContext,
+    { message: "Pagó Felipe" },
+  );
+  assert.equal(payerCorrection.type, "PROPOSAL_UPDATED");
+  assert.equal(payerCorrection.proposalId, correctionPrefixProposal.proposalId);
+  assert.equal(payerCorrection.payload.expense.paidByMemberId, memberA);
+  assert.equal(createdExpenses.length, correctionPrefixBeforeExpenses);
+  await conversation.processAgentMessage(correctionPrefixContext, {
+    message: "no",
+  });
+  console.log("PASS correction prefixes and payer correction remain supported");
 
   const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
   const createExpenseTypeStart = openaiSource.indexOf('kind: "CREATE_EXPENSE"');

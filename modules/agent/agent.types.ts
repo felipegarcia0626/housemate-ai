@@ -134,6 +134,14 @@ export interface AgentProposalMessageResult extends ExpenseProposalResult {
   type: "PROPOSAL_CREATED";
 }
 
+export interface AgentProposalUpdatedMessageResult {
+  type: "PROPOSAL_UPDATED";
+  proposalId: string;
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
+  status: "AWAITING_CONFIRMATION";
+  payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
+}
+
 export interface AgentConfirmedMessageResult extends ExpenseConfirmationResult {
   type: "CONFIRMED";
 }
@@ -178,6 +186,7 @@ export interface AgentReadResult {
 
 export type AgentMessageResult =
   | AgentProposalMessageResult
+  | AgentProposalUpdatedMessageResult
   | AgentConfirmedMessageResult
   | AgentIncomeConfirmedMessageResult
   | AgentRejectedMessageResult

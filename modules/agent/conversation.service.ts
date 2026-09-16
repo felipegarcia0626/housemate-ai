@@ -38,11 +38,20 @@ import type {
 } from "./agent.types";
 import { AgentDomainError } from "./agent.types";
 import {
+  findPendingProposalForConversation,
+  PendingProposalRepositoryError,
+  updatePendingProposalConditionally,
+} from "./pending-proposal.repository";
+import type { PendingProposal } from "./agent.types";
+import {
   interpretExpenseMessage,
+  type CorrectionInterpretation,
   type ExpenseInterpretation,
 } from "@/infrastructure/openai/openai.adapter";
 
-type Interpreter = (message: string) => Promise<ExpenseInterpretation>;
+type Interpreter = (
+  message: string,
+) => Promise<ExpenseInterpretation | CorrectionInterpretation>;
 
 function isConfirmation(message: string): boolean {
   return /^(?:si|sí|ok|confirmo|confirmar|acepto|yes)(?:\s|$)/i.test(
@@ -53,6 +62,19 @@ function isConfirmation(message: string): boolean {
 function isRejection(message: string): boolean {
   return /^(?:no|rechazo|rechazar|cancelar|cancelo)(?:\s|$)/i.test(
     message.trim(),
+  );
+}
+
+function looksLikeCorrection(message: string): boolean {
+  const normalized = normalizeOperationMessage(message);
+  const payerCorrection =
+    /^pago\s+(?!(?:\d|de|en|por|para|con|el|la|los|las|un|una|mi|mis)\b)[a-z]+(?:\s+[a-z]+)?(?:\s+\d+(?:[.,]\d+)?)?$/.test(
+      normalized,
+    );
+  return (
+    /^(?:no\s*,|en realidad\b|corrige\b|corregir\b|cambia\b|cambiar\b|actualiza\b|actualizar\b|la categoria correcta\b|la fecha correcta\b|el monto correcto\b|la descripcion correcta\b)/.test(
+      normalized,
+    ) || /^(?:fueron|eran|fue|era)\b/.test(normalized) || payerCorrection
   );
 }
 
@@ -430,6 +452,15 @@ function toAmount(value: string | null): number | null {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
+function normalizeCorrectionDate(value: string): string | null {
+  const date = normalizeDraftDate(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date
+    ? null
+    : date;
+}
+
 function normalizeMemberName(value: string): string {
   return value
     .trim()
@@ -437,6 +468,158 @@ function normalizeMemberName(value: string): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLocaleLowerCase("es");
+}
+
+function correctionClarification(message: string): AgentMessageResult {
+  return clarification([], message);
+}
+
+async function resolveCorrectionCategory(
+  context: AgentContext,
+  value: string,
+): Promise<Category | null> {
+  const categories = await getCategoriesTool(context);
+  const normalized = normalizeCategoryName(value);
+  if (!normalized) return null;
+  const matches = categories.filter(
+    (category) => normalizeCategoryName(category.name) === normalized,
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function resolveCorrectionPayer(
+  context: AgentContext,
+  value: string,
+): Promise<string | null> {
+  const normalized = normalizeMemberName(value);
+  if (!normalized) return null;
+  let members;
+  try {
+    members = await listHouseholdMembers({ householdId: context.householdId });
+  } catch {
+    throw new AgentDomainError(
+      "PERSISTENCE_ERROR",
+      "Household members could not be resolved.",
+    );
+  }
+  const matches = members.filter(
+    (member) => normalizeMemberName(member.displayName) === normalized,
+  );
+  return matches.length === 1 ? matches[0].id : null;
+}
+
+async function applyPendingProposalCorrection(
+  context: AgentContext,
+  proposal: PendingProposal,
+  correction: CorrectionInterpretation,
+): Promise<AgentMessageResult> {
+  const value = correction.value.trim();
+  if (!value) {
+    return correctionClarification("Indica un valor para corregir.");
+  }
+
+  let payload: PendingProposal["payload"];
+  if (proposal.operationType === "CREATE_EXPENSE") {
+    const original = proposal.payload;
+    const expense = { ...original.expense };
+    if (correction.field === "amount") {
+      const amount = toAmount(value);
+      if (amount === null) {
+        return correctionClarification("El monto indicado no es válido.");
+      }
+      expense.totalAmount = amount;
+    } else if (correction.field === "date") {
+      const date = normalizeCorrectionDate(value);
+      if (!date) {
+        return correctionClarification("La fecha indicada no es válida.");
+      }
+      expense.expenseDate = date;
+    } else if (correction.field === "description") {
+      expense.description = value;
+    } else if (correction.field === "category") {
+      const category = await resolveCorrectionCategory(context, value);
+      if (!category) {
+        return correctionClarification(
+          "No encontré una categoría única para esa corrección.",
+        );
+      }
+      expense.categoryId = category.id;
+    } else if (correction.field === "payer") {
+      const payerId = await resolveCorrectionPayer(context, value);
+      if (!payerId) {
+        return correctionClarification(
+          "No encontré un integrante único para esa corrección.",
+        );
+      }
+      expense.paidByMemberId = payerId;
+    } else {
+      return correctionClarification("No puedo corregir ese campo.");
+    }
+    payload = { ...original, expense };
+  } else {
+    const original = proposal.payload;
+    const income = { ...original.income };
+    if (correction.field === "amount") {
+      const amount = toAmount(value);
+      if (amount === null) {
+        return correctionClarification("El monto indicado no es válido.");
+      }
+      income.amount = amount;
+    } else if (correction.field === "date") {
+      const date = normalizeCorrectionDate(value);
+      if (!date) {
+        return correctionClarification("La fecha indicada no es válida.");
+      }
+      income.incomeDate = date;
+    } else if (correction.field === "description") {
+      income.description = value;
+    } else if (correction.field === "category") {
+      const category = await resolveCorrectionCategory(context, value);
+      if (!category) {
+        return correctionClarification(
+          "No encontré una categoría única para esa corrección.",
+        );
+      }
+      income.categoryId = category.id;
+    } else {
+      return correctionClarification(
+        "Ese campo no aplica a la corrección de un ingreso.",
+      );
+    }
+    payload = { ...original, income };
+  }
+
+  let updated: PendingProposal | null;
+  try {
+    updated = await updatePendingProposalConditionally({
+      id: proposal.id,
+      householdId: context.householdId,
+      conversationKey: context.conversationKey,
+      operationType: proposal.operationType,
+      payload,
+      expectedUpdatedAt: proposal.updatedAt,
+    });
+  } catch (error) {
+    if (error instanceof PendingProposalRepositoryError) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The pending proposal could not be updated.",
+      );
+    }
+    throw error;
+  }
+  if (!updated) {
+    return correctionClarification(
+      "La propuesta ya no está disponible para corregir.",
+    );
+  }
+  return {
+    type: "PROPOSAL_UPDATED",
+    proposalId: updated.id,
+    operationType: updated.operationType,
+    status: updated.status,
+    payload: updated.payload,
+  };
 }
 
 interface ProposalInputResult {
@@ -773,6 +956,45 @@ export async function processAgentMessage(
     }
     return clarification(["proposalId"]);
   }
+
+  let interpretation: ExpenseInterpretation | CorrectionInterpretation | null =
+    null;
+  if (looksLikeCorrection(message)) {
+    let pendingProposal: PendingProposal | null;
+    try {
+      pendingProposal = await findPendingProposalForConversation(
+        context.householdId,
+        context.conversationKey,
+      );
+    } catch (error) {
+      if (error instanceof PendingProposalRepositoryError) {
+        throw new AgentDomainError(
+          "PERSISTENCE_ERROR",
+          "The pending proposal could not be loaded.",
+        );
+      }
+      throw error;
+    }
+    if (!pendingProposal) {
+      return correctionClarification(
+        "No hay una propuesta activa para corregir.",
+      );
+    }
+    try {
+      interpretation = await interpreter(message);
+    } catch (error) {
+      if (error instanceof AgentDomainError) throw error;
+      return {
+        type: "ERROR",
+        code: "INTERPRETATION_ERROR",
+        message: "No pude interpretar el mensaje.",
+      };
+    }
+    if (interpretation.kind === "CORRECTION") {
+      return applyPendingProposalCorrection(context, pendingProposal, interpretation);
+    }
+  }
+
   if (!message)
     return { type: "UNSUPPORTED", message: "No pude interpretar el mensaje." };
 
@@ -853,16 +1075,23 @@ export async function processAgentMessage(
     );
   }
 
-  let interpretation: ExpenseInterpretation;
-  try {
-    interpretation = await interpreter(message);
-  } catch (error) {
-    if (error instanceof AgentDomainError) throw error;
-    return {
-      type: "ERROR",
-      code: "INTERPRETATION_ERROR",
-      message: "No pude interpretar el mensaje.",
-    };
+  if (!interpretation) {
+    try {
+      interpretation = await interpreter(message);
+    } catch (error) {
+      if (error instanceof AgentDomainError) throw error;
+      return {
+        type: "ERROR",
+        code: "INTERPRETATION_ERROR",
+        message: "No pude interpretar el mensaje.",
+      };
+    }
+  }
+
+  if (interpretation.kind === "CORRECTION") {
+    return correctionClarification(
+      "No hay una propuesta activa para corregir.",
+    );
   }
 
   if (interpretation.kind === "UNSUPPORTED") {

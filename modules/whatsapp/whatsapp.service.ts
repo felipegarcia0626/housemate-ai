@@ -92,6 +92,8 @@ function renderAgentResult(
   switch (result.type) {
     case "PROPOSAL_CREATED":
       return 'Propuesta creada. Responde "sí" para confirmar o "no" para rechazar.';
+    case "PROPOSAL_UPDATED":
+      return 'Propuesta actualizada. Responde "sí" para confirmar o "no" para rechazar.';
     case "CONFIRMED":
       return "Operación confirmada.";
     case "REJECTED":
