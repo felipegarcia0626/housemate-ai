@@ -114,6 +114,32 @@ export async function createPendingIncomeProposal(input: {
   return proposal as unknown as PendingIncomeProposal;
 }
 
+export async function updatePendingProposalConditionally(input: {
+  id: string;
+  householdId: string;
+  conversationKey: string;
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
+  payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
+  expectedUpdatedAt: string;
+}): Promise<PendingProposal | null> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_pending_proposals")
+    .update({ payload: input.payload })
+    .eq("id", input.id)
+    .eq("household_id", input.householdId)
+    .eq("conversation_key", input.conversationKey)
+    .eq("operation_type", input.operationType)
+    .eq("status", "AWAITING_CONFIRMATION")
+    .eq("updated_at", input.expectedUpdatedAt)
+    .select(
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+    )
+    .maybeSingle();
+
+  if (error) throw persistenceError("update", error);
+  return data ? mapRow(data as PendingProposalRow) : null;
+}
+
 export async function findPendingProposal(
   id: string,
   householdId: string,

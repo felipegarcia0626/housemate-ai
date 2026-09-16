@@ -47,6 +47,12 @@ const agentServiceModule = path.join(
   "agent",
   "agent.service.ts",
 );
+const pendingProposalRepositoryModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "pending-proposal.repository.ts",
+);
 const toolModule = path.join(
   root,
   "modules",
@@ -241,6 +247,17 @@ class FakeQuery {
         updated_at: this.insertPayload.updated_at ?? now,
       };
       proposals.push(row);
+      return { data: [row], error: null };
+    }
+
+    if (this.updatePayload !== undefined) {
+      const row = proposals.find((candidate) =>
+        matches(candidate, this.filters),
+      );
+      if (!row) return { data: [], error: null };
+      Object.assign(row, this.updatePayload, {
+        updated_at: new Date(Date.now()).toISOString(),
+      });
       return { data: [row], error: null };
     }
 
@@ -446,6 +463,7 @@ async function main() {
     path.join(root, "modules", "expenses", "expense.types.ts"),
   ).ExpenseDomainError;
   const agentService = load(agentServiceModule);
+  const pendingProposalRepository = load(pendingProposalRepositoryModule);
   const tool = load(toolModule);
   const conversation = load(conversationModule);
   const createIncome = load(incomeToolModule);
@@ -696,6 +714,200 @@ async function main() {
   assert.equal(pending.payload.actorMemberId, memberA);
   assert.equal(pending.householdId, householdA);
   console.log("PASS pending proposal is retrieved with controlled ownership");
+
+  const conditionalContext = {
+    ...contextA,
+    conversationKey: "agent-conditional-proposal",
+  };
+  const conditionalCreated = await tool.createExpenseTool(
+    conditionalContext,
+    {
+      ...expenseInput,
+      description: "Original conditional proposal",
+    },
+  );
+  const conditionalBefore = await pendingProposalRepository.findPendingProposal(
+    conditionalCreated.proposalId,
+    conditionalContext.householdId,
+    conditionalContext.conversationKey,
+  );
+  assert.ok(conditionalBefore);
+  const financialWritesBeforeConditionalUpdate = createdExpenses.length;
+  const updatedPayload = {
+    ...conditionalBefore.payload,
+    expense: {
+      ...conditionalBefore.payload.expense,
+      totalAmount: 200,
+      description: "Updated conditional proposal",
+    },
+  };
+  const updatedConditional =
+    await pendingProposalRepository.updatePendingProposalConditionally({
+      id: conditionalBefore.id,
+      householdId: conditionalContext.householdId,
+      conversationKey: conditionalContext.conversationKey,
+      operationType: "CREATE_EXPENSE",
+      payload: updatedPayload,
+      expectedUpdatedAt: conditionalBefore.updatedAt,
+    });
+  assert.ok(updatedConditional);
+  assert.equal(updatedConditional.id, conditionalBefore.id);
+  assert.notEqual(updatedConditional.updatedAt, conditionalBefore.updatedAt);
+  assert.equal(updatedConditional.operationType, "CREATE_EXPENSE");
+  assert.equal(updatedConditional.status, "AWAITING_CONFIRMATION");
+  assert.equal(updatedConditional.payload.expense.totalAmount, 200);
+  assert.equal(
+    updatedConditional.payload.expense.description,
+    "Updated conditional proposal",
+  );
+  assert.equal(
+    updatedConditional.payload.actorMemberId,
+    conditionalBefore.payload.actorMemberId,
+  );
+  assert.equal(
+    updatedConditional.payload.source,
+    conditionalBefore.payload.source,
+  );
+  assert.equal(
+    updatedConditional.payload.expense.paidByMemberId,
+    conditionalBefore.payload.expense.paidByMemberId,
+  );
+  assert.equal(
+    updatedConditional.payload.expense.expenseDate,
+    conditionalBefore.payload.expense.expenseDate,
+  );
+  assert.deepEqual(
+    updatedConditional.payload.expense.splits,
+    conditionalBefore.payload.expense.splits,
+  );
+  console.log("PASS conditional PendingProposal update preserves identity and fields");
+
+  const updateAttempt = {
+    id: updatedConditional.id,
+    householdId: conditionalContext.householdId,
+    conversationKey: conditionalContext.conversationKey,
+    operationType: "CREATE_EXPENSE",
+    payload: updatedConditional.payload,
+    expectedUpdatedAt: updatedConditional.updatedAt,
+  };
+  for (const invalidAttempt of [
+    { ...updateAttempt, householdId: householdB },
+    { ...updateAttempt, conversationKey: "other-conversation" },
+    { ...updateAttempt, operationType: "CREATE_INCOME" },
+    { ...updateAttempt, id: "42000000-0000-4000-8000-000000009999" },
+  ]) {
+    const result =
+      await pendingProposalRepository.updatePendingProposalConditionally(
+        invalidAttempt,
+      );
+    assert.equal(result, null);
+  }
+  const conditionalRow = proposals.find(
+    (row) => row.id === updatedConditional.id,
+  );
+  assert.ok(conditionalRow);
+  const statusBeforeInvalidAttempt = conditionalRow.status;
+  conditionalRow.status = "REJECTED";
+  const inactiveResult =
+    await pendingProposalRepository.updatePendingProposalConditionally(
+      updateAttempt,
+    );
+  assert.equal(inactiveResult, null);
+  conditionalRow.status = statusBeforeInvalidAttempt;
+  console.log("PASS PendingProposal update enforces ownership, operation and status");
+
+  const staleResult =
+    await pendingProposalRepository.updatePendingProposalConditionally({
+      ...updateAttempt,
+      payload: {
+        ...updateAttempt.payload,
+        expense: {
+          ...updateAttempt.payload.expense,
+          totalAmount: 999,
+        },
+      },
+      expectedUpdatedAt: conditionalBefore.updatedAt,
+    });
+  assert.equal(staleResult, null);
+  const conditionalAfterStaleAttempt =
+    await pendingProposalRepository.findPendingProposal(
+      conditionalBefore.id,
+      conditionalContext.householdId,
+      conditionalContext.conversationKey,
+    );
+  assert.ok(conditionalAfterStaleAttempt);
+  assert.equal(conditionalAfterStaleAttempt.payload.expense.totalAmount, 200);
+  assert.equal(createdExpenses.length, financialWritesBeforeConditionalUpdate);
+  console.log("PASS stale PendingProposal update is rejected without financial writes");
+  proposals = proposals.filter((row) => row.id !== conditionalBefore.id);
+
+  const conditionalIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-conditional-income-proposal",
+  };
+  const conditionalIncomeCreated = await agentService.createIncomeProposal(
+    conditionalIncomeContext,
+    {
+      memberId: memberA,
+      amount: 300,
+      incomeDate: "2026-08-12",
+      description: "Original conditional income",
+      categoryId: null,
+    },
+  );
+  const conditionalIncomeBefore =
+    await pendingProposalRepository.findPendingIncomeProposal(
+      conditionalIncomeCreated.proposalId,
+      conditionalIncomeContext.householdId,
+      conditionalIncomeContext.conversationKey,
+    );
+  assert.ok(conditionalIncomeBefore);
+  const updatedIncomePayload = {
+    ...conditionalIncomeBefore.payload,
+    income: {
+      ...conditionalIncomeBefore.payload.income,
+      description: "Updated conditional income",
+    },
+  };
+  const updatedConditionalIncome =
+    await pendingProposalRepository.updatePendingProposalConditionally({
+      id: conditionalIncomeBefore.id,
+      householdId: conditionalIncomeContext.householdId,
+      conversationKey: conditionalIncomeContext.conversationKey,
+      operationType: "CREATE_INCOME",
+      payload: updatedIncomePayload,
+      expectedUpdatedAt: conditionalIncomeBefore.updatedAt,
+    });
+  assert.ok(updatedConditionalIncome);
+  assert.equal(updatedConditionalIncome.id, conditionalIncomeBefore.id);
+  assert.notEqual(
+    updatedConditionalIncome.updatedAt,
+    conditionalIncomeBefore.updatedAt,
+  );
+  assert.equal(updatedConditionalIncome.operationType, "CREATE_INCOME");
+  assert.equal(updatedConditionalIncome.status, "AWAITING_CONFIRMATION");
+  assert.equal(
+    updatedConditionalIncome.payload.income.description,
+    "Updated conditional income",
+  );
+  assert.equal(
+    updatedConditionalIncome.payload.income.memberId,
+    conditionalIncomeBefore.payload.income.memberId,
+  );
+  assert.equal(
+    updatedConditionalIncome.payload.income.amount,
+    conditionalIncomeBefore.payload.income.amount,
+  );
+  assert.equal(
+    updatedConditionalIncome.payload.income.incomeDate,
+    conditionalIncomeBefore.payload.income.incomeDate,
+  );
+  assert.equal(
+    updatedConditionalIncome.payload.income.categoryId,
+    conditionalIncomeBefore.payload.income.categoryId,
+  );
+  proposals = proposals.filter((row) => row.id !== conditionalIncomeBefore.id);
+  console.log("PASS conditional PendingProposal update supports CREATE_INCOME");
 
   const confirmed = await tool.confirmCreateExpenseTool(
     contextA,
