@@ -60,9 +60,9 @@ function isConfirmation(message: string): boolean {
 }
 
 function isRejection(message: string): boolean {
-  return /^(?:no|rechazo|rechazar|cancelar|cancelo)(?:\s|$)/i.test(
-    message.trim(),
-  );
+  const normalized = normalizeOperationMessage(message);
+  if (/^no\s+(?:fueron|eran|fue|era)\b/.test(normalized)) return false;
+  return /^(?:no|rechazo|rechazar|cancelar|cancelo)(?:\s|$)/.test(normalized);
 }
 
 function looksLikeCorrection(message: string): boolean {
@@ -72,7 +72,7 @@ function looksLikeCorrection(message: string): boolean {
       normalized,
     );
   return (
-    /^(?:no\s*,|en realidad\b|corrige\b|corregir\b|cambia\b|cambiar\b|actualiza\b|actualizar\b|la categoria correcta\b|la fecha correcta\b|el monto correcto\b|la descripcion correcta\b)/.test(
+    /^(?:no\s*,|no\s+(?:fueron|eran|fue|era)\b|en realidad\b|corrige\b|corregir\b|cambia\b|cambiar\b|actualiza\b|actualizar\b|quiero\s+(?:corregir|cambiar|actualizar)\b|la categoria (?:correcta|debe)\b|la fecha (?:correcta|debe)\b|el monto (?:correcto|debe)\b|la descripcion (?:correcta|debe)\b)/.test(
       normalized,
     ) || /^(?:fueron|eran|fue|era)\b/.test(normalized) || payerCorrection
   );
@@ -314,7 +314,8 @@ function parseDraftDetails(
     !dateMatch &&
     !descriptionMatch &&
     !payerMatch &&
-    !categoryMatch
+    !categoryMatch &&
+    !looksLikeCorrection(message)
   ) {
     const value = message.trim();
     if (pendingFields[0] === "amount" || pendingFields[0] === "totalAmount") {
@@ -914,6 +915,29 @@ export async function processAgentMessage(
     }
     throw error;
   }
+
+  let pendingProposal: PendingProposal | null = null;
+  let pendingProposalLoaded = false;
+  const getPendingProposalForMessage = async (): Promise<PendingProposal | null> => {
+    if (pendingProposalLoaded) return pendingProposal;
+    try {
+      pendingProposal = await findPendingProposalForConversation(
+        context.householdId,
+        context.conversationKey,
+      );
+      pendingProposalLoaded = true;
+      return pendingProposal;
+    } catch (error) {
+      if (error instanceof PendingProposalRepositoryError) {
+        throw new AgentDomainError(
+          "PERSISTENCE_ERROR",
+          "The pending proposal could not be loaded.",
+        );
+      }
+      throw error;
+    }
+  };
+
   if (isConfirmation(message)) {
     const proposalId =
       input.proposalId ?? (await findActiveProposalId(context));
@@ -960,22 +984,8 @@ export async function processAgentMessage(
   let interpretation: ExpenseInterpretation | CorrectionInterpretation | null =
     null;
   if (looksLikeCorrection(message)) {
-    let pendingProposal: PendingProposal | null;
-    try {
-      pendingProposal = await findPendingProposalForConversation(
-        context.householdId,
-        context.conversationKey,
-      );
-    } catch (error) {
-      if (error instanceof PendingProposalRepositoryError) {
-        throw new AgentDomainError(
-          "PERSISTENCE_ERROR",
-          "The pending proposal could not be loaded.",
-        );
-      }
-      throw error;
-    }
-    if (pendingProposal) {
+    const activePendingProposal = await getPendingProposalForMessage();
+    if (activePendingProposal) {
       try {
         interpretation = await interpreter(message);
       } catch (error) {
@@ -987,7 +997,11 @@ export async function processAgentMessage(
         };
       }
       if (interpretation.kind === "CORRECTION") {
-        return applyPendingProposalCorrection(context, pendingProposal, interpretation);
+        return applyPendingProposalCorrection(
+          context,
+          activePendingProposal,
+          interpretation,
+        );
       }
     }
   }
@@ -1086,6 +1100,14 @@ export async function processAgentMessage(
   }
 
   if (interpretation.kind === "CORRECTION") {
+    const activePendingProposal = await getPendingProposalForMessage();
+    if (activePendingProposal) {
+      return applyPendingProposalCorrection(
+        context,
+        activePendingProposal,
+        interpretation,
+      );
+    }
     return correctionClarification(
       "No hay una propuesta activa para corregir.",
     );

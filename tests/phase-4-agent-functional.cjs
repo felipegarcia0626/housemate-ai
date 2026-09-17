@@ -397,6 +397,7 @@ async function main() {
       operations.push({ type: "category-read" });
       return [
         { id: "category-1", name: "Food" },
+        { id: "category-salud", name: "Salud" },
         { id: "category-vivienda", name: "Vivienda" },
         { id: "category-transporte", name: "Transporte" },
         { id: "category-mascotas", name: "Mascotas" },
@@ -2691,6 +2692,7 @@ async function main() {
   const categoryRead = await getCategories.getCategoriesTool(contextA);
   assert.deepEqual(categoryRead, [
     { id: "category-1", name: "Food" },
+    { id: "category-salud", name: "Salud" },
     { id: "category-vivienda", name: "Vivienda" },
     { id: "category-transporte", name: "Transporte" },
     { id: "category-mascotas", name: "Mascotas" },
@@ -3547,6 +3549,10 @@ async function main() {
   const correctionPrefixCases = [
     ["No, eran 70000", "70000"],
     ["No, fueron 80000", "80000"],
+    ["No fueron 81000", "81000"],
+    ["No eran 82000", "82000"],
+    ["Quiero corregir el monto a 83000", "83000"],
+    ["El monto debe ser 84000", "84000"],
     ["Fueron 90000", "90000"],
     ["Eran 91000", "91000"],
   ];
@@ -3560,6 +3566,49 @@ async function main() {
     assert.equal(corrected.proposalId, correctionPrefixProposal.proposalId);
     assert.equal(corrected.payload.expense.totalAmount, Number(value));
     assert.equal(createdExpenses.length, correctionPrefixBeforeExpenses);
+  }
+  const naturalCorrectionCases = [
+    {
+      message: "La categoría debe ser Salud",
+      field: "category",
+      value: "Salud",
+      assertPayload: (expense) =>
+        assert.equal(expense.categoryId, "category-salud"),
+    },
+    {
+      message: "La fecha correcta es ayer",
+      field: "date",
+      value: "ayer",
+      assertPayload: (expense) =>
+        assert.equal(
+          expense.expenseDate,
+          new Date(Date.now() - 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10),
+        ),
+    },
+    {
+      message: "La descripción correcta es supermercado",
+      field: "description",
+      value: "supermercado",
+      assertPayload: (expense) =>
+        assert.equal(expense.description, "supermercado"),
+    },
+  ];
+  for (const testCase of naturalCorrectionCases) {
+    mockInterpretation = {
+      kind: "CORRECTION",
+      field: testCase.field,
+      value: testCase.value,
+    };
+    const corrected = await conversation.processAgentMessage(
+      correctionPrefixContext,
+      { message: testCase.message },
+    );
+    assert.equal(corrected.type, "PROPOSAL_UPDATED");
+    assert.equal(corrected.proposalId, correctionPrefixProposal.proposalId);
+    assert.equal(createdExpenses.length, correctionPrefixBeforeExpenses);
+    testCase.assertPayload(corrected.payload.expense);
   }
   mockInterpretation = {
     kind: "CORRECTION",
@@ -3591,6 +3640,44 @@ async function main() {
     message: "no",
   });
   console.log("PASS correction prefixes and payer correction remain supported");
+
+  const explicitRejectionMessages = [
+    "No",
+    "No gracias",
+    "Rechazo",
+    "Rechazar",
+    "Cancelar",
+    "Cancelo",
+    "No quiero confirmar",
+  ];
+  for (const [index, message] of explicitRejectionMessages.entries()) {
+    const rejectionContext = {
+      ...contextA,
+      conversationKey: `agent-explicit-rejection-${index}`,
+    };
+    mockInterpretation = {
+      kind: "CREATE_EXPENSE",
+      merchant: "Rejection Market",
+      description: null,
+      totalAmount: "1000",
+      expenseDate: "2026-09-15",
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: "Food",
+    };
+    const proposal = await conversation.processAgentMessage(rejectionContext, {
+      message: "Pagué 1000 en Rejection Market",
+    });
+    const rejected = await conversation.processAgentMessage(rejectionContext, {
+      message,
+    });
+    assert.equal(rejected.type, "REJECTED");
+    assert.equal(
+      proposals.some((row) => row.id === proposal.proposalId),
+      false,
+    );
+  }
+  console.log("PASS explicit rejection messages remain prioritized");
 
   const d3Results = [];
   function recordD3Case(name, result) {
@@ -4033,6 +4120,338 @@ async function main() {
 
   assert.equal(d3Results.length, 28);
   console.log(`PASS D3 regression matrix completed (${d3Results.length} cases)`);
+
+  const correctionLikeDraftMessages = [
+    "Fueron 70000",
+    "No, fueron 80000",
+    "Quiero corregir el monto a 80000",
+    "El monto debe ser 80000",
+  ];
+  const operationDraftContext = {
+    ...contextA,
+    conversationKey: "d3-correction-like-operation-draft",
+  };
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "1000",
+    date: null,
+    merchant: "Draft Market",
+    description: null,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  await conversation.processAgentMessage(operationDraftContext, {
+    message: "Registra 1000 en Draft Market",
+  });
+  const operationDraftRow = categoryDrafts.find(
+    (row) => row.conversation_key === operationDraftContext.conversationKey,
+  );
+  const operationDraftPayload = JSON.stringify(operationDraftRow.payload);
+  for (const message of correctionLikeDraftMessages) {
+    const result = await conversation.processAgentMessage(
+      operationDraftContext,
+      { message },
+      async () => {
+        throw new Error("OpenAI must not receive operation draft replies");
+      },
+    );
+    assert.equal(result.type, "CLARIFICATION_REQUIRED");
+    assert.equal(operationDraftRow.status, "AWAITING_OPERATION");
+    assert.equal(JSON.stringify(operationDraftRow.payload), operationDraftPayload);
+  }
+  await conversation.processAgentMessage(operationDraftContext, {
+    message: "cancelar",
+  });
+
+  const categoryDraftContext = {
+    ...contextA,
+    conversationKey: "d3-correction-like-category-draft",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Category Draft Market",
+    description: null,
+    totalAmount: "1000",
+    expenseDate: "2026-09-15",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  await conversation.processAgentMessage(categoryDraftContext, {
+    message: "Pagué 1000 en Category Draft Market",
+  });
+  const categoryDraftRow = categoryDrafts.find(
+    (row) => row.conversation_key === categoryDraftContext.conversationKey,
+  );
+  const categoryDraftPayload = JSON.stringify(categoryDraftRow.payload);
+  for (const message of correctionLikeDraftMessages) {
+    const result = await conversation.processAgentMessage(
+      categoryDraftContext,
+      { message },
+      async () => {
+        throw new Error("OpenAI must not receive category draft replies");
+      },
+    );
+    assert.equal(result.type, "CLARIFICATION_REQUIRED");
+    assert.equal(categoryDraftRow.status, "AWAITING_CATEGORY");
+    assert.equal(JSON.stringify(categoryDraftRow.payload), categoryDraftPayload);
+  }
+  await conversation.processAgentMessage(categoryDraftContext, {
+    message: "cancelar",
+  });
+
+  const detailsDraftContext = {
+    ...contextA,
+    conversationKey: "d3-correction-like-details-draft",
+  };
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "1000",
+    date: null,
+    merchant: "Details Draft Market",
+    description: null,
+    paidBySelf: false,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  await conversation.processAgentMessage(detailsDraftContext, {
+    message: "Registra 1000 en Details Draft Market",
+  });
+  await conversation.processAgentMessage(detailsDraftContext, {
+    message: "gasto",
+  });
+  const detailsDraftRow = categoryDrafts.find(
+    (row) => row.conversation_key === detailsDraftContext.conversationKey,
+  );
+  const detailsDraftPayload = JSON.stringify(detailsDraftRow.payload);
+  for (const message of correctionLikeDraftMessages) {
+    const result = await conversation.processAgentMessage(
+      detailsDraftContext,
+      { message },
+      async () => {
+        throw new Error("OpenAI must not receive details draft replies");
+      },
+    );
+    assert.equal(result.type, "CLARIFICATION_REQUIRED");
+    assert.equal(detailsDraftRow.status, "AWAITING_DETAILS");
+    assert.equal(JSON.stringify(detailsDraftRow.payload), detailsDraftPayload);
+  }
+  await conversation.processAgentMessage(detailsDraftContext, {
+    message: "cancelar",
+  });
+  console.log("PASS correction-like messages preserve AgentDraft states without pending proposals");
+
+  const fallbackPendingContext = {
+    ...contextA,
+    conversationKey: "d3-correction-fallback-pending",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Fallback Market",
+    description: "Original",
+    totalAmount: "50000",
+    expenseDate: "2026-09-15",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const fallbackProposal = await conversation.processAgentMessage(
+    fallbackPendingContext,
+    { message: "Pagué 50000 en Fallback Market" },
+  );
+  assert.equal(fallbackProposal.type, "PROPOSAL_CREATED");
+  const fallbackRow = proposals.find(
+    (row) => row.id === fallbackProposal.proposalId,
+  );
+  assert.ok(fallbackRow);
+  const fallbackBefore = {
+    proposalCount: proposals.length,
+    expenseCount: createdExpenses.length,
+    incomeCount: createdIncomes.length,
+    createdAt: fallbackRow.created_at,
+  };
+  const fallbackOperationStart = operations.length;
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "amount",
+    value: "80000",
+  };
+  const fallbackUpdated = await conversation.processAgentMessage(
+    fallbackPendingContext,
+    { message: "La cantidad fue 80000" },
+  );
+  assert.equal(fallbackUpdated.type, "PROPOSAL_UPDATED");
+  assert.equal(fallbackUpdated.proposalId, fallbackProposal.proposalId);
+  assert.equal(fallbackUpdated.operationType, "CREATE_EXPENSE");
+  assert.equal(fallbackUpdated.status, "AWAITING_CONFIRMATION");
+  assert.equal(fallbackUpdated.payload.expense.totalAmount, 80000);
+  assert.equal(fallbackRow.created_at, fallbackBefore.createdAt);
+  assert.equal(proposals.length, fallbackBefore.proposalCount);
+  assert.equal(createdExpenses.length, fallbackBefore.expenseCount);
+  assert.equal(createdIncomes.length, fallbackBefore.incomeCount);
+  assert.equal(
+    operations
+      .slice(fallbackOperationStart)
+      .filter(
+        (operation) =>
+          operation.type === "from" &&
+          operation.table === "tb_pending_proposals",
+      ).length,
+    2,
+  );
+  assert.equal(
+    operations
+      .slice(fallbackOperationStart)
+      .filter(
+        (operation) =>
+          operation.type === "update" &&
+          operation.table === "tb_pending_proposals",
+      ).length,
+    1,
+  );
+  await conversation.processAgentMessage(fallbackPendingContext, {
+    message: "no",
+  });
+  console.log("PASS contextual CORRECTION fallback updates one pending proposal");
+
+  const fallbackWithoutPendingContext = {
+    ...contextA,
+    conversationKey: "d3-correction-fallback-without-pending",
+  };
+  const noPendingBefore = {
+    proposalCount: proposals.length,
+    expenseCount: createdExpenses.length,
+    incomeCount: createdIncomes.length,
+  };
+  const noPendingOperationStart = operations.length;
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "amount",
+    value: "80000",
+  };
+  const noPendingFallback = await conversation.processAgentMessage(
+    fallbackWithoutPendingContext,
+    { message: "La cantidad fue 80000" },
+  );
+  assert.equal(noPendingFallback.type, "CLARIFICATION_REQUIRED");
+  assert.match(noPendingFallback.message, /propuesta activa/);
+  assert.equal(proposals.length, noPendingBefore.proposalCount);
+  assert.equal(createdExpenses.length, noPendingBefore.expenseCount);
+  assert.equal(createdIncomes.length, noPendingBefore.incomeCount);
+  assert.equal(
+    operations
+      .slice(noPendingOperationStart)
+      .filter(
+        (operation) =>
+          operation.type === "select" &&
+          operation.table === "tb_pending_proposals",
+      ).length,
+    1,
+  );
+  console.log("PASS contextual CORRECTION fallback without proposal is non-mutating");
+
+  const normalNoFallbackContext = {
+    ...contextA,
+    conversationKey: "d3-correction-fallback-normal-expense",
+  };
+  const normalNoFallbackOperationStart = operations.length;
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Normal Market",
+    description: null,
+    totalAmount: "70000",
+    expenseDate: "2026-09-15",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const normalNoFallback = await conversation.processAgentMessage(
+    normalNoFallbackContext,
+    { message: "Registré 70000 en Normal Market" },
+  );
+  assert.equal(normalNoFallback.type, "PROPOSAL_CREATED");
+  assert.equal(
+    operations
+      .slice(normalNoFallbackOperationStart)
+      .filter(
+        (operation) =>
+          operation.type === "from" &&
+          operation.table === "tb_pending_proposals",
+      ).length -
+      operations
+        .slice(normalNoFallbackOperationStart)
+        .filter(
+          (operation) =>
+            operation.type === "insert" &&
+            operation.table === "tb_pending_proposals",
+        ).length -
+      operations
+        .slice(normalNoFallbackOperationStart)
+        .filter(
+          (operation) =>
+            operation.type === "update" &&
+            operation.table === "tb_pending_proposals",
+        ).length,
+    0,
+  );
+  await conversation.processAgentMessage(normalNoFallbackContext, {
+    message: "no",
+  });
+  console.log("PASS normal creation avoids contextual pending lookup");
+
+  const fallbackIsolationContext = {
+    ...contextA,
+    conversationKey: "d3-correction-fallback-isolation",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Fallback Isolation Market",
+    description: "Original",
+    totalAmount: "50000",
+    expenseDate: "2026-09-15",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const fallbackIsolationProposal = await conversation.processAgentMessage(
+    fallbackIsolationContext,
+    { message: "Pagué 50000 en Fallback Isolation Market" },
+  );
+  const fallbackIsolationRow = proposals.find(
+    (row) => row.id === fallbackIsolationProposal.proposalId,
+  );
+  const fallbackIsolationSnapshot = JSON.stringify(fallbackIsolationRow);
+  const fallbackIsolationBeforeExpenses = createdExpenses.length;
+  for (const foreignContext of [
+    {
+      ...fallbackIsolationContext,
+      conversationKey: "d3-correction-fallback-foreign-conversation",
+    },
+    {
+      ...fallbackIsolationContext,
+      householdId: householdB,
+      actorMemberId: memberB,
+    },
+  ]) {
+    mockInterpretation = {
+      kind: "CORRECTION",
+      field: "amount",
+      value: "81000",
+    };
+    const isolatedFallback = await conversation.processAgentMessage(
+      foreignContext,
+      { message: "La cantidad fue 81000" },
+    );
+    assert.equal(isolatedFallback.type, "CLARIFICATION_REQUIRED");
+    assert.match(isolatedFallback.message, /propuesta activa/);
+    assert.equal(JSON.stringify(fallbackIsolationRow), fallbackIsolationSnapshot);
+    assert.equal(createdExpenses.length, fallbackIsolationBeforeExpenses);
+  }
+  await conversation.processAgentMessage(fallbackIsolationContext, {
+    message: "no",
+  });
+  console.log("PASS contextual CORRECTION fallback preserves household and conversation isolation");
 
   const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
   const createExpenseTypeStart = openaiSource.indexOf('kind: "CREATE_EXPENSE"');
