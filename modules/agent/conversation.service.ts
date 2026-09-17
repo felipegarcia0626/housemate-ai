@@ -975,23 +975,20 @@ export async function processAgentMessage(
       }
       throw error;
     }
-    if (!pendingProposal) {
-      return correctionClarification(
-        "No hay una propuesta activa para corregir.",
-      );
-    }
-    try {
-      interpretation = await interpreter(message);
-    } catch (error) {
-      if (error instanceof AgentDomainError) throw error;
-      return {
-        type: "ERROR",
-        code: "INTERPRETATION_ERROR",
-        message: "No pude interpretar el mensaje.",
-      };
-    }
-    if (interpretation.kind === "CORRECTION") {
-      return applyPendingProposalCorrection(context, pendingProposal, interpretation);
+    if (pendingProposal) {
+      try {
+        interpretation = await interpreter(message);
+      } catch (error) {
+        if (error instanceof AgentDomainError) throw error;
+        return {
+          type: "ERROR",
+          code: "INTERPRETATION_ERROR",
+          message: "No pude interpretar el mensaje.",
+        };
+      }
+      if (interpretation.kind === "CORRECTION") {
+        return applyPendingProposalCorrection(context, pendingProposal, interpretation);
+      }
     }
   }
 

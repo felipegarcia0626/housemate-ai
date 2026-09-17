@@ -1526,6 +1526,43 @@ async function main() {
   assert.equal(cancelledDraft.message, "Operación cancelada.");
   console.log("PASS invalid category keeps the draft and reoffers real options");
 
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Correction-like Category Market",
+    description: null,
+    totalAmount: "101",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const correctionLikeCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-correction-like-category-draft",
+  };
+  await conversation.processAgentMessage(correctionLikeCategoryContext, {
+    message: "Registra un gasto de 101 en Correction-like Category Market",
+  });
+  const correctionLikeCategory = await conversation.processAgentMessage(
+    correctionLikeCategoryContext,
+    { message: "Fueron 70000" },
+    async () => {
+      throw new Error("OpenAI must not receive category draft selections");
+    },
+  );
+  assert.equal(correctionLikeCategory.type, "CLARIFICATION_REQUIRED");
+  assert.match(correctionLikeCategory.message, /categoría/);
+  assert.equal(
+    categoryDrafts.find(
+      (row) => row.conversation_key === correctionLikeCategoryContext.conversationKey,
+    ).status,
+    "AWAITING_CATEGORY",
+  );
+  await conversation.processAgentMessage(correctionLikeCategoryContext, {
+    message: "cancelar",
+  });
+  console.log("PASS correction-like input continues AWAITING_CATEGORY draft");
+
   const isolatedCategoryContext = {
     ...contextA,
     conversationKey: "agent-category-isolation",
@@ -1885,6 +1922,43 @@ async function main() {
     false,
   );
   console.log("PASS ambiguous operation stays pending and can be cancelled");
+
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "102",
+    date: "2026-08-16",
+    merchant: "Correction-like Operation Market",
+    description: null,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const correctionLikeOperationContext = {
+    ...contextA,
+    conversationKey: "agent-correction-like-operation-draft",
+  };
+  await conversation.processAgentMessage(correctionLikeOperationContext, {
+    message: "Registra 102 en Correction-like Operation Market",
+  });
+  const correctionLikeOperation = await conversation.processAgentMessage(
+    correctionLikeOperationContext,
+    { message: "Fueron 70000" },
+    async () => {
+      throw new Error("OpenAI must not receive operation draft selections");
+    },
+  );
+  assert.equal(correctionLikeOperation.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(correctionLikeOperation.missingFields, ["operation"]);
+  assert.equal(
+    categoryDrafts.find(
+      (row) => row.conversation_key === correctionLikeOperationContext.conversationKey,
+    ).status,
+    "AWAITING_OPERATION",
+  );
+  await conversation.processAgentMessage(correctionLikeOperationContext, {
+    message: "cancelar",
+  });
+  console.log("PASS correction-like input continues AWAITING_OPERATION draft");
 
   const expiryContext = {
     ...contextA,
@@ -3266,22 +3340,55 @@ async function main() {
   const beforeNoPending = {
     proposals: proposals.length,
     expenses: createdExpenses.length,
-    draft: JSON.stringify(noPendingDraft),
+    draftPayload: JSON.stringify(noPendingDraft.payload),
   };
-  mockInterpretation = { kind: "CORRECTION", field: "amount", value: "70000" };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Éxito",
+    description: "Compra original",
+    totalAmount: "50000",
+    expenseDate: "2026-09-14",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
   const noPendingCorrection = await conversation.processAgentMessage(
     noPendingCorrectionContext,
     { message: "fueron 70000" },
   );
-  assert.equal(noPendingCorrection.type, "CLARIFICATION_REQUIRED");
-  assert.match(noPendingCorrection.message, /propuesta activa/);
+  assert.equal(noPendingCorrection.type, "PROPOSAL_CREATED");
+  assert.equal(proposals.length, beforeNoPending.proposals + 1);
+  assert.equal(createdExpenses.length, beforeNoPending.expenses);
+  assert.equal(JSON.stringify(noPendingDraft.payload), beforeNoPending.draftPayload);
+  await conversation.processAgentMessage(noPendingCorrectionContext, {
+    message: "no",
+  });
   assert.equal(proposals.length, beforeNoPending.proposals);
   assert.equal(createdExpenses.length, beforeNoPending.expenses);
-  assert.equal(JSON.stringify(noPendingDraft), beforeNoPending.draft);
-  await conversation.processAgentMessage(noPendingCorrectionContext, {
-    message: "cancelar",
-  });
-  console.log("PASS correction without pending proposal does not mutate draft");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === noPendingDraft.id),
+    false,
+  );
+  console.log("PASS correction-like input continues active draft without pending proposal");
+
+  const noPendingWithoutDraftContext = {
+    ...contextA,
+    conversationKey: "agent-correction-without-pending-no-draft",
+  };
+  const beforeNoPendingWithoutDraft = {
+    proposals: proposals.length,
+    expenses: createdExpenses.length,
+  };
+  mockInterpretation = { kind: "CORRECTION", field: "amount", value: "70000" };
+  const noPendingWithoutDraft = await conversation.processAgentMessage(
+    noPendingWithoutDraftContext,
+    { message: "fueron 70000" },
+  );
+  assert.equal(noPendingWithoutDraft.type, "CLARIFICATION_REQUIRED");
+  assert.match(noPendingWithoutDraft.message, /propuesta activa/);
+  assert.equal(proposals.length, beforeNoPendingWithoutDraft.proposals);
+  assert.equal(createdExpenses.length, beforeNoPendingWithoutDraft.expenses);
+  console.log("PASS correction without pending proposal remains non-mutating");
 
   const invalidCorrectionContext = {
     ...contextA,
@@ -3440,6 +3547,8 @@ async function main() {
   const correctionPrefixCases = [
     ["No, eran 70000", "70000"],
     ["No, fueron 80000", "80000"],
+    ["Fueron 90000", "90000"],
+    ["Eran 91000", "91000"],
   ];
   for (const [message, value] of correctionPrefixCases) {
     mockInterpretation = { kind: "CORRECTION", field: "amount", value };
@@ -3465,6 +3574,19 @@ async function main() {
   assert.equal(payerCorrection.proposalId, correctionPrefixProposal.proposalId);
   assert.equal(payerCorrection.payload.expense.paidByMemberId, memberA);
   assert.equal(createdExpenses.length, correctionPrefixBeforeExpenses);
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "payer",
+    value: "Felipe",
+  };
+  const negatedPayerCorrection = await conversation.processAgentMessage(
+    correctionPrefixContext,
+    { message: "No, pagó Felipe" },
+  );
+  assert.equal(negatedPayerCorrection.type, "PROPOSAL_UPDATED");
+  assert.equal(negatedPayerCorrection.proposalId, correctionPrefixProposal.proposalId);
+  assert.equal(negatedPayerCorrection.payload.expense.paidByMemberId, memberA);
+  assert.equal(createdExpenses.length, correctionPrefixBeforeExpenses);
   await conversation.processAgentMessage(correctionPrefixContext, {
     message: "no",
   });
@@ -3479,7 +3601,10 @@ async function main() {
   const d3ExpenseRecognitionCases = [
     ["Gasté 70000 en comida", "PROPOSAL_CREATED"],
     ["Pagué 70000 en comida", "PROPOSAL_CREATED"],
-    ["Fueron 70000 en comida", "CLARIFICATION_REQUIRED"],
+    ["Fueron 70000 en comida", "PROPOSAL_CREATED"],
+    ["Fueron 70000", "PROPOSAL_CREATED"],
+    ["Fueron 70000 ayer", "PROPOSAL_CREATED"],
+    ["Fueron 70000 de comida", "PROPOSAL_CREATED"],
     ["Hoy gasté 70000 en comida", "PROPOSAL_CREATED"],
   ];
   for (const [message, expectedType] of d3ExpenseRecognitionCases) {
@@ -3906,7 +4031,7 @@ async function main() {
   await conversation.processAgentMessage(d3IsolationContext, { message: "no" });
   recordD3Case("correction isolation", "foreign household/conversation cannot mutate proposal");
 
-  assert.equal(d3Results.length, 25);
+  assert.equal(d3Results.length, 28);
   console.log(`PASS D3 regression matrix completed (${d3Results.length} cases)`);
 
   const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
