@@ -618,6 +618,13 @@ async function main() {
     );
 
     const semanticRecognitionCases = [
+      ["Gasté 70000 en comida", "CREATE_EXPENSE"],
+      ["Pagué 70000 en comida", "CREATE_EXPENSE"],
+      ["Fueron 70000 en comida", "CREATE_EXPENSE"],
+      ["Hoy gasté 70000 en comida", "CREATE_EXPENSE"],
+      ["Recibí 3000000 de salario", "CREATE_INCOME"],
+      ["Hoy recibí 3000000 de salario", "CREATE_INCOME"],
+      ["Me consignaron 3000000 por salario", "CREATE_INCOME"],
       ["Recibí un salario de 3000000", "CREATE_INCOME"],
       ["Me consignaron 3000000", "CREATE_INCOME"],
       ["Recibí honorarios", "CREATE_INCOME"],
@@ -3462,6 +3469,445 @@ async function main() {
     message: "no",
   });
   console.log("PASS correction prefixes and payer correction remain supported");
+
+  const d3Results = [];
+  function recordD3Case(name, result) {
+    d3Results.push({ name, result });
+    console.log(`PASS D3 ${name}: ${result}`);
+  }
+
+  const d3ExpenseRecognitionCases = [
+    ["Gasté 70000 en comida", "PROPOSAL_CREATED"],
+    ["Pagué 70000 en comida", "PROPOSAL_CREATED"],
+    ["Fueron 70000 en comida", "CLARIFICATION_REQUIRED"],
+    ["Hoy gasté 70000 en comida", "PROPOSAL_CREATED"],
+  ];
+  for (const [message, expectedType] of d3ExpenseRecognitionCases) {
+    const conversationKey = `d3-expense-${d3Results.length}`;
+    const d3Context = { ...contextA, conversationKey };
+    mockInterpretation = {
+      kind: "CREATE_EXPENSE",
+      merchant: "D3 Market",
+      description: null,
+      totalAmount: "70000",
+      expenseDate: "2026-08-16",
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: "Food",
+    };
+    const beforeProposalCount = proposals.length;
+    const beforeExpenseCount = createdExpenses.length;
+    const result = await conversation.processAgentMessage(d3Context, {
+      message,
+    });
+    assert.equal(result.type, expectedType);
+    if (expectedType === "PROPOSAL_CREATED") {
+      assert.equal(proposals.length, beforeProposalCount + 1);
+      assert.equal(createdExpenses.length, beforeExpenseCount);
+      const stored = proposals.find((row) => row.conversation_key === conversationKey);
+      assert.equal(stored.operation_type, "CREATE_EXPENSE");
+      assert.equal(stored.status, "AWAITING_CONFIRMATION");
+      assert.equal(stored.payload.expense.totalAmount, 70000);
+      await conversation.processAgentMessage(d3Context, { message: "no" });
+      assert.equal(createdExpenses.length, beforeExpenseCount);
+    } else {
+      assert.equal(proposals.length, beforeProposalCount);
+      assert.equal(createdExpenses.length, beforeExpenseCount);
+    }
+    recordD3Case(`expense ${message}`, `${result.type}${expectedType === "PROPOSAL_CREATED" ? "; rejected without write" : "; observed current correction guard"}`);
+  }
+
+  const d3IncomeRecognitionCases = [
+    "Recibí 3000000 de salario",
+    "Hoy recibí 3000000 de salario",
+    "Me consignaron 3000000 por salario",
+  ];
+  for (const message of d3IncomeRecognitionCases) {
+    const conversationKey = `d3-income-${d3Results.length}`;
+    const d3Context = { ...contextA, conversationKey };
+    mockInterpretation = {
+      kind: "CREATE_INCOME",
+      amount: "3000000",
+      incomeDate: "2026-08-16",
+      description: "Salario",
+      categoryName: "Food",
+    };
+    const beforeProposalCount = proposals.length;
+    const beforeIncomeCount = createdIncomes.length;
+    const result = await conversation.processAgentMessage(d3Context, {
+      message,
+    });
+    assert.equal(result.type, "PROPOSAL_CREATED");
+    assert.equal(proposals.length, beforeProposalCount + 1);
+    assert.equal(createdIncomes.length, beforeIncomeCount);
+    const stored = proposals.find((row) => row.conversation_key === conversationKey);
+    assert.equal(stored.operation_type, "CREATE_INCOME");
+    assert.equal(stored.status, "AWAITING_CONFIRMATION");
+    assert.equal(stored.payload.income.amount, 3000000);
+    await conversation.processAgentMessage(d3Context, { message: "no" });
+    assert.equal(createdIncomes.length, beforeIncomeCount);
+    recordD3Case(`income ${message}`, "PROPOSAL_CREATED; rejected without write");
+  }
+
+  const d3ConfirmationCases = ["sí", "confirmar"];
+  for (const confirmationMessage of d3ConfirmationCases) {
+    const conversationKey = `d3-confirm-${d3Results.length}`;
+    const d3Context = { ...contextA, conversationKey };
+    mockInterpretation = {
+      kind: "CREATE_EXPENSE",
+      merchant: "Confirmation Market",
+      description: null,
+      totalAmount: "71000",
+      expenseDate: "2026-08-16",
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: "Food",
+    };
+    const proposalResult = await conversation.processAgentMessage(d3Context, {
+      message: "Pagué 71000 en Confirmation Market",
+    });
+    assert.equal(proposalResult.type, "PROPOSAL_CREATED");
+    const beforeExpenseCount = createdExpenses.length;
+    const confirmed = await conversation.processAgentMessage(d3Context, {
+      message: confirmationMessage,
+    });
+    assert.equal(confirmed.type, "CONFIRMED");
+    assert.equal(createdExpenses.length, beforeExpenseCount + 1);
+    const repeated = await conversation.processAgentMessage(d3Context, {
+      message: confirmationMessage,
+    });
+    assert.equal(repeated.type, "CLARIFICATION_REQUIRED");
+    assert.equal(createdExpenses.length, beforeExpenseCount + 1);
+    recordD3Case(`confirmation ${confirmationMessage}`, "CONFIRMED once; duplicate ignored");
+  }
+
+  const d3RejectionCases = ["no", "rechazar"];
+  for (const rejectionMessage of d3RejectionCases) {
+    const conversationKey = `d3-reject-${d3Results.length}`;
+    const d3Context = { ...contextA, conversationKey };
+    mockInterpretation = {
+      kind: "CREATE_INCOME",
+      amount: "72000",
+      incomeDate: "2026-08-16",
+      description: "D3 rejection",
+      categoryName: "Food",
+    };
+    const proposalResult = await conversation.processAgentMessage(d3Context, {
+      message: "Recibí 72000",
+    });
+    assert.equal(proposalResult.type, "PROPOSAL_CREATED");
+    const beforeIncomeCount = createdIncomes.length;
+    const rejected = await conversation.processAgentMessage(d3Context, {
+      message: rejectionMessage,
+    });
+    assert.equal(rejected.type, "REJECTED");
+    assert.equal(createdIncomes.length, beforeIncomeCount);
+    assert.equal(
+      proposals.some((row) => row.conversation_key === conversationKey),
+      false,
+    );
+    recordD3Case(`rejection ${rejectionMessage}`, "REJECTED without write");
+  }
+
+  const d3NoProposalContext = {
+    ...contextA,
+    conversationKey: "d3-no-active-proposal",
+  };
+  const d3NoProposalBeforeWrites = {
+    expenses: createdExpenses.length,
+    incomes: createdIncomes.length,
+  };
+  const d3NoProposalConfirmation = await conversation.processAgentMessage(
+    d3NoProposalContext,
+    { message: "confirmar" },
+  );
+  assert.equal(d3NoProposalConfirmation.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(d3NoProposalConfirmation.missingFields, ["proposalId"]);
+  const d3NoProposalRejection = await conversation.processAgentMessage(
+    d3NoProposalContext,
+    { message: "rechazar" },
+  );
+  assert.equal(d3NoProposalRejection.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(d3NoProposalRejection.missingFields, ["proposalId"]);
+  assert.equal(createdExpenses.length, d3NoProposalBeforeWrites.expenses);
+  assert.equal(createdIncomes.length, d3NoProposalBeforeWrites.incomes);
+  recordD3Case("confirmation/rejection without proposal", "clarification without writes");
+
+  for (const message of ["70000", "Ayer", "Comida"]) {
+    const d3Context = {
+      ...contextA,
+      conversationKey: `d3-isolated-${message.toLowerCase()}`,
+    };
+    mockInterpretation = { kind: "UNSUPPORTED" };
+    const beforeProposalCount = proposals.length;
+    const isolatedResult = await conversation.processAgentMessage(d3Context, {
+      message,
+    });
+    assert.equal(isolatedResult.type, "UNSUPPORTED");
+    assert.equal(proposals.length, beforeProposalCount);
+    assert.equal(
+      categoryDrafts.some((row) => row.conversation_key === d3Context.conversationKey),
+      false,
+    );
+    recordD3Case(`isolated input ${message}`, "UNSUPPORTED without mutation");
+  }
+
+  const d3CorrectionContext = {
+    ...contextA,
+    conversationKey: "d3-correction-matrix",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "D3 Correction Market",
+    description: "Original description",
+    totalAmount: "73000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const d3CorrectionProposal = await conversation.processAgentMessage(
+    d3CorrectionContext,
+    { message: "Pagué 73000 en D3 Correction Market" },
+  );
+  assert.equal(d3CorrectionProposal.type, "PROPOSAL_CREATED");
+  const d3CorrectionRow = proposals.find(
+    (row) => row.id === d3CorrectionProposal.proposalId,
+  );
+  const d3CorrectionProposalCount = proposals.length;
+  const d3CorrectionExpenseCount = createdExpenses.length;
+  const d3CorrectionCases = [
+    {
+      field: "amount",
+      value: "80000",
+      message: "No, fueron 80000",
+      assertPayload: (expense) => assert.equal(expense.totalAmount, 80000),
+    },
+    {
+      field: "date",
+      value: "ayer",
+      message: "No, fue ayer",
+      assertPayload: (expense) =>
+        assert.equal(
+          expense.expenseDate,
+          new Date(Date.now() - 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10),
+        ),
+    },
+    {
+      field: "description",
+      value: "restaurante",
+      message: "No, era restaurante",
+      assertPayload: (expense) => assert.equal(expense.description, "restaurante"),
+    },
+    {
+      field: "category",
+      value: "Transporte",
+      message: "No, la categoría era Transporte",
+      assertPayload: (expense) =>
+        assert.equal(expense.categoryId, "category-transporte"),
+    },
+    {
+      field: "payer",
+      value: "Alejandra",
+      message: "No, pagó Alejandra",
+      assertPayload: (expense) => assert.equal(expense.paidByMemberId, memberB),
+    },
+  ];
+  for (const testCase of d3CorrectionCases) {
+    mockInterpretation = {
+      kind: "CORRECTION",
+      field: testCase.field,
+      value: testCase.value,
+    };
+    const corrected = await conversation.processAgentMessage(
+      d3CorrectionContext,
+      { message: testCase.message },
+    );
+    assert.equal(corrected.type, "PROPOSAL_UPDATED");
+    assert.equal(corrected.proposalId, d3CorrectionProposal.proposalId);
+    assert.equal(corrected.operationType, "CREATE_EXPENSE");
+    assert.equal(corrected.status, "AWAITING_CONFIRMATION");
+    assert.equal(proposals.length, d3CorrectionProposalCount);
+    assert.equal(createdExpenses.length, d3CorrectionExpenseCount);
+    testCase.assertPayload(corrected.payload.expense);
+    assert.equal(d3CorrectionRow.household_id, householdA);
+    assert.equal(d3CorrectionRow.conversation_key, d3CorrectionContext.conversationKey);
+    assert.equal(
+      categoryDrafts.some(
+        (row) => row.conversation_key === d3CorrectionContext.conversationKey,
+      ),
+      false,
+    );
+    recordD3Case(`correction ${testCase.field}`, "same proposal; AWAITING_CONFIRMATION; no write");
+  }
+  await conversation.processAgentMessage(d3CorrectionContext, { message: "no" });
+
+  const d3ConfirmCorrectionContext = {
+    ...contextA,
+    conversationKey: "d3-correction-confirm",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "D3 Confirm Market",
+    description: "Original",
+    totalAmount: "74000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const d3ConfirmProposal = await conversation.processAgentMessage(
+    d3ConfirmCorrectionContext,
+    { message: "Pagué 74000 en D3 Confirm Market" },
+  );
+  const d3ConfirmBeforeExpenses = createdExpenses.length;
+  mockInterpretation = { kind: "CORRECTION", field: "amount", value: "84000" };
+  const d3ConfirmedCorrection = await conversation.processAgentMessage(
+    d3ConfirmCorrectionContext,
+    { message: "No, fueron 84000" },
+  );
+  assert.equal(d3ConfirmedCorrection.type, "PROPOSAL_UPDATED");
+  const d3Confirmed = await conversation.processAgentMessage(
+    d3ConfirmCorrectionContext,
+    { message: "sí" },
+  );
+  assert.equal(d3Confirmed.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, d3ConfirmBeforeExpenses + 1);
+  assert.equal(createdExpenses.at(-1).input.totalAmount, 84000);
+  assert.equal(
+    proposals.some((row) => row.id === d3ConfirmProposal.proposalId),
+    false,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === d3ConfirmCorrectionContext.conversationKey,
+    ),
+    false,
+  );
+  recordD3Case("confirmation after correction", "corrected payload persisted once");
+
+  const d3RejectCorrectionContext = {
+    ...contextA,
+    conversationKey: "d3-correction-reject",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "D3 Reject Market",
+    description: "Original",
+    totalAmount: "75000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const d3RejectProposal = await conversation.processAgentMessage(
+    d3RejectCorrectionContext,
+    { message: "Pagué 75000 en D3 Reject Market" },
+  );
+  const d3RejectBeforeExpenses = createdExpenses.length;
+  mockInterpretation = { kind: "CORRECTION", field: "amount", value: "85000" };
+  const d3RejectedCorrection = await conversation.processAgentMessage(
+    d3RejectCorrectionContext,
+    { message: "No, fueron 85000" },
+  );
+  assert.equal(d3RejectedCorrection.type, "PROPOSAL_UPDATED");
+  const d3Rejected = await conversation.processAgentMessage(
+    d3RejectCorrectionContext,
+    { message: "no" },
+  );
+  assert.equal(d3Rejected.type, "REJECTED");
+  assert.equal(createdExpenses.length, d3RejectBeforeExpenses);
+  assert.equal(
+    proposals.some((row) => row.id === d3RejectProposal.proposalId),
+    false,
+  );
+  recordD3Case("rejection after correction", "corrected payload rejected without write");
+
+  const d3ResolvedCases = [
+    { key: "d3-correction-after-confirm", resolution: "sí" },
+    { key: "d3-correction-after-reject", resolution: "no" },
+  ];
+  for (const { key, resolution } of d3ResolvedCases) {
+    const d3Context = { ...contextA, conversationKey: key };
+    mockInterpretation = {
+      kind: "CREATE_EXPENSE",
+      merchant: "D3 Resolved Market",
+      description: "Original",
+      totalAmount: "76000",
+      expenseDate: "2026-08-16",
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: "Food",
+    };
+    await conversation.processAgentMessage(d3Context, {
+      message: "Pagué 76000 en D3 Resolved Market",
+    });
+    const beforeProposalCount = proposals.length;
+    const beforeExpenseCount = createdExpenses.length;
+    await conversation.processAgentMessage(d3Context, { message: resolution });
+    assert.equal(proposals.length, beforeProposalCount - 1);
+    assert.equal(
+      createdExpenses.length,
+      beforeExpenseCount + (resolution === "sí" ? 1 : 0),
+    );
+    mockInterpretation = { kind: "CORRECTION", field: "amount", value: "86000" };
+    const correctedAfterResolution = await conversation.processAgentMessage(
+      d3Context,
+      { message: "No, fueron 86000" },
+    );
+    assert.equal(correctedAfterResolution.type, "CLARIFICATION_REQUIRED");
+    assert.match(correctedAfterResolution.message, /propuesta activa/);
+    assert.equal(proposals.length, beforeProposalCount - 1);
+    assert.equal(
+      createdExpenses.length,
+      beforeExpenseCount + (resolution === "sí" ? 1 : 0),
+    );
+    recordD3Case(`correction after ${resolution === "sí" ? "confirmation" : "rejection"}`, "no mutation");
+  }
+
+  const d3IsolationContext = {
+    ...contextA,
+    conversationKey: "d3-correction-isolation",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "D3 Isolation Market",
+    description: "Original",
+    totalAmount: "77000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const d3IsolationProposal = await conversation.processAgentMessage(
+    d3IsolationContext,
+    { message: "Pagué 77000 en D3 Isolation Market" },
+  );
+  const d3IsolationRow = proposals.find(
+    (row) => row.id === d3IsolationProposal.proposalId,
+  );
+  const d3IsolationSnapshot = JSON.stringify(d3IsolationRow);
+  const d3IsolationBeforeExpenses = createdExpenses.length;
+  for (const foreignContext of [
+    { ...d3IsolationContext, conversationKey: "d3-foreign-conversation" },
+    { ...d3IsolationContext, householdId: householdB },
+  ]) {
+    mockInterpretation = { kind: "CORRECTION", field: "amount", value: "87000" };
+    const isolatedCorrection = await conversation.processAgentMessage(
+      foreignContext,
+      { message: "No, fueron 87000" },
+    );
+    assert.equal(isolatedCorrection.type, "CLARIFICATION_REQUIRED");
+    assert.equal(JSON.stringify(d3IsolationRow), d3IsolationSnapshot);
+    assert.equal(createdExpenses.length, d3IsolationBeforeExpenses);
+  }
+  await conversation.processAgentMessage(d3IsolationContext, { message: "no" });
+  recordD3Case("correction isolation", "foreign household/conversation cannot mutate proposal");
+
+  assert.equal(d3Results.length, 25);
+  console.log(`PASS D3 regression matrix completed (${d3Results.length} cases)`);
 
   const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
   const createExpenseTypeStart = openaiSource.indexOf('kind: "CREATE_EXPENSE"');
