@@ -583,16 +583,23 @@ PendingProposal
 ├── payload
 ├── status
 ├── created_at
-└── updated_at
+├── updated_at
+├── resolved_at
+├── expense_id
+└── income_id
 ```
 
 `conversation_key` identifica de forma controlada la conversación o canal dentro del hogar. `operation_type` se limitará a `CREATE_EXPENSE`, `UPDATE_EXPENSE`, `DELETE_EXPENSE`, `CREATE_INCOME`, `UPDATE_INCOME` y `DELETE_INCOME`. `payload` conservará los datos propuestos y los identificadores necesarios para ejecutar exactamente la operación presentada.
 
-El estado mínimo persistido será `AWAITING_CONFIRMATION`. Al confirmar o rechazar, la propuesta se consume y elimina. Solo podrá existir una propuesta pendiente por `household_id + conversation_key`.
+Los estados persistidos son `AWAITING_CONFIRMATION`, `COMPLETED` y `REJECTED`.
+Al confirmar, la propuesta pasa a `COMPLETED` y conserva la referencia
+financiera; al rechazar, pasa a `REJECTED`, fija `resolved_at` y conserva
+`expense_id` e `income_id` en `NULL`. La propuesta no se elimina al resolverla.
+Solo podrá existir una propuesta activa por `household_id + conversation_key`.
 
 Si llega una nueva operación de escritura mientras ya existe una propuesta pendiente para la misma clave, el backend rechazará la nueva operación con un conflicto y conservará intacta la propuesta anterior. El agente deberá pedir al usuario confirmar o rechazar primero esa propuesta. No se sobrescribirá el payload pendiente.
 
-Una confirmación o rechazo incluirá internamente el `PendingProposal.id` que fue presentado. El backend solo ejecutará el payload si ese identificador continúa siendo la propuesta pendiente de `household_id + conversation_key`. Si ya fue consumida, rechazada o no coincide, no ejecutará ninguna operación y responderá que la propuesta ya no está disponible. Esto evita que una confirmación tardía ejecute otra operación.
+Una confirmación o rechazo incluirá internamente el `PendingProposal.id` que fue presentado. El backend solo ejecutará el payload si ese identificador pertenece al contexto controlado. Una propuesta `REJECTED` responde de forma idempotente al rechazo repetido y no ejecuta operaciones; una propuesta `COMPLETED` no puede volver a rechazarse. Las propuestas inexistentes, de otro contexto o de una operación no soportada responden de forma segura sin ejecutar ninguna operación. Esto evita que una confirmación o rechazo tardío ejecute otra operación.
 
 ## 15.2 AgentCategoryDraft
 
@@ -1247,8 +1254,15 @@ No se agregan `created_at` o `updated_at`: el modelo aprobado define `uploaded_a
 | `status` | `pending_proposal_status` | NOT NULL | `'AWAITING_CONFIRMATION'` | — |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | — |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | trigger de actualización |
+| `resolved_at` | `TIMESTAMPTZ` | NULL | — | definido al resolver |
+| `expense_id` | `UUID` | NULL | — | referencia compuesta al Expense confirmado |
+| `income_id` | `UUID` | NULL | — | referencia compuesta al Income confirmado |
 
-La propuesta se elimina al confirmar o rechazar; no se persisten otros estados.
+`AWAITING_CONFIRMATION` conserva `resolved_at`, `expense_id` e `income_id` en
+`NULL`. `REJECTED` conserva el payload original, fija `resolved_at` y mantiene
+ambas referencias financieras en `NULL`. `COMPLETED` fija `resolved_at` y
+mantiene únicamente la referencia financiera correspondiente a
+`operation_type`. La propuesta no se elimina al rechazar ni al confirmar.
 
 ### 28.2.13 `public.tb_agent_category_drafts`
 

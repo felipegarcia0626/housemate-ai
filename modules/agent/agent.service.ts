@@ -29,15 +29,14 @@ import {
   type PendingIncomeProposalPayload,
 } from "./agent.types";
 import {
-  consumePendingProposal,
   confirmPendingExpense,
   confirmPendingIncome,
   createPendingProposal,
-  consumePendingIncomeProposal,
   createPendingIncomeProposal,
   findPendingProposal,
   findPendingProposalForConversation,
   findPendingIncomeProposal,
+  rejectPendingProposal,
   PendingProposalRepositoryError,
 } from "./pending-proposal.repository";
 import {
@@ -270,19 +269,7 @@ export async function rejectIncomeProposal(
   context: AgentContext,
   proposalId: string,
 ): Promise<IncomeRejectionResult> {
-  try {
-    const proposal = await getOwnedIncomeProposal(context, proposalId);
-    const consumed = await consumePendingIncomeProposal(
-      proposal.id,
-      context.householdId,
-      context.conversationKey,
-    );
-    if (!consumed) throw proposalUnavailable();
-    return { proposalId: consumed.id, status: "REJECTED" };
-  } catch (error) {
-    if (error instanceof AgentDomainError) throw error;
-    throw mapRepositoryError(error);
-  }
+  return rejectProposal(context, proposalId, "CREATE_INCOME");
 }
 
 export async function confirmAgentProposal(
@@ -360,29 +347,6 @@ export async function findActiveProposalId(
   }
 }
 
-async function consumeOwnedProposal(
-  context: AgentContext,
-  proposalId: string,
-): Promise<PendingExpenseProposal> {
-  let proposal: PendingExpenseProposal;
-  try {
-    proposal = await getOwnedProposal(context, proposalId);
-  } catch (error) {
-    if (error instanceof AgentDomainError && error.code === "NOT_FOUND") {
-      throw proposalUnavailable();
-    }
-    throw error;
-  }
-  const consumed = await consumePendingProposal(
-    proposal.id,
-    context.householdId,
-    context.conversationKey,
-  );
-  if (!consumed) throw proposalUnavailable();
-  ensureProposalOwnership(context, consumed);
-  return consumed;
-}
-
 export async function confirmExpenseProposal(
   context: AgentContext,
   proposalId: string,
@@ -452,9 +416,29 @@ export async function rejectExpenseProposal(
   context: AgentContext,
   proposalId: string,
 ): Promise<ExpenseRejectionResult> {
+  return rejectProposal(context, proposalId, "CREATE_EXPENSE");
+}
+
+async function rejectProposal(
+  context: AgentContext,
+  proposalId: string,
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME",
+): Promise<{ proposalId: string; status: "REJECTED" }> {
   try {
-    const proposal = await consumeOwnedProposal(context, proposalId);
-    return { proposalId: proposal.id, status: "REJECTED" };
+    validateContext(context);
+    validateUuid(proposalId, "proposalId");
+    const result = await rejectPendingProposal({
+      proposalId,
+      householdId: context.householdId,
+      conversationKey: context.conversationKey,
+      actorMemberId: context.actorMemberId,
+      source: context.source,
+      operationType,
+    });
+    if (result.status === "REJECTED") {
+      return { proposalId, status: "REJECTED" };
+    }
+    throw proposalUnavailable();
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
     throw mapRepositoryError(error);

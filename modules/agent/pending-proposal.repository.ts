@@ -320,6 +320,18 @@ export interface PendingIncomeConfirmationResult {
   incomeId: string | null;
 }
 
+export type PendingProposalRejectionStatus =
+  | "REJECTED"
+  | "ALREADY_COMPLETED"
+  | "NOT_FOUND"
+  | "INVALID_OPERATION";
+
+export interface PendingProposalRejectionResult {
+  status: PendingProposalRejectionStatus;
+  expenseId: string | null;
+  incomeId: string | null;
+}
+
 function toIncomeRpcArguments(
   input: IncomeCreatePersistenceInput,
 ): Record<string, unknown> {
@@ -386,6 +398,62 @@ export async function confirmPendingIncome(input: {
 
   return {
     status,
+    incomeId: typeof incomeId === "string" ? incomeId : null,
+  };
+}
+
+export async function rejectPendingProposal(input: {
+  proposalId: string;
+  householdId: string;
+  conversationKey: string;
+  actorMemberId: string;
+  source: "WEB" | "WHATSAPP" | "RECEIPT";
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
+}): Promise<PendingProposalRejectionResult> {
+  const { data, error } = await getSupabaseAdminClient().rpc(
+    "fn_reject_pending_proposal",
+    {
+      p_proposal_id: input.proposalId,
+      p_household_id: input.householdId,
+      p_conversation_key: input.conversationKey,
+      p_actor_member_id: input.actorMemberId,
+      p_context_source: input.source,
+      p_operation_type: input.operationType,
+    },
+  );
+
+  if (error) throw persistenceError("reject proposal", error);
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    typeof (data as { status?: unknown }).status !== "string"
+  ) {
+    throw persistenceError("reject proposal", new Error("Invalid RPC result"));
+  }
+
+  const status = (data as { status: string }).status;
+  if (
+    status !== "REJECTED" &&
+    status !== "ALREADY_COMPLETED" &&
+    status !== "NOT_FOUND" &&
+    status !== "INVALID_OPERATION"
+  ) {
+    throw persistenceError("reject proposal", new Error("Unknown RPC status"));
+  }
+
+  const expenseId = (data as { expense_id?: unknown }).expense_id;
+  const incomeId = (data as { income_id?: unknown }).income_id;
+  if (
+    (expenseId !== undefined && expenseId !== null && typeof expenseId !== "string") ||
+    (incomeId !== undefined && incomeId !== null && typeof incomeId !== "string")
+  ) {
+    throw persistenceError("reject proposal", new Error("Invalid proposal reference"));
+  }
+
+  return {
+    status,
+    expenseId: typeof expenseId === "string" ? expenseId : null,
     incomeId: typeof incomeId === "string" ? incomeId : null,
   };
 }

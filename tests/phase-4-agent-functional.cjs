@@ -143,6 +143,7 @@ let createdIncomes = [];
 let nextProposal = 1;
 let hydrationFailure = false;
 let confirmationFailure = false;
+let rejectionFailure = false;
 let ambiguousMemberNames = false;
 let normalizedMemberNames = false;
 
@@ -299,11 +300,15 @@ const fakeClient = {
     operations.push({ type: "rpc", name, args });
     if (
       name !== "fn_confirm_pending_expense" &&
-      name !== "fn_confirm_pending_income"
+      name !== "fn_confirm_pending_income" &&
+      name !== "fn_reject_pending_proposal"
     ) {
       throw new Error(`Unexpected RPC: ${name}`);
     }
-    if (confirmationFailure) {
+    if (name !== "fn_reject_pending_proposal" && confirmationFailure) {
+      return Promise.resolve({ data: null, error: { code: "40001" } });
+    }
+    if (name === "fn_reject_pending_proposal" && rejectionFailure) {
       return Promise.resolve({ data: null, error: { code: "40001" } });
     }
     const proposal = proposals.find(
@@ -324,6 +329,58 @@ const fakeClient = {
     ) {
       return Promise.resolve({
         data: { status: "NOT_FOUND", expense_id: null },
+        error: null,
+      });
+    }
+    if (name === "fn_reject_pending_proposal") {
+      if (
+        args.p_operation_type !== "CREATE_EXPENSE" &&
+        args.p_operation_type !== "CREATE_INCOME"
+      ) {
+        return Promise.resolve({
+          data: {
+            status: "INVALID_OPERATION",
+            expense_id: null,
+            income_id: null,
+          },
+          error: null,
+        });
+      }
+      if (proposal.operation_type !== args.p_operation_type) {
+        return Promise.resolve({
+          data: {
+            status: "INVALID_OPERATION",
+            expense_id: null,
+            income_id: null,
+          },
+          error: null,
+        });
+      }
+      if (proposal.status === "REJECTED") {
+        return Promise.resolve({
+          data: { status: "REJECTED", expense_id: null, income_id: null },
+          error: null,
+        });
+      }
+      if (proposal.status === "COMPLETED") {
+        return Promise.resolve({
+          data: {
+            status: "ALREADY_COMPLETED",
+            expense_id: proposal.expense_id ?? null,
+            income_id: proposal.income_id ?? null,
+          },
+          error: null,
+        });
+      }
+      Object.assign(proposal, {
+        status: "REJECTED",
+        updated_at: "2026-08-12T12:01:00.000Z",
+        resolved_at: "2026-08-12T12:01:00.000Z",
+        expense_id: null,
+        income_id: null,
+      });
+      return Promise.resolve({
+        data: { status: "REJECTED", expense_id: null, income_id: null },
         error: null,
       });
     }
@@ -1262,11 +1319,38 @@ async function main() {
   );
   assert.equal(rejected.status, "REJECTED");
   assert.equal(createdExpenses.length, 2);
-  assert.equal(
-    proposals.some((row) => row.id === rejectedProposal.proposalId),
-    false,
+  const rejectedRow = proposals.find(
+    (row) => row.id === rejectedProposal.proposalId,
   );
-  console.log("PASS rejection consumes proposal without creating Expense");
+  assert.equal(rejectedRow.status, "REJECTED");
+  assert.equal(typeof rejectedRow.resolved_at, "string");
+  assert.equal(rejectedRow.expense_id, null);
+  assert.equal(rejectedRow.income_id, null);
+  assert.equal(rejectedRow.created_at, "2026-08-12T12:00:00.000Z");
+  assert.equal(rejectedRow.payload.expense.description, "Rejected proposal");
+  const rejectedResolvedAt = rejectedRow.resolved_at;
+  const rejectedUpdatedAt = rejectedRow.updated_at;
+  const repeatedRejection = await tool.rejectCreateExpenseTool(
+    contextA,
+    rejectedProposal.proposalId,
+  );
+  assert.equal(repeatedRejection.status, "REJECTED");
+  assert.equal(rejectedRow.resolved_at, rejectedResolvedAt);
+  assert.equal(rejectedRow.updated_at, rejectedUpdatedAt);
+  assert.equal(rejectedRow.created_at, "2026-08-12T12:00:00.000Z");
+  assert.equal(rejectedRow.payload.expense.description, "Rejected proposal");
+  console.log("PASS rejection persists terminal Expense proposal idempotently");
+
+  const completedExpenseRow = proposals.find((row) => row.id === proposal.proposalId);
+  const completedExpenseId = completedExpenseRow.expense_id;
+  await expectAgentError(
+    tool.rejectCreateExpenseTool(contextA, proposal.proposalId),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  assert.equal(completedExpenseRow.status, "COMPLETED");
+  assert.equal(completedExpenseRow.expense_id, completedExpenseId);
+  assert.equal(createdExpenses.length, 2);
+  console.log("PASS completed Expense proposal cannot be rejected");
 
   const rejectedTerminalProposal = {
     id: "62000000-0000-4000-8000-000000000099",
@@ -2532,7 +2616,7 @@ async function main() {
   );
   assert.equal(conversationalRejection.type, "REJECTED");
   assert.equal(createdExpenses.length, beforeRejectionExpenses);
-  console.log("PASS explicit rejection consumes the proposal without writing");
+  console.log("PASS explicit rejection persists terminal state without writing");
 
   const staleStateContext = {
     ...contextA,
@@ -2598,10 +2682,14 @@ async function main() {
     false,
   );
   assert.equal(
-    proposals.some(
-      (row) => row.conversation_key === staleStateContext.conversationKey,
-    ),
-    false,
+    proposals.find(
+      (row) => row.id === staleProposal.id,
+    ).status,
+    "REJECTED",
+  );
+  assert.equal(
+    proposals.find((row) => row.id === staleProposal.id).expense_id,
+    null,
   );
   assert.equal(createdExpenses.length, createdExpensesBeforeStaleRejection);
   console.log(
@@ -2609,7 +2697,13 @@ async function main() {
   );
 
   categoryDrafts.push(staleDraft);
-  proposals.push(staleProposal);
+  Object.assign(staleProposal, {
+    status: "AWAITING_CONFIRMATION",
+    updated_at: "2026-08-12T12:00:00.000Z",
+    resolved_at: null,
+    expense_id: null,
+    income_id: null,
+  });
   const createdExpensesBeforeStaleConfirmation = createdExpenses.length;
   const staleConfirmed = await conversation.processAgentMessage(
     staleStateContext,
@@ -2773,8 +2867,8 @@ async function main() {
     false,
   );
   assert.equal(
-    proposals.some((row) => row.id === reviveFixture.proposal.id),
-    false,
+    proposals.find((row) => row.id === reviveFixture.proposal.id)?.status,
+    "REJECTED",
   );
 
   mockInterpretation = {
@@ -2796,7 +2890,9 @@ async function main() {
     false,
   );
   const replacementProposal = proposals.find(
-    (row) => row.conversation_key === reviveContext.conversationKey,
+    (row) =>
+      row.conversation_key === reviveContext.conversationKey &&
+      row.status === "AWAITING_CONFIRMATION",
   );
   assert.ok(replacementProposal);
   assert.notEqual(replacementProposal.id, reviveFixture.proposal.id);
@@ -3003,7 +3099,126 @@ async function main() {
     );
   assert.equal(rejectedIncomeConfirmation.status, "REJECTED");
   assert.equal(createdIncomes.length, beforeRejectedIncomeCount);
+  await expectAgentError(
+    tool.rejectCreateExpenseTool(
+      { ...contextA, conversationKey: rejectedIncomeProposal.conversation_key },
+      rejectedIncomeProposal.id,
+    ),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  assert.equal(rejectedIncomeProposal.status, "REJECTED");
   console.log("PASS rejected terminal income proposal does not create Income");
+
+  const incomeRejectionContext = {
+    ...contextA,
+    conversationKey: "agent-income-rejection-terminal-transition",
+  };
+  const beforeIncomeRejectionCount = createdIncomes.length;
+  const incomeProposalToReject = await createIncome.createIncomeTool(
+    incomeRejectionContext,
+    {
+      memberId: memberA,
+      amount: 55,
+      incomeDate: "2026-08-12",
+      description: "Rejected income",
+      categoryId: null,
+    },
+  );
+  const incomeRejected = await createIncome.rejectCreateIncomeTool(
+    incomeRejectionContext,
+    incomeProposalToReject.proposalId,
+  );
+  assert.equal(incomeRejected.status, "REJECTED");
+  const incomeRejectedRow = proposals.find(
+    (row) => row.id === incomeProposalToReject.proposalId,
+  );
+  assert.equal(incomeRejectedRow.status, "REJECTED");
+  assert.equal(typeof incomeRejectedRow.resolved_at, "string");
+  assert.equal(incomeRejectedRow.expense_id, null);
+  assert.equal(incomeRejectedRow.income_id, null);
+  const incomeRejectedResolvedAt = incomeRejectedRow.resolved_at;
+  const incomeRejectedUpdatedAt = incomeRejectedRow.updated_at;
+  const repeatedIncomeRejection = await createIncome.rejectCreateIncomeTool(
+    incomeRejectionContext,
+    incomeProposalToReject.proposalId,
+  );
+  assert.equal(repeatedIncomeRejection.status, "REJECTED");
+  assert.equal(incomeRejectedRow.resolved_at, incomeRejectedResolvedAt);
+  assert.equal(incomeRejectedRow.updated_at, incomeRejectedUpdatedAt);
+  assert.equal(createdIncomes.length, beforeIncomeRejectionCount);
+  console.log("PASS rejection persists terminal Income proposal idempotently");
+
+  const contextualRejected = await conversation.processAgentMessage(
+    incomeRejectionContext,
+    { message: "no" },
+  );
+  assert.equal(contextualRejected.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(contextualRejected.missingFields, ["proposalId"]);
+  console.log("PASS rejected proposals are not returned by contextual lookup");
+
+  const rejectionIsolationContext = {
+    ...contextA,
+    conversationKey: "agent-rejection-isolation",
+  };
+  const rejectionIsolationProposal = await tool.createExpenseTool(
+    rejectionIsolationContext,
+    expenseInput,
+  );
+  const rejectionIsolationRow = proposals.find(
+    (row) => row.id === rejectionIsolationProposal.proposalId,
+  );
+  for (const invalidContext of [
+    { ...rejectionIsolationContext, householdId: householdB },
+    { ...rejectionIsolationContext, conversationKey: "agent-other-conversation" },
+    { ...rejectionIsolationContext, actorMemberId: memberB },
+    { ...rejectionIsolationContext, source: "WHATSAPP" },
+  ]) {
+    await expectAgentError(
+      tool.rejectCreateExpenseTool(
+        invalidContext,
+        rejectionIsolationProposal.proposalId,
+      ),
+      "PROPOSAL_NOT_AVAILABLE",
+    );
+    assert.equal(rejectionIsolationRow.status, "AWAITING_CONFIRMATION");
+  }
+  await expectAgentError(
+    tool.rejectCreateExpenseTool(
+      rejectionIsolationContext,
+      "62000000-0000-4000-8000-000000000097",
+    ),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  const isolatedRejected = await tool.rejectCreateExpenseTool(
+    rejectionIsolationContext,
+    rejectionIsolationProposal.proposalId,
+  );
+  assert.equal(isolatedRejected.status, "REJECTED");
+  assert.equal(rejectionIsolationRow.status, "REJECTED");
+  console.log("PASS rejection enforces context, not found and idempotent state");
+
+  const failedRejectionContext = {
+    ...contextA,
+    conversationKey: "agent-terminal-rejection-failure",
+  };
+  const failedRejectionProposal = await tool.createExpenseTool(
+    failedRejectionContext,
+    expenseInput,
+  );
+  rejectionFailure = true;
+  await expectAgentError(
+    tool.rejectCreateExpenseTool(
+      failedRejectionContext,
+      failedRejectionProposal.proposalId,
+    ),
+    "PERSISTENCE_ERROR",
+  );
+  rejectionFailure = false;
+  const failedRejectionRow = proposals.find(
+    (row) => row.id === failedRejectionProposal.proposalId,
+  );
+  assert.equal(failedRejectionRow.status, "AWAITING_CONFIRMATION");
+  console.log("PASS rejection persistence failure preserves pending proposal");
 
   const expenseRead = await getExpenses.getExpensesTool(contextA, {
     from: "2026-08-01",
@@ -3604,8 +3819,9 @@ async function main() {
   assert.equal(rejectedAfterCorrection.type, "REJECTED");
   assert.equal(createdExpenses.length, beforeCorrectionRejectionExpenses);
   assert.equal(
-    proposals.some((row) => row.id === rejectionCorrectionProposal.proposalId),
-    false,
+    proposals.find((row) => row.id === rejectionCorrectionProposal.proposalId)
+      ?.status,
+    "REJECTED",
   );
   console.log("PASS corrected proposal can be rejected without financial writes");
 
@@ -3711,7 +3927,12 @@ async function main() {
   await conversation.processAgentMessage(noPendingCorrectionContext, {
     message: "no",
   });
-  assert.equal(proposals.length, beforeNoPending.proposals);
+  assert.equal(proposals.length, beforeNoPending.proposals + 1);
+  assert.equal(
+    proposals.find((row) => row.conversation_key === noPendingCorrectionContext.conversationKey)
+      ?.status,
+    "REJECTED",
+  );
   assert.equal(createdExpenses.length, beforeNoPending.expenses);
   assert.equal(
     categoryDrafts.some((row) => row.id === noPendingDraft.id),
@@ -4019,8 +4240,8 @@ async function main() {
     });
     assert.equal(rejected.type, "REJECTED");
     assert.equal(
-      proposals.some((row) => row.id === proposal.proposalId),
-      false,
+      proposals.find((row) => row.id === proposal.proposalId)?.status,
+      "REJECTED",
     );
   }
   console.log("PASS explicit rejection messages remain prioritized");
@@ -4161,8 +4382,8 @@ async function main() {
     assert.equal(rejected.type, "REJECTED");
     assert.equal(createdIncomes.length, beforeIncomeCount);
     assert.equal(
-      proposals.some((row) => row.conversation_key === conversationKey),
-      false,
+      proposals.find((row) => row.conversation_key === conversationKey)?.status,
+      "REJECTED",
     );
     recordD3Case(`rejection ${rejectionMessage}`, "REJECTED without write");
   }
@@ -4378,8 +4599,8 @@ async function main() {
   assert.equal(d3Rejected.type, "REJECTED");
   assert.equal(createdExpenses.length, d3RejectBeforeExpenses);
   assert.equal(
-    proposals.some((row) => row.id === d3RejectProposal.proposalId),
-    false,
+    proposals.find((row) => row.id === d3RejectProposal.proposalId)?.status,
+    "REJECTED",
   );
   recordD3Case("rejection after correction", "corrected payload rejected without write");
 
@@ -4407,7 +4628,7 @@ async function main() {
     await conversation.processAgentMessage(d3Context, { message: resolution });
     assert.equal(
       proposals.length,
-      resolution === "sí" ? beforeProposalCount : beforeProposalCount - 1,
+      beforeProposalCount,
     );
     assert.equal(
       createdExpenses.length,
@@ -4422,7 +4643,7 @@ async function main() {
     assert.match(correctedAfterResolution.message, /propuesta activa/);
     assert.equal(
       proposals.length,
-      resolution === "sí" ? beforeProposalCount : beforeProposalCount - 1,
+      beforeProposalCount,
     );
     assert.equal(
       createdExpenses.length,

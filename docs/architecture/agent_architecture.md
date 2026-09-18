@@ -803,11 +803,11 @@ El estado definitivo deberá ser controlado por el backend.
 
 Cuando una operación llegue a `AWAITING_CONFIRMATION`, el backend persistirá una `PendingProposal` con el hogar, una clave controlada de conversación, el tipo de operación y el payload exacto presentado. Esto cubrirá create/update/delete de Expense e Income.
 
-La respuesta posterior del usuario resolverá la propuesta por `household_id + conversation_key`. Al confirmar se ejecutará exactamente ese payload y se eliminará la propuesta; al rechazar también se eliminará. El flujo no dependerá de memoria en proceso ni constituirá una memoria conversacional avanzada.
+La respuesta posterior del usuario resolverá la propuesta por `household_id + conversation_key`. Al confirmar se ejecutará exactamente ese payload y la propuesta pasará a `COMPLETED` con la referencia financiera; al rechazar pasará a `REJECTED` con `resolved_at`, sin ejecutar la operación financiera ni eliminar el registro. El flujo no dependerá de memoria en proceso ni constituirá una memoria conversacional avanzada.
 
 Si llega otra intención de escritura antes de resolver la propuesta vigente, no se reemplazará ni modificará el payload anterior. El backend devolverá `PENDING_PROPOSAL_EXISTS` y el agente pedirá resolver primero la propuesta existente.
 
-La confirmación o rechazo se vinculará además al `PendingProposal.id` presentado. Si una respuesta tardía apunta a una propuesta ya consumida, rechazada o diferente de la vigente, el backend devolverá `PROPOSAL_NOT_AVAILABLE`; el agente informará que ya no hay una propuesta válida y no ejecutará ninguna tool de escritura.
+La confirmación o rechazo se vinculará además al `PendingProposal.id` presentado. Una respuesta tardía sobre una propuesta `REJECTED` será idempotente y no ejecutará ninguna tool de escritura; una respuesta de rechazo sobre una propuesta `COMPLETED` devolverá un resultado no disponible sin modificarla. Una propuesta inexistente, de otro contexto o de una operación no soportada devolverá `PROPOSAL_NOT_AVAILABLE`; el agente no ejecutará ninguna tool de escritura.
 
 Cuando un `CREATE_EXPENSE` o `CREATE_INCOME` conversacional no incluya
 categoría, el Agent consulta `getCategoriesTool()` y persiste un
