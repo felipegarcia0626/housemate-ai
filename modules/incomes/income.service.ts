@@ -1,10 +1,12 @@
 import {
   createIncome as createIncomeInRepository,
   deleteIncome as deleteIncomeInRepository,
+  findIncomeById,
   IncomeRepositoryError,
   isIncomeCategoryAvailable,
   isIncomeMemberInHousehold,
   listIncomes as listIncomesInRepository,
+  type IncomeCreatePersistenceInput,
   type IncomeUpdatePersistenceInput,
   updateIncome as updateIncomeInRepository,
 } from "./income.repository";
@@ -26,6 +28,8 @@ import {
   validateIncomeUpdateInput,
   validateIncomeUuid,
 } from "./income.validation";
+
+export type { IncomeCreatePersistenceInput } from "./income.repository";
 
 function persistenceError(): IncomeDomainError {
   return new IncomeDomainError(
@@ -71,37 +75,9 @@ export async function createIncome(
   input: IncomeCreateInput,
 ): Promise<Income> {
   try {
-    validateIncomeUuid(context.householdId, "context.householdId");
-    validateIncomeUuid(context.memberId, "context.memberId");
-    validateIncomeCreateInput(input);
-
-    const [creatorBelongsToHousehold, memberBelongsToHousehold] =
-      await Promise.all([
-        isIncomeMemberInHousehold(context.householdId, context.memberId),
-        isIncomeMemberInHousehold(context.householdId, input.memberId),
-      ]);
-
-    if (!creatorBelongsToHousehold || !memberBelongsToHousehold) {
-      throw new IncomeDomainError(
-        "HOUSEHOLD_MISMATCH",
-        "One or more selected members do not belong to the current household.",
-      );
-    }
-
-    const categoryId = input.categoryId ?? null;
-    if (categoryId !== null && !(await isIncomeCategoryAvailable(categoryId))) {
-      throw new IncomeDomainError(
-        "NOT_FOUND",
-        "The selected category was not found.",
-      );
-    }
-
-    return await createIncomeInRepository({
-      ...input,
-      householdId: context.householdId,
-      createdBy: context.memberId,
-      categoryId,
-    });
+    return await createIncomeInRepository(
+      await prepareIncomeCreation(context, input),
+    );
   } catch (error) {
     if (error instanceof IncomeDomainError) {
       throw error;
@@ -115,6 +91,71 @@ export async function createIncome(
     }
 
     throw createPersistenceError();
+  }
+}
+
+export async function prepareIncomeCreation(
+  context: IncomeCreateServiceContext,
+  input: IncomeCreateInput,
+): Promise<IncomeCreatePersistenceInput> {
+  validateIncomeUuid(context.householdId, "context.householdId");
+  validateIncomeUuid(context.memberId, "context.memberId");
+  validateIncomeCreateInput(input);
+
+  const [creatorBelongsToHousehold, memberBelongsToHousehold] =
+    await Promise.all([
+      isIncomeMemberInHousehold(context.householdId, context.memberId),
+      isIncomeMemberInHousehold(context.householdId, input.memberId),
+    ]);
+
+  if (!creatorBelongsToHousehold || !memberBelongsToHousehold) {
+    throw new IncomeDomainError(
+      "HOUSEHOLD_MISMATCH",
+      "One or more selected members do not belong to the current household.",
+    );
+  }
+
+  const categoryId = input.categoryId ?? null;
+  if (categoryId !== null && !(await isIncomeCategoryAvailable(categoryId))) {
+    throw new IncomeDomainError(
+      "NOT_FOUND",
+      "The selected category was not found.",
+    );
+  }
+
+  return {
+    ...input,
+    householdId: context.householdId,
+    createdBy: context.memberId,
+    categoryId,
+  };
+}
+
+export async function getIncomeById(
+  context: IncomeServiceContext,
+  incomeId: string,
+): Promise<Income> {
+  try {
+    validateIncomeUuid(context.householdId, "context.householdId");
+    validateIncomeUuid(incomeId, "incomeId");
+
+    const income = await findIncomeById(context.householdId, incomeId);
+    if (!income) {
+      throw new IncomeDomainError(
+        "NOT_FOUND",
+        "Income was not found in the current household.",
+      );
+    }
+    return income;
+  } catch (error) {
+    if (error instanceof IncomeDomainError) throw error;
+    if (error instanceof IncomeRepositoryError && error.kind === "NOT_FOUND") {
+      throw new IncomeDomainError(
+        "NOT_FOUND",
+        "Income was not found in the current household.",
+      );
+    }
+    throw persistenceError();
   }
 }
 

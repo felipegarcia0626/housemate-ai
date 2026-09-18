@@ -151,6 +151,29 @@ export async function createIncome(
   return mapIncome(data as IncomeRow);
 }
 
+export async function findIncomeById(
+  householdId: string,
+  incomeId: string,
+): Promise<Income | null> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_incomes")
+    .select(
+      "id,household_id,created_by,member_id,amount,income_date,description,category_id,created_at,updated_at",
+    )
+    .eq("id", incomeId)
+    .eq("household_id", householdId)
+    .maybeSingle();
+
+  if (error) {
+    throw new IncomeRepositoryError(
+      getIncomePersistenceErrorKind(error),
+      error,
+    );
+  }
+
+  return data ? mapIncome(data as IncomeRow) : null;
+}
+
 export async function updateIncome(
   input: IncomeUpdatePersistenceInput,
 ): Promise<Income> {

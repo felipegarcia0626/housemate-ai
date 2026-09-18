@@ -21,7 +21,7 @@ export async function createIncomeTool(
 export async function confirmCreateIncomeTool(
   context: AgentContext,
   proposalId: string,
-): Promise<IncomeConfirmationResult> {
+): Promise<IncomeConfirmationResult | IncomeRejectionResult> {
   return confirmIncomeProposal(context, proposalId);
 }
 

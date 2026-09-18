@@ -5,6 +5,11 @@ import {
   type ExpenseCreatePersistenceInput,
 } from "@/modules/expenses/expense.service";
 import {
+  getIncomeById,
+  prepareIncomeCreation,
+  type IncomeCreatePersistenceInput,
+} from "@/modules/incomes/income.service";
+import {
   ExpenseDomainError,
   type ExpenseCreateInput,
 } from "@/modules/expenses/expense.types";
@@ -26,6 +31,7 @@ import {
 import {
   consumePendingProposal,
   confirmPendingExpense,
+  confirmPendingIncome,
   createPendingProposal,
   consumePendingIncomeProposal,
   createPendingIncomeProposal,
@@ -33,10 +39,11 @@ import {
   findPendingProposalForConversation,
   findPendingIncomeProposal,
   PendingProposalRepositoryError,
-  restorePendingIncomeProposal,
 } from "./pending-proposal.repository";
-import { createIncome } from "@/modules/incomes/income.service";
-import type { IncomeCreateInput } from "@/modules/incomes/income.types";
+import {
+  IncomeDomainError,
+  type IncomeCreateInput,
+} from "@/modules/incomes/income.types";
 
 function validateUuid(value: string, field: string): void {
   if (
@@ -196,41 +203,65 @@ async function getOwnedIncomeProposal(
 export async function confirmIncomeProposal(
   context: AgentContext,
   proposalId: string,
-): Promise<IncomeConfirmationResult> {
-  let proposal: PendingIncomeProposal;
+): Promise<IncomeConfirmationResult | IncomeRejectionResult> {
+  let proposal: PendingIncomeProposal | null = null;
   try {
     proposal = await getOwnedIncomeProposal(context, proposalId);
   } catch (error) {
     if (error instanceof AgentDomainError && error.code === "NOT_FOUND") {
+      proposal = null;
+    } else if (error instanceof AgentDomainError) {
+      throw error;
+    } else {
+      throw mapRepositoryError(error);
+    }
+  }
+
+  let persistenceInput: IncomeCreatePersistenceInput | null = null;
+  if (proposal) {
+    try {
+      persistenceInput = await prepareIncomeCreation(
+        {
+          householdId: context.householdId,
+          memberId: context.actorMemberId,
+        },
+        proposal.payload.income,
+      );
+    } catch (error) {
+      if (error instanceof IncomeDomainError) throw error;
+      throw persistenceError();
+    }
+  }
+
+  try {
+    const result = await confirmPendingIncome({
+      proposalId,
+      householdId: context.householdId,
+      conversationKey: context.conversationKey,
+      actorMemberId: context.actorMemberId,
+      source: context.source,
+      income: persistenceInput,
+    });
+    if (result.status === "NOT_FOUND" || result.status === "INVALID_OPERATION") {
       throw proposalUnavailable();
     }
-    if (error instanceof AgentDomainError) throw error;
-    throw mapRepositoryError(error);
-  }
-  const consumed = await consumePendingIncomeProposal(
-    proposal.id,
-    context.householdId,
-    context.conversationKey,
-  );
-  if (!consumed) throw proposalUnavailable();
-  try {
-    const income = await createIncome(
-      { householdId: context.householdId, memberId: context.actorMemberId },
-      consumed.payload.income,
+    if (result.status === "REJECTED") {
+      return { proposalId, status: "REJECTED" };
+    }
+    if (!result.incomeId) throw persistenceError();
+    const income = await getIncomeById(
+      { householdId: context.householdId },
+      result.incomeId,
     );
     return {
-      proposalId: consumed.id,
+      proposalId,
       status: "CONFIRMED",
       incomeId: income.id,
       income,
     };
   } catch (error) {
-    try {
-      await restorePendingIncomeProposal(consumed);
-    } catch {
-      throw persistenceError();
-    }
     if (error instanceof AgentDomainError) throw error;
+    if (error instanceof IncomeDomainError) throw error;
     throw persistenceError();
   }
 }

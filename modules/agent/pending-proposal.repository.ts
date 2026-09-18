@@ -1,5 +1,6 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
 import type { ExpenseCreatePersistenceInput } from "@/modules/expenses/expense.repository";
+import type { IncomeCreatePersistenceInput } from "@/modules/incomes/income.repository";
 import type {
   PendingIncomeProposal,
   PendingIncomeProposalPayload,
@@ -304,6 +305,88 @@ export async function confirmPendingExpense(input: {
   return {
     status,
     expenseId: typeof expenseId === "string" ? expenseId : null,
+  };
+}
+
+export type PendingIncomeConfirmationStatus =
+  | "CREATED"
+  | "ALREADY_COMPLETED"
+  | "REJECTED"
+  | "NOT_FOUND"
+  | "INVALID_OPERATION";
+
+export interface PendingIncomeConfirmationResult {
+  status: PendingIncomeConfirmationStatus;
+  incomeId: string | null;
+}
+
+function toIncomeRpcArguments(
+  input: IncomeCreatePersistenceInput,
+): Record<string, unknown> {
+  return {
+    p_created_by: input.createdBy,
+    p_member_id: input.memberId,
+    p_amount: input.amount,
+    p_income_date: input.incomeDate,
+    p_description: input.description,
+    p_category_id: input.categoryId,
+  };
+}
+
+export async function confirmPendingIncome(input: {
+  proposalId: string;
+  householdId: string;
+  conversationKey: string;
+  actorMemberId: string;
+  source: "WEB" | "WHATSAPP" | "RECEIPT";
+  income: IncomeCreatePersistenceInput | null;
+}): Promise<PendingIncomeConfirmationResult> {
+  const rpcArguments: Record<string, unknown> = {
+    p_proposal_id: input.proposalId,
+    p_household_id: input.householdId,
+    p_conversation_key: input.conversationKey,
+    p_actor_member_id: input.actorMemberId,
+    p_context_source: input.source,
+  };
+
+  if (input.income) {
+    Object.assign(rpcArguments, toIncomeRpcArguments(input.income));
+  }
+
+  const { data, error } = await getSupabaseAdminClient().rpc(
+    "fn_confirm_pending_income",
+    rpcArguments,
+  );
+
+  if (error) throw persistenceError("confirm income", error);
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    typeof (data as { status?: unknown }).status !== "string"
+  ) {
+    throw persistenceError("confirm income", new Error("Invalid RPC result"));
+  }
+
+  const status = (data as { status: string }).status;
+  if (
+    status !== "CREATED" &&
+    status !== "ALREADY_COMPLETED" &&
+    status !== "REJECTED" &&
+    status !== "NOT_FOUND" &&
+    status !== "INVALID_OPERATION"
+  ) {
+    throw persistenceError("confirm income", new Error("Unknown RPC status"));
+  }
+
+  const incomeId = (data as { income_id?: unknown }).income_id;
+  if (incomeId !== undefined && incomeId !== null && typeof incomeId !== "string") {
+    throw persistenceError("confirm income", new Error("Invalid income id"));
+  }
+
+  return {
+    status,
+    incomeId: typeof incomeId === "string" ? incomeId : null,
   };
 }
 

@@ -297,7 +297,10 @@ const fakeClient = {
   },
   rpc(name, args) {
     operations.push({ type: "rpc", name, args });
-    if (name !== "fn_confirm_pending_expense") {
+    if (
+      name !== "fn_confirm_pending_expense" &&
+      name !== "fn_confirm_pending_income"
+    ) {
       throw new Error(`Unexpected RPC: ${name}`);
     }
     if (confirmationFailure) {
@@ -321,6 +324,50 @@ const fakeClient = {
     ) {
       return Promise.resolve({
         data: { status: "NOT_FOUND", expense_id: null },
+        error: null,
+      });
+    }
+    if (name === "fn_confirm_pending_income") {
+      if (proposal.operation_type !== "CREATE_INCOME") {
+        return Promise.resolve({
+          data: { status: "INVALID_OPERATION", income_id: null },
+          error: null,
+        });
+      }
+      if (proposal.status === "COMPLETED") {
+        return Promise.resolve({
+          data: { status: "ALREADY_COMPLETED", income_id: proposal.income_id },
+          error: null,
+        });
+      }
+      if (proposal.status === "REJECTED") {
+        return Promise.resolve({
+          data: { status: "REJECTED", income_id: null },
+          error: null,
+        });
+      }
+      const incomeId = `income-${createdIncomes.length + 1}`;
+      createdIncomes.push({
+        context: {
+          householdId: args.p_household_id,
+          memberId: args.p_created_by,
+        },
+        input: {
+          memberId: args.p_member_id,
+          amount: args.p_amount,
+          incomeDate: args.p_income_date,
+          description: args.p_description,
+          categoryId: args.p_category_id,
+        },
+      });
+      Object.assign(proposal, {
+        status: "COMPLETED",
+        expense_id: null,
+        income_id: incomeId,
+        resolved_at: "2026-08-12T12:00:00.000Z",
+      });
+      return Promise.resolve({
+        data: { status: "CREATED", income_id: incomeId },
         error: null,
       });
     }
@@ -472,6 +519,17 @@ async function main() {
     },
   };
   const fakeIncomeService = {
+    async prepareIncomeCreation(context, input) {
+      return {
+        ...input,
+        householdId: context.householdId,
+        createdBy: context.memberId,
+        categoryId: input.categoryId ?? null,
+      };
+    },
+    async getIncomeById(context, incomeId) {
+      return { id: incomeId };
+    },
     async createIncome(context, input) {
       createdIncomes.push({ context, input });
       return { id: `income-${createdIncomes.length}`, ...input };
@@ -2833,14 +2891,119 @@ async function main() {
   assert.equal(createdIncomes.at(-1).context.householdId, householdA);
   assert.equal(createdIncomes.at(-1).context.memberId, memberA);
   assert.equal(createdIncomes.at(-1).input.memberId, memberB);
-  await expectAgentError(
-    conversation.processAgentMessage(incomeContext, {
+  const incomeProposalRow = proposals.find(
+    (row) => row.id === incomeProposal.proposalId,
+  );
+  assert.equal(incomeProposalRow.status, "COMPLETED");
+  assert.equal(incomeProposalRow.income_id, incomeConfirmed.incomeId);
+  assert.equal(typeof incomeProposalRow.resolved_at, "string");
+  const repeatedIncomeConfirmation = await conversation.processAgentMessage(
+    incomeContext,
+    {
       message: "si",
       proposalId: incomeProposal.proposalId,
-    }),
+    },
+  );
+  assert.equal(repeatedIncomeConfirmation.type, "CONFIRMED");
+  assert.equal(repeatedIncomeConfirmation.incomeId, incomeConfirmed.incomeId);
+  assert.equal(createdIncomes.length, beforeDirectIncomeCount + 1);
+  assert.equal(
+    await agentService.findActiveProposalId(incomeContext),
+    null,
+  );
+  console.log("PASS create_income confirmation is terminal and idempotent");
+
+  await expectAgentError(
+    createIncome.confirmCreateIncomeTool(
+      incomeContext,
+      "62000000-0000-4000-8000-000000000097",
+    ),
     "PROPOSAL_NOT_AVAILABLE",
   );
-  console.log("PASS create_income requires confirmation and cannot duplicate");
+  const invalidIncomeOperationContext = {
+    ...contextA,
+    conversationKey: "agent-income-invalid-operation",
+  };
+  const invalidIncomeOperationProposal = await tool.createExpenseTool(
+    invalidIncomeOperationContext,
+    expenseInput,
+  );
+  await expectAgentError(
+    createIncome.confirmCreateIncomeTool(
+      invalidIncomeOperationContext,
+      invalidIncomeOperationProposal.proposalId,
+    ),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  assert.equal(createdIncomes.length, beforeDirectIncomeCount + 1);
+  console.log("PASS income NOT_FOUND and INVALID_OPERATION do not write");
+
+  const failedIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-income-confirmation-failure",
+  };
+  const failedIncomeProposal = await createIncome.createIncomeTool(
+    failedIncomeContext,
+    {
+      memberId: memberB,
+      amount: 90,
+      incomeDate: "2026-08-12",
+      description: "Failed confirmation",
+      categoryId: null,
+    },
+  );
+  const beforeFailedIncomeCount = createdIncomes.length;
+  confirmationFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(failedIncomeContext, {
+        message: "si",
+        proposalId: failedIncomeProposal.proposalId,
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    confirmationFailure = false;
+  }
+  const failedIncomeRow = proposals.find(
+    (row) => row.id === failedIncomeProposal.proposalId,
+  );
+  assert.equal(failedIncomeRow.status, "AWAITING_CONFIRMATION");
+  assert.equal(failedIncomeRow.income_id ?? null, null);
+  assert.equal(createdIncomes.length, beforeFailedIncomeCount);
+  console.log("PASS income confirmation failure preserves pending proposal");
+
+  const rejectedIncomeProposal = {
+    id: "62000000-0000-4000-8000-000000000096",
+    household_id: householdA,
+    conversation_key: "agent-income-rejected-terminal",
+    operation_type: "CREATE_INCOME",
+    payload: {
+      actorMemberId: memberA,
+      source: "WEB",
+      income: {
+        memberId: memberA,
+        amount: 40,
+        incomeDate: "2026-08-12",
+        description: "Rejected income",
+        categoryId: null,
+      },
+    },
+    status: "REJECTED",
+    resolved_at: "2026-08-12T12:00:00.000Z",
+    expense_id: null,
+    income_id: null,
+  };
+  proposals.push(rejectedIncomeProposal);
+  const beforeRejectedIncomeCount = createdIncomes.length;
+  const rejectedIncomeConfirmation =
+    await createIncome.confirmCreateIncomeTool(
+      { ...contextA, conversationKey: rejectedIncomeProposal.conversation_key },
+      rejectedIncomeProposal.id,
+    );
+  assert.equal(rejectedIncomeConfirmation.status, "REJECTED");
+  assert.equal(createdIncomes.length, beforeRejectedIncomeCount);
+  console.log("PASS rejected terminal income proposal does not create Income");
 
   const expenseRead = await getExpenses.getExpensesTool(contextA, {
     from: "2026-08-01",
