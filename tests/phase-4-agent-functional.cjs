@@ -143,6 +143,7 @@ let createdIncomes = [];
 let nextProposal = 1;
 let hydrationFailure = false;
 let confirmationFailure = false;
+let confirmationPayloadMutation = null;
 let rejectionFailure = false;
 let ambiguousMemberNames = false;
 let normalizedMemberNames = false;
@@ -299,8 +300,8 @@ const fakeClient = {
   rpc(name, args) {
     operations.push({ type: "rpc", name, args });
     if (
-      name !== "fn_confirm_pending_expense" &&
-      name !== "fn_confirm_pending_income" &&
+      name !== "fn_confirm_pending_expense_consistent" &&
+      name !== "fn_confirm_pending_income_consistent" &&
       name !== "fn_reject_pending_proposal"
     ) {
       throw new Error(`Unexpected RPC: ${name}`);
@@ -331,6 +332,27 @@ const fakeClient = {
         data: { status: "NOT_FOUND", expense_id: null },
         error: null,
       });
+    }
+    if (confirmationPayloadMutation) {
+      const mutation = confirmationPayloadMutation;
+      confirmationPayloadMutation = null;
+      proposal.payload = {
+        ...proposal.payload,
+        [mutation.operation]: {
+          ...proposal.payload[mutation.operation],
+          description: mutation.description,
+        },
+      };
+      proposal.updated_at = "2026-08-12T12:02:00.000Z";
+    }
+    if (
+      (name === "fn_confirm_pending_expense_consistent" ||
+        name === "fn_confirm_pending_income_consistent") &&
+      proposal.status === "AWAITING_CONFIRMATION" &&
+      args.p_expected_updated_at !== null &&
+      args.p_expected_updated_at !== proposal.updated_at
+    ) {
+      return Promise.resolve({ data: null, error: { code: "40001" } });
     }
     if (name === "fn_reject_pending_proposal") {
       if (
@@ -384,7 +406,7 @@ const fakeClient = {
         error: null,
       });
     }
-    if (name === "fn_confirm_pending_income") {
+    if (name === "fn_confirm_pending_income_consistent") {
       if (proposal.operation_type !== "CREATE_INCOME") {
         return Promise.resolve({
           data: { status: "INVALID_OPERATION", income_id: null },
@@ -1290,6 +1312,39 @@ async function main() {
   assert.equal(createdExpenses.length, 1);
   console.log("PASS repeated confirmation reuses the same Expense");
 
+  const fencedExpenseContext = {
+    ...contextA,
+    conversationKey: "agent-confirmation-payload-fence-expense",
+  };
+  const fencedExpenseProposal = await tool.createExpenseTool(
+    fencedExpenseContext,
+    { ...expenseInput, description: "Original fenced expense" },
+  );
+  const beforeFencedExpenseCount = createdExpenses.length;
+  confirmationPayloadMutation = {
+    operation: "expense",
+    description: "Persisted correction before confirmation",
+  };
+  await expectAgentError(
+    tool.confirmCreateExpenseTool(
+      fencedExpenseContext,
+      fencedExpenseProposal.proposalId,
+    ),
+    "PERSISTENCE_ERROR",
+  );
+  const fencedExpenseRow = proposals.find(
+    (row) => row.id === fencedExpenseProposal.proposalId,
+  );
+  assert.equal(fencedExpenseRow.status, "AWAITING_CONFIRMATION");
+  assert.equal(
+    fencedExpenseRow.payload.expense.description,
+    "Persisted correction before confirmation",
+  );
+  assert.equal(createdExpenses.length, beforeFencedExpenseCount);
+  console.log(
+    "PASS Expense confirmation rejects stale Node payload without financial write",
+  );
+
   const hydrationProposal = await tool.createExpenseTool(
     contextA,
     expenseInput,
@@ -1459,7 +1514,8 @@ async function main() {
   );
   assert.ok(
     operations.some(
-      ({ type, name }) => type === "rpc" && name === "fn_confirm_pending_expense",
+      ({ type, name }) =>
+        type === "rpc" && name === "fn_confirm_pending_expense_consistent",
     ),
   );
   console.log("PASS Agent persistence is isolated to PendingProposal");
@@ -3008,6 +3064,45 @@ async function main() {
     null,
   );
   console.log("PASS create_income confirmation is terminal and idempotent");
+
+  const fencedIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-confirmation-payload-fence-income",
+  };
+  const fencedIncomeProposal = await createIncome.createIncomeTool(
+    fencedIncomeContext,
+    {
+      memberId: memberB,
+      amount: 80,
+      incomeDate: "2026-08-12",
+      description: "Original fenced income",
+      categoryId: null,
+    },
+  );
+  const beforeFencedIncomeCount = createdIncomes.length;
+  confirmationPayloadMutation = {
+    operation: "income",
+    description: "Persisted correction before income confirmation",
+  };
+  await expectAgentError(
+    createIncome.confirmCreateIncomeTool(
+      fencedIncomeContext,
+      fencedIncomeProposal.proposalId,
+    ),
+    "PERSISTENCE_ERROR",
+  );
+  const fencedIncomeRow = proposals.find(
+    (row) => row.id === fencedIncomeProposal.proposalId,
+  );
+  assert.equal(fencedIncomeRow.status, "AWAITING_CONFIRMATION");
+  assert.equal(
+    fencedIncomeRow.payload.income.description,
+    "Persisted correction before income confirmation",
+  );
+  assert.equal(createdIncomes.length, beforeFencedIncomeCount);
+  console.log(
+    "PASS Income confirmation rejects stale Node payload without financial write",
+  );
 
   await expectAgentError(
     createIncome.confirmCreateIncomeTool(

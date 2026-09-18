@@ -257,6 +257,7 @@ export async function confirmPendingExpense(input: {
   conversationKey: string;
   actorMemberId: string;
   source: "WEB" | "WHATSAPP" | "RECEIPT";
+  expectedUpdatedAt: string | null;
   expense: ExpenseCreatePersistenceInput | null;
 }): Promise<PendingExpenseConfirmationResult> {
   const rpcArguments: Record<string, unknown> = {
@@ -265,6 +266,7 @@ export async function confirmPendingExpense(input: {
     p_conversation_key: input.conversationKey,
     p_actor_member_id: input.actorMemberId,
     p_context_source: input.source,
+    p_expected_updated_at: input.expectedUpdatedAt,
   };
 
   if (input.expense) {
@@ -272,7 +274,7 @@ export async function confirmPendingExpense(input: {
   }
 
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_confirm_pending_expense",
+    "fn_confirm_pending_expense_consistent",
     rpcArguments,
   );
 
@@ -351,6 +353,7 @@ export async function confirmPendingIncome(input: {
   conversationKey: string;
   actorMemberId: string;
   source: "WEB" | "WHATSAPP" | "RECEIPT";
+  expectedUpdatedAt: string | null;
   income: IncomeCreatePersistenceInput | null;
 }): Promise<PendingIncomeConfirmationResult> {
   const rpcArguments: Record<string, unknown> = {
@@ -359,6 +362,7 @@ export async function confirmPendingIncome(input: {
     p_conversation_key: input.conversationKey,
     p_actor_member_id: input.actorMemberId,
     p_context_source: input.source,
+    p_expected_updated_at: input.expectedUpdatedAt,
   };
 
   if (input.income) {
@@ -366,7 +370,7 @@ export async function confirmPendingIncome(input: {
   }
 
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_confirm_pending_income",
+    "fn_confirm_pending_income_consistent",
     rpcArguments,
   );
 

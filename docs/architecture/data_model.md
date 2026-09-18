@@ -601,6 +601,8 @@ Si llega una nueva operación de escritura mientras ya existe una propuesta pend
 
 Una confirmación o rechazo incluirá internamente el `PendingProposal.id` que fue presentado. El backend solo ejecutará el payload si ese identificador pertenece al contexto controlado. Una propuesta `REJECTED` responde de forma idempotente al rechazo repetido y no ejecuta operaciones; una propuesta `COMPLETED` no puede volver a rechazarse. Las propuestas inexistentes, de otro contexto o de una operación no soportada responden de forma segura sin ejecutar ninguna operación. Esto evita que una confirmación o rechazo tardío ejecute otra operación.
 
+La confirmación conserva además la versión `updated_at` observada al preparar la propuesta. La RPC adquiere el bloqueo de la fila y aborta sin escribir si esa versión cambió, por lo que los datos financieros nunca se crean desde un payload obsoleto.
+
 ## 15.2 AgentCategoryDraft
 
 `AgentCategoryDraft` conserva únicamente una operación incompleta de

@@ -239,6 +239,7 @@ export async function confirmIncomeProposal(
       conversationKey: context.conversationKey,
       actorMemberId: context.actorMemberId,
       source: context.source,
+      expectedUpdatedAt: proposal?.updatedAt ?? null,
       income: persistenceInput,
     });
     if (result.status === "NOT_FOUND" || result.status === "INVALID_OPERATION") {
@@ -386,6 +387,7 @@ export async function confirmExpenseProposal(
       conversationKey: context.conversationKey,
       actorMemberId: context.actorMemberId,
       source: context.source,
+      expectedUpdatedAt: proposal?.updatedAt ?? null,
       expense: persistenceInput,
     });
     if (result.status === "NOT_FOUND" || result.status === "INVALID_OPERATION") {

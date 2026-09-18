@@ -805,6 +805,8 @@ Cuando una operación llegue a `AWAITING_CONFIRMATION`, el backend persistirá u
 
 La respuesta posterior del usuario resolverá la propuesta por `household_id + conversation_key`. Al confirmar se ejecutará exactamente ese payload y la propuesta pasará a `COMPLETED` con la referencia financiera; al rechazar pasará a `REJECTED` con `resolved_at`, sin ejecutar la operación financiera ni eliminar el registro. El flujo no dependerá de memoria en proceso ni constituirá una memoria conversacional avanzada.
 
+La confirmación utilizará la versión `updated_at` de la propuesta leída por el Agent. La RPC bloqueará la propuesta y rechazará la confirmación si el payload cambió antes de crear la entidad financiera, evitando confirmar datos preparados desde una versión obsoleta.
+
 Si llega otra intención de escritura antes de resolver la propuesta vigente, no se reemplazará ni modificará el payload anterior. El backend devolverá `PENDING_PROPOSAL_EXISTS` y el agente pedirá resolver primero la propuesta existente.
 
 La confirmación o rechazo se vinculará además al `PendingProposal.id` presentado. Una respuesta tardía sobre una propuesta `REJECTED` será idempotente y no ejecutará ninguna tool de escritura; una respuesta de rechazo sobre una propuesta `COMPLETED` devolverá un resultado no disponible sin modificarla. Una propuesta inexistente, de otro contexto o de una operación no soportada devolverá `PROPOSAL_NOT_AVAILABLE`; el agente no ejecutará ninguna tool de escritura.
