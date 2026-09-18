@@ -21,7 +21,7 @@ export async function createExpenseTool(
 export async function confirmCreateExpenseTool(
   context: AgentContext,
   proposalId: string,
-): Promise<ExpenseConfirmationResult> {
+): Promise<ExpenseConfirmationResult | ExpenseRejectionResult> {
   return confirmExpenseProposal(context, proposalId);
 }
 

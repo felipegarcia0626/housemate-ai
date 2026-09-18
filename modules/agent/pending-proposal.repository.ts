@@ -1,4 +1,5 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import type { ExpenseCreatePersistenceInput } from "@/modules/expenses/expense.repository";
 import type {
   PendingIncomeProposal,
   PendingIncomeProposalPayload,
@@ -25,9 +26,12 @@ interface PendingProposalRow {
   conversation_key: string;
   operation_type: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
-  status: "AWAITING_CONFIRMATION";
+  status: "AWAITING_CONFIRMATION" | "COMPLETED" | "REJECTED";
   created_at: string;
   updated_at: string;
+  resolved_at: string | null;
+  expense_id: string | null;
+  income_id: string | null;
 }
 
 function mapRow(row: PendingProposalRow): PendingProposal {
@@ -41,6 +45,9 @@ function mapRow(row: PendingProposalRow): PendingProposal {
       status: row.status,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      resolvedAt: row.resolved_at ?? null,
+      expenseId: row.expense_id ?? null,
+      incomeId: row.income_id ?? null,
     } satisfies PendingIncomeProposal;
   }
   return {
@@ -52,6 +59,9 @@ function mapRow(row: PendingProposalRow): PendingProposal {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at ?? null,
+    expenseId: row.expense_id ?? null,
+    incomeId: row.income_id ?? null,
   } satisfies PendingExpenseProposal;
 }
 
@@ -93,7 +103,7 @@ export async function createPendingProposal(input: {
       status: "AWAITING_CONFIRMATION",
     })
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .single();
 
@@ -132,7 +142,7 @@ export async function updatePendingProposalConditionally(input: {
     .eq("status", "AWAITING_CONFIRMATION")
     .eq("updated_at", input.expectedUpdatedAt)
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .maybeSingle();
 
@@ -148,7 +158,7 @@ export async function findPendingProposal(
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .eq("id", id)
     .eq("household_id", householdId)
@@ -171,7 +181,7 @@ export async function findPendingIncomeProposal(
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .eq("id", id)
     .eq("household_id", householdId)
@@ -193,7 +203,7 @@ export async function findPendingProposalForConversation(
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .eq("household_id", householdId)
     .eq("conversation_key", conversationKey)
@@ -202,6 +212,99 @@ export async function findPendingProposalForConversation(
 
   if (error) throw persistenceError("read conversation", error);
   return data ? mapRow(data as PendingProposalRow) : null;
+}
+
+export type PendingExpenseConfirmationStatus =
+  | "CREATED"
+  | "ALREADY_COMPLETED"
+  | "REJECTED"
+  | "NOT_FOUND"
+  | "INVALID_OPERATION";
+
+export interface PendingExpenseConfirmationResult {
+  status: PendingExpenseConfirmationStatus;
+  expenseId: string | null;
+}
+
+function toExpenseRpcArguments(
+  input: ExpenseCreatePersistenceInput,
+): Record<string, unknown> {
+  return {
+    p_created_by: input.createdBy,
+    p_paid_by: input.paidByMemberId,
+    p_category_id: input.categoryId,
+    p_receipt_id: input.receiptId,
+    p_merchant: input.merchant,
+    p_total_amount: input.totalAmount,
+    p_expense_date: input.expenseDate,
+    p_description: input.description,
+    p_source: input.source,
+    p_items: input.items.map((item) => ({
+      name: item.name,
+      quantity: item.quantity ?? null,
+      unitPrice: item.unitPrice ?? null,
+      totalAmount: item.totalAmount,
+      categoryId: item.categoryId ?? null,
+    })),
+    p_distributions: input.distributions,
+  };
+}
+
+export async function confirmPendingExpense(input: {
+  proposalId: string;
+  householdId: string;
+  conversationKey: string;
+  actorMemberId: string;
+  source: "WEB" | "WHATSAPP" | "RECEIPT";
+  expense: ExpenseCreatePersistenceInput | null;
+}): Promise<PendingExpenseConfirmationResult> {
+  const rpcArguments: Record<string, unknown> = {
+    p_proposal_id: input.proposalId,
+    p_household_id: input.householdId,
+    p_conversation_key: input.conversationKey,
+    p_actor_member_id: input.actorMemberId,
+    p_context_source: input.source,
+  };
+
+  if (input.expense) {
+    Object.assign(rpcArguments, toExpenseRpcArguments(input.expense));
+  }
+
+  const { data, error } = await getSupabaseAdminClient().rpc(
+    "fn_confirm_pending_expense",
+    rpcArguments,
+  );
+
+  if (error) throw persistenceError("confirm expense", error);
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    typeof (data as { status?: unknown }).status !== "string"
+  ) {
+    throw persistenceError("confirm expense", new Error("Invalid RPC result"));
+  }
+
+  const status = (data as { status: string }).status;
+  if (
+    status !== "CREATED" &&
+    status !== "ALREADY_COMPLETED" &&
+    status !== "REJECTED" &&
+    status !== "NOT_FOUND" &&
+    status !== "INVALID_OPERATION"
+  ) {
+    throw persistenceError("confirm expense", new Error("Unknown RPC status"));
+  }
+
+  const expenseId = (data as { expense_id?: unknown }).expense_id;
+  if (expenseId !== undefined && expenseId !== null && typeof expenseId !== "string") {
+    throw persistenceError("confirm expense", new Error("Invalid expense id"));
+  }
+
+  return {
+    status,
+    expenseId: typeof expenseId === "string" ? expenseId : null,
+  };
 }
 
 /**
@@ -223,7 +326,7 @@ export async function consumePendingProposal(
     .eq("operation_type", "CREATE_EXPENSE")
     .eq("status", "AWAITING_CONFIRMATION")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .maybeSingle();
 
@@ -247,7 +350,7 @@ export async function consumePendingIncomeProposal(
     .eq("operation_type", "CREATE_INCOME")
     .eq("status", "AWAITING_CONFIRMATION")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at",
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .maybeSingle();
 

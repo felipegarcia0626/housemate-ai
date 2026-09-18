@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { createExpense } from "@/modules/expenses/expense.service";
+import {
+  getExpenseById,
+  prepareExpenseCreation,
+  type ExpenseCreatePersistenceInput,
+} from "@/modules/expenses/expense.service";
 import {
   ExpenseDomainError,
   type ExpenseCreateInput,
@@ -21,6 +25,7 @@ import {
 } from "./agent.types";
 import {
   consumePendingProposal,
+  confirmPendingExpense,
   createPendingProposal,
   consumePendingIncomeProposal,
   createPendingIncomeProposal,
@@ -28,7 +33,6 @@ import {
   findPendingProposalForConversation,
   findPendingIncomeProposal,
   PendingProposalRepositoryError,
-  restorePendingProposal,
   restorePendingIncomeProposal,
 } from "./pending-proposal.repository";
 import { createIncome } from "@/modules/incomes/income.service";
@@ -253,7 +257,12 @@ export async function rejectIncomeProposal(
 export async function confirmAgentProposal(
   context: AgentContext,
   proposalId: string,
-): Promise<ExpenseConfirmationResult | IncomeConfirmationResult> {
+): Promise<
+  | ExpenseConfirmationResult
+  | ExpenseRejectionResult
+  | IncomeConfirmationResult
+  | IncomeRejectionResult
+> {
   try {
     return await confirmExpenseProposal(context, proposalId);
   } catch (error) {
@@ -346,44 +355,63 @@ async function consumeOwnedProposal(
 export async function confirmExpenseProposal(
   context: AgentContext,
   proposalId: string,
-): Promise<ExpenseConfirmationResult> {
-  let proposal: PendingExpenseProposal;
+): Promise<ExpenseConfirmationResult | ExpenseRejectionResult> {
+  let proposal: PendingExpenseProposal | null = null;
   try {
-    proposal = await consumeOwnedProposal(context, proposalId);
+    proposal = await getOwnedProposal(context, proposalId);
   } catch (error) {
-    if (error instanceof AgentDomainError) throw error;
-    throw mapRepositoryError(error);
+    if (!(error instanceof AgentDomainError)) throw mapRepositoryError(error);
+    if (error.code !== "NOT_FOUND" && error.code !== "PROPOSAL_NOT_AVAILABLE") {
+      throw error;
+    }
   }
 
-  const input: ExpenseCreateInput = {
-    ...proposal.payload.expense,
-    createdBy: context.actorMemberId,
-    source: context.source,
-  };
+  let persistenceInput: ExpenseCreatePersistenceInput | null = null;
+  if (proposal) {
+    const input: ExpenseCreateInput = {
+      ...proposal.payload.expense,
+      createdBy: context.actorMemberId,
+      source: context.source,
+    };
+    try {
+      persistenceInput = await prepareExpenseCreation(
+        { householdId: context.householdId },
+        input,
+      );
+    } catch (error) {
+      if (error instanceof ExpenseDomainError) throw error;
+      throw persistenceError();
+    }
+  }
 
   try {
-    const expense = await createExpense(
+    const result = await confirmPendingExpense({
+      proposalId,
+      householdId: context.householdId,
+      conversationKey: context.conversationKey,
+      actorMemberId: context.actorMemberId,
+      source: context.source,
+      expense: persistenceInput,
+    });
+    if (result.status === "NOT_FOUND" || result.status === "INVALID_OPERATION") {
+      throw proposalUnavailable();
+    }
+    if (result.status === "REJECTED") {
+      return { proposalId, status: "REJECTED" };
+    }
+    if (!result.expenseId) throw persistenceError();
+    const expense = await getExpenseById(
       { householdId: context.householdId },
-      input,
+      result.expenseId,
     );
     return {
-      proposalId: proposal.id,
+      proposalId,
       status: "CONFIRMED",
       expenseId: expense.id,
       expense,
     };
   } catch (error) {
-    if (
-      error instanceof ExpenseDomainError &&
-      error.code === "CREATED_NOT_HYDRATED"
-    ) {
-      throw error;
-    }
-    try {
-      await restorePendingProposal(proposal);
-    } catch {
-      throw persistenceError();
-    }
+    if (error instanceof AgentDomainError) throw error;
     if (error instanceof ExpenseDomainError) throw error;
     throw persistenceError();
   }

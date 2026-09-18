@@ -41,7 +41,10 @@ export interface PendingExpenseProposal {
   conversationKey: string;
   operationType: "CREATE_EXPENSE";
   payload: PendingExpenseProposalPayload;
-  status: "AWAITING_CONFIRMATION";
+  status: PendingProposalStatus;
+  resolvedAt: string | null;
+  expenseId: string | null;
+  incomeId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -58,10 +61,18 @@ export interface PendingIncomeProposal {
   conversationKey: string;
   operationType: "CREATE_INCOME";
   payload: PendingIncomeProposalPayload;
-  status: "AWAITING_CONFIRMATION";
+  status: PendingProposalStatus;
+  resolvedAt: string | null;
+  expenseId: string | null;
+  incomeId: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+export type PendingProposalStatus =
+  | "AWAITING_CONFIRMATION"
+  | "COMPLETED"
+  | "REJECTED";
 
 export type PendingProposal = PendingExpenseProposal | PendingIncomeProposal;
 

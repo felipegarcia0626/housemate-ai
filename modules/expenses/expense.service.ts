@@ -8,6 +8,7 @@ import {
   isHouseholdMemberInHousehold,
   listConfirmedExpenses,
   ExpenseRepositoryError,
+  type ExpenseCreatePersistenceInput,
   updateExpense as updateExpenseInRepository,
 } from "./expense.repository";
 import {
@@ -32,6 +33,8 @@ import {
   validateUuid,
 } from "./expense.validation";
 import { calculateSplitAmounts } from "@/modules/sharing-rules/split-calculator";
+
+export type { ExpenseCreatePersistenceInput } from "./expense.repository";
 
 function validateContext(context: ExpenseServiceContext): void {
   validateUuid(context.householdId, "context.householdId");
@@ -63,10 +66,10 @@ function calculateDistributions(
   }));
 }
 
-async function createValidatedExpense(
+export async function prepareExpenseCreation(
   context: ExpenseServiceContext,
   input: ExpenseCreateInput,
-): Promise<Expense> {
+): Promise<ExpenseCreatePersistenceInput> {
   validateContext(context);
   const { totalCents, splitPercentageBasisPoints, items } =
     validateExpenseCreateInput(input);
@@ -142,7 +145,7 @@ async function createValidatedExpense(
     input.splits,
     splitPercentageBasisPoints,
   );
-  const expenseId = await createExpenseInRepository({
+  return {
     householdId: context.householdId,
     createdBy: input.createdBy,
     paidByMemberId: input.paidByMemberId,
@@ -155,7 +158,15 @@ async function createValidatedExpense(
     source: input.source,
     items,
     distributions,
-  });
+  };
+}
+
+async function createValidatedExpense(
+  context: ExpenseServiceContext,
+  input: ExpenseCreateInput,
+): Promise<Expense> {
+  const persistenceInput = await prepareExpenseCreation(context, input);
+  const expenseId = await createExpenseInRepository(persistenceInput);
 
   try {
     const expense = await findExpenseById(context.householdId, expenseId);
@@ -172,6 +183,22 @@ async function createValidatedExpense(
 
     throw new ExpenseCreatedNotHydratedError(expenseId);
   }
+}
+
+export async function getExpenseById(
+  context: ExpenseServiceContext,
+  expenseId: string,
+): Promise<Expense> {
+  validateContext(context);
+  validateUuid(expenseId, "expenseId");
+  const expense = await findExpenseById(context.householdId, expenseId);
+  if (expense === null) {
+    throw new ExpenseDomainError(
+      "NOT_FOUND",
+      "Expense was not found in the current household.",
+    );
+  }
+  return expense;
 }
 
 export async function createExpense(

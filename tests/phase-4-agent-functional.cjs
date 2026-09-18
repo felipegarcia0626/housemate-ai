@@ -142,6 +142,7 @@ let createdExpenses = [];
 let createdIncomes = [];
 let nextProposal = 1;
 let hydrationFailure = false;
+let confirmationFailure = false;
 let ambiguousMemberNames = false;
 let normalizedMemberNames = false;
 
@@ -294,9 +295,79 @@ const fakeClient = {
     operations.push({ type: "from", table });
     return new FakeQuery(table);
   },
-  rpc(name) {
-    operations.push({ type: "rpc", name });
-    throw new Error("Unexpected RPC");
+  rpc(name, args) {
+    operations.push({ type: "rpc", name, args });
+    if (name !== "fn_confirm_pending_expense") {
+      throw new Error(`Unexpected RPC: ${name}`);
+    }
+    if (confirmationFailure) {
+      return Promise.resolve({ data: null, error: { code: "40001" } });
+    }
+    const proposal = proposals.find(
+      (row) =>
+        row.id === args.p_proposal_id &&
+        row.household_id === args.p_household_id &&
+        row.conversation_key === args.p_conversation_key,
+    );
+    if (!proposal) {
+      return Promise.resolve({
+        data: { status: "NOT_FOUND", expense_id: null },
+        error: null,
+      });
+    }
+    if (
+      proposal.payload.actorMemberId !== args.p_actor_member_id ||
+      proposal.payload.source !== args.p_context_source
+    ) {
+      return Promise.resolve({
+        data: { status: "NOT_FOUND", expense_id: null },
+        error: null,
+      });
+    }
+    if (proposal.operation_type !== "CREATE_EXPENSE") {
+      return Promise.resolve({
+        data: { status: "INVALID_OPERATION", expense_id: null },
+        error: null,
+      });
+    }
+    if (proposal.status === "COMPLETED") {
+      return Promise.resolve({
+        data: { status: "ALREADY_COMPLETED", expense_id: proposal.expense_id },
+        error: null,
+      });
+    }
+    if (proposal.status === "REJECTED") {
+      return Promise.resolve({
+        data: { status: "REJECTED", expense_id: null },
+        error: null,
+      });
+    }
+    const expenseId = `expense-${createdExpenses.length + 1}`;
+    createdExpenses.push({
+      context: { householdId: args.p_household_id },
+      input: {
+        ...proposal.payload.expense,
+        createdBy: args.p_created_by,
+        paidByMemberId: args.p_paid_by,
+        categoryId: args.p_category_id,
+        receiptId: args.p_receipt_id,
+        merchant: args.p_merchant,
+        totalAmount: args.p_total_amount,
+        expenseDate: args.p_expense_date,
+        description: args.p_description,
+        source: args.p_source,
+      },
+    });
+    Object.assign(proposal, {
+      status: "COMPLETED",
+      expense_id: expenseId,
+      income_id: null,
+      resolved_at: "2026-08-12T12:00:00.000Z",
+    });
+    return Promise.resolve({
+      data: { status: "CREATED", expense_id: expenseId },
+      error: null,
+    });
   },
 };
 
@@ -356,6 +427,35 @@ function expectAgentError(promise, code) {
 async function main() {
   let expenseDomainErrorClass;
   const fakeExpenseService = {
+    async prepareExpenseCreation(context, input) {
+      return {
+        householdId: context.householdId,
+        createdBy: input.createdBy,
+        paidByMemberId: input.paidByMemberId,
+        categoryId: input.categoryId ?? null,
+        receiptId: input.receiptId ?? null,
+        merchant: input.merchant ?? null,
+        totalAmount: input.totalAmount,
+        expenseDate: input.expenseDate,
+        description: input.description ?? null,
+        source: input.source,
+        items: input.items ?? [],
+        distributions: input.splits.map((split) => ({
+          householdMemberId: split.householdMemberId,
+          amount: (input.totalAmount * split.percentage) / 100,
+          percentage: split.percentage,
+        })),
+      };
+    },
+    async getExpenseById(context, expenseId) {
+      if (hydrationFailure) {
+        throw new expenseDomainErrorClass(
+          "CREATED_NOT_HYDRATED",
+          "created but not hydrated",
+        );
+      }
+      return { id: expenseId };
+    },
     async createExpense(context, input) {
       createdExpenses.push({ context, input });
       if (hydrationFailure) {
@@ -830,12 +930,21 @@ async function main() {
   }
   const agentSource = fs.readFileSync(agentServiceModule, "utf8");
   assert.ok(agentSource.includes("@/modules/expenses/expense.service"));
-  assert.ok(agentSource.includes("createExpense("));
+  assert.ok(agentSource.includes("prepareExpenseCreation"));
+  assert.ok(agentSource.includes("confirmPendingExpense"));
   console.log("PASS create_expense Tool has no direct persistence access");
 
   const proposal = await tool.createExpenseTool(contextA, expenseInput);
   assert.equal(proposal.status, "AWAITING_CONFIRMATION");
-  assert.equal(proposals.length, 1);
+  assert.equal(
+    proposals.filter(
+      (row) =>
+        row.status === "AWAITING_CONFIRMATION" &&
+        row.household_id === contextA.householdId &&
+        row.conversation_key === contextA.conversationKey,
+    ).length,
+    1,
+  );
   console.log("PASS valid intent creates a PendingProposal");
 
   const pending = await agentService.getExpenseProposal(
@@ -1048,17 +1157,23 @@ async function main() {
   assert.equal(createdExpenses.length, 1);
   assert.equal(createdExpenses[0].context.householdId, householdA);
   assert.equal(createdExpenses[0].input.createdBy, memberA);
-  assert.equal(proposals.length, 0);
+  assert.equal(proposals.length, 1);
+  assert.equal(proposals[0].status, "COMPLETED");
+  assert.equal(proposals[0].expense_id, confirmed.expenseId);
+  assert.equal(typeof proposals[0].resolved_at, "string");
+  assert.equal(proposals[0].income_id, null);
   console.log(
-    "PASS confirmation consumes proposal and creates exactly one Expense",
+    "PASS confirmation creates Expense and marks proposal COMPLETED",
   );
 
-  await expectAgentError(
-    tool.confirmCreateExpenseTool(contextA, proposal.proposalId),
-    "PROPOSAL_NOT_AVAILABLE",
+  const repeatedConfirmation = await tool.confirmCreateExpenseTool(
+    contextA,
+    proposal.proposalId,
   );
+  assert.equal(repeatedConfirmation.status, "CONFIRMED");
+  assert.equal(repeatedConfirmation.expenseId, confirmed.expenseId);
   assert.equal(createdExpenses.length, 1);
-  console.log("PASS repeated confirmation cannot create a second Expense");
+  console.log("PASS repeated confirmation reuses the same Expense");
 
   const hydrationProposal = await tool.createExpenseTool(
     contextA,
@@ -1070,12 +1185,14 @@ async function main() {
     "CREATED_NOT_HYDRATED",
   );
   hydrationFailure = false;
-  await expectAgentError(
-    tool.confirmCreateExpenseTool(contextA, hydrationProposal.proposalId),
-    "PROPOSAL_NOT_AVAILABLE",
+  const hydratedRetry = await tool.confirmCreateExpenseTool(
+    contextA,
+    hydrationProposal.proposalId,
   );
+  assert.equal(hydratedRetry.status, "CONFIRMED");
+  assert.equal(hydratedRetry.expenseId, "expense-2");
   assert.equal(createdExpenses.length, 2);
-  console.log("PASS created-but-not-hydrated confirmation cannot be retried");
+  console.log("PASS created-but-not-hydrated confirmation is idempotently retried");
 
   const rejectedProposal = await tool.createExpenseTool(contextA, {
     ...expenseInput,
@@ -1087,8 +1204,66 @@ async function main() {
   );
   assert.equal(rejected.status, "REJECTED");
   assert.equal(createdExpenses.length, 2);
-  assert.equal(proposals.length, 0);
+  assert.equal(
+    proposals.some((row) => row.id === rejectedProposal.proposalId),
+    false,
+  );
   console.log("PASS rejection consumes proposal without creating Expense");
+
+  const rejectedTerminalProposal = {
+    id: "62000000-0000-4000-8000-000000000099",
+    household_id: householdA,
+    conversation_key: contextA.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "REJECTED",
+    payload: {
+      actorMemberId: memberA,
+      source: "WEB",
+      expense: expenseInput,
+    },
+    created_at: "2026-08-12T12:00:00.000Z",
+    updated_at: "2026-08-12T12:00:00.000Z",
+    resolved_at: "2026-08-12T12:01:00.000Z",
+    expense_id: null,
+    income_id: null,
+  };
+  proposals.push(rejectedTerminalProposal);
+  const rejectedTerminalResult = await tool.confirmCreateExpenseTool(
+    contextA,
+    rejectedTerminalProposal.id,
+  );
+  assert.equal(rejectedTerminalResult.status, "REJECTED");
+  assert.equal(createdExpenses.length, 2);
+  console.log("PASS rejected terminal proposal does not create an Expense");
+
+  const invalidOperationProposal = {
+    ...rejectedTerminalProposal,
+    id: "62000000-0000-4000-8000-000000000098",
+    conversation_key: "agent-terminal-invalid-operation",
+    operation_type: "CREATE_INCOME",
+    status: "AWAITING_CONFIRMATION",
+    resolved_at: null,
+  };
+  proposals.push(invalidOperationProposal);
+  await expectAgentError(
+    tool.confirmCreateExpenseTool(
+      { ...contextA, conversationKey: invalidOperationProposal.conversation_key },
+      invalidOperationProposal.id,
+    ),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  assert.equal(createdExpenses.length, 2);
+  console.log("PASS invalid operation does not create an Expense");
+
+  await expectAgentError(
+    tool.confirmCreateExpenseTool(
+      contextA,
+      "62000000-0000-4000-8000-000000000097",
+    ),
+    "PROPOSAL_NOT_AVAILABLE",
+  );
+  assert.equal(createdExpenses.length, 2);
+  console.log("PASS missing proposal does not create an Expense");
 
   const isolatedProposal = await tool.createExpenseTool(contextA, expenseInput);
   await expectAgentError(
@@ -1121,7 +1296,15 @@ async function main() {
     tool.createExpenseTool(contextA, expenseInput),
     "PENDING_PROPOSAL_EXISTS",
   );
-  assert.equal(proposals.length, 1);
+  assert.equal(
+    proposals.filter(
+      (row) =>
+        row.status === "AWAITING_CONFIRMATION" &&
+        row.household_id === contextA.householdId &&
+        row.conversation_key === contextA.conversationKey,
+    ).length,
+    1,
+  );
   console.log("PASS concurrent proposal for one conversation is rejected");
 
   assert.equal(
@@ -1132,7 +1315,11 @@ async function main() {
     ).length,
     0,
   );
-  assert.equal(operations.filter(({ type }) => type === "rpc").length, 0);
+  assert.ok(
+    operations.some(
+      ({ type, name }) => type === "rpc" && name === "fn_confirm_pending_expense",
+    ),
+  );
   console.log("PASS Agent persistence is isolated to PendingProposal");
 
   console.log(
@@ -1165,14 +1352,17 @@ async function main() {
   );
   assert.equal(naturalConfirmed.type, "CONFIRMED");
   assert.equal(createdExpenses.length, 3);
-  await expectAgentError(
-    conversation.processAgentMessage(naturalContext, {
+  const repeatedNaturalConfirmation = await conversation.processAgentMessage(
+    naturalContext,
+    {
       message: "sí",
       proposalId: naturalProposal.proposalId,
-    }),
-    "PROPOSAL_NOT_AVAILABLE",
+    },
   );
-  console.log("PASS explicit confirmation uses the existing proposal once");
+  assert.equal(repeatedNaturalConfirmation.type, "CONFIRMED");
+  assert.equal(repeatedNaturalConfirmation.expenseId, naturalConfirmed.expenseId);
+  assert.equal(createdExpenses.length, 3);
+  console.log("PASS explicit confirmation reuses the existing Expense");
 
   const defaultExpenseDate = new Date().toISOString().slice(0, 10);
   mockInterpretation = {
@@ -2444,22 +2634,16 @@ async function main() {
     2,
   );
   const createdExpensesBeforeConfirmationFailure = createdExpenses.length;
-  const originalCreateExpense = fakeExpenseService.createExpense;
-  fakeExpenseService.createExpense = async () => {
-    throw new expenseDomainErrorClass(
-      "VALIDATION_ERROR",
-      "simulated confirmation failure",
-    );
-  };
+  confirmationFailure = true;
   try {
     await expectAgentError(
       conversation.processAgentMessage(confirmationFailureContext, {
         message: "si",
       }),
-      "VALIDATION_ERROR",
+      "PERSISTENCE_ERROR",
     );
   } finally {
-    fakeExpenseService.createExpense = originalCreateExpense;
+    confirmationFailure = false;
   }
   assert.equal(
     createdExpenses.length,
@@ -2588,16 +2772,15 @@ async function main() {
     false,
   );
   assert.equal(
-    proposals.some(
-      (row) => row.id === duplicateLifecycleFixture.proposal.id,
-    ),
-    false,
+    proposals.find((row) => row.id === duplicateLifecycleFixture.proposal.id)
+      ?.status,
+    "COMPLETED",
   );
   const duplicateSecondConfirmation = await conversation.processAgentMessage(
     duplicateLifecycleContext,
-    { message: "si" },
+    { message: "si", proposalId: duplicateLifecycleFixture.proposal.id },
   );
-  assert.equal(duplicateSecondConfirmation.type, "CLARIFICATION_REQUIRED");
+  assert.equal(duplicateSecondConfirmation.type, "CONFIRMED");
   assert.equal(
     createdExpenses.length,
     createdExpensesBeforeDuplicateLifecycle + 1,
@@ -3215,8 +3398,8 @@ async function main() {
     false,
   );
   assert.equal(
-    proposals.some((row) => row.id === correctionProposalId),
-    false,
+    proposals.find((row) => row.id === correctionProposalId)?.status,
+    "COMPLETED",
   );
   console.log(
     "PASS expense correction updates one proposal, preserves draft and confirms once",
@@ -3989,8 +4172,8 @@ async function main() {
   assert.equal(createdExpenses.length, d3ConfirmBeforeExpenses + 1);
   assert.equal(createdExpenses.at(-1).input.totalAmount, 84000);
   assert.equal(
-    proposals.some((row) => row.id === d3ConfirmProposal.proposalId),
-    false,
+    proposals.find((row) => row.id === d3ConfirmProposal.proposalId)?.status,
+    "COMPLETED",
   );
   assert.equal(
     categoryDrafts.some(
@@ -4059,7 +4242,10 @@ async function main() {
     const beforeProposalCount = proposals.length;
     const beforeExpenseCount = createdExpenses.length;
     await conversation.processAgentMessage(d3Context, { message: resolution });
-    assert.equal(proposals.length, beforeProposalCount - 1);
+    assert.equal(
+      proposals.length,
+      resolution === "sí" ? beforeProposalCount : beforeProposalCount - 1,
+    );
     assert.equal(
       createdExpenses.length,
       beforeExpenseCount + (resolution === "sí" ? 1 : 0),
@@ -4071,7 +4257,10 @@ async function main() {
     );
     assert.equal(correctedAfterResolution.type, "CLARIFICATION_REQUIRED");
     assert.match(correctedAfterResolution.message, /propuesta activa/);
-    assert.equal(proposals.length, beforeProposalCount - 1);
+    assert.equal(
+      proposals.length,
+      resolution === "sí" ? beforeProposalCount : beforeProposalCount - 1,
+    );
     assert.equal(
       createdExpenses.length,
       beforeExpenseCount + (resolution === "sí" ? 1 : 0),

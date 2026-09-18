@@ -614,6 +614,11 @@ async function applyPendingProposalCorrection(
       "La propuesta ya no está disponible para corregir.",
     );
   }
+  if (updated.status !== "AWAITING_CONFIRMATION") {
+    return correctionClarification(
+      "La propuesta ya no está disponible para corregir.",
+    );
+  }
   return {
     type: "PROPOSAL_UPDATED",
     proposalId: updated.id,
@@ -944,6 +949,13 @@ export async function processAgentMessage(
     if (proposalId) {
       const result = await confirmAgentProposal(context, proposalId);
       if (activeDraft) await deleteDraftOrThrow(context, activeDraft);
+      if (result.status === "REJECTED") {
+        return {
+          type: "REJECTED",
+          ...result,
+          message: "La propuesta ya había sido rechazada.",
+        };
+      }
       return { type: "CONFIRMED", ...result };
     }
     if (activeDraft?.status === "AWAITING_CATEGORY") {
