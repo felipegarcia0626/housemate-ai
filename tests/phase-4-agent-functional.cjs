@@ -867,6 +867,51 @@ async function main() {
       "PASS CREATE_INCOME description fields normalize to the internal contract",
     );
 
+    const completeIncomeMessage =
+      "Recibí un ingreso de 357000 por concepto de Subsidio Sismo el 03/09/2026";
+    incomeModelOutput.amount = "357000";
+    incomeModelOutput.totalAmount = null;
+    incomeModelOutput.incomeDate = "2026-09-03";
+    incomeModelOutput.date = null;
+    incomeModelOutput.description = null;
+    incomeModelOutput.incomeDescription = "Subsidio Sismo";
+    const completeIncomeInterpretation =
+      await realOpenAIAdapter.interpretExpenseMessage(completeIncomeMessage);
+    assert.equal(completeIncomeInterpretation.kind, "CREATE_INCOME");
+    assert.equal(completeIncomeInterpretation.amount, "357000");
+    assert.equal(completeIncomeInterpretation.incomeDate, "2026-09-03");
+    assert.equal(
+      completeIncomeInterpretation.description,
+      "Subsidio Sismo",
+    );
+    console.log(
+      "PASS complete CREATE_INCOME sentence maps canonical fields",
+    );
+
+    incomeModelOutput.amount = "357000";
+    incomeModelOutput.incomeDate = null;
+    incomeModelOutput.description = null;
+    incomeModelOutput.incomeDescription = "Subsidio Sismo";
+    const incompleteIncomeInterpretation =
+      await realOpenAIAdapter.interpretExpenseMessage(
+        "Recibí un ingreso de 357000",
+      );
+    assert.equal(incompleteIncomeInterpretation.kind, "CREATE_INCOME");
+    assert.equal(incompleteIncomeInterpretation.amount, "357000");
+    assert.equal(incompleteIncomeInterpretation.incomeDate, null);
+    console.log("PASS incomplete CREATE_INCOME preserves explicit amount");
+
+    incomeModelOutput.amount = null;
+    incomeModelOutput.totalAmount = "357000";
+    incomeModelOutput.incomeDate = null;
+    incomeModelOutput.date = "2026-09-03";
+    const nonCanonicalIncomeInterpretation =
+      await realOpenAIAdapter.interpretExpenseMessage(completeIncomeMessage);
+    assert.equal(nonCanonicalIncomeInterpretation.kind, "CREATE_INCOME");
+    assert.equal(nonCanonicalIncomeInterpretation.amount, null);
+    assert.equal(nonCanonicalIncomeInterpretation.incomeDate, null);
+    console.log("PASS CREATE_INCOME does not use Expense field fallbacks");
+
     const diagnosticAmountCases = [
       ["357000", "plain_decimal"],
       ["357.000", "grouped_decimal"],

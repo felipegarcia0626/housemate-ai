@@ -200,6 +200,15 @@ expressions such as "recibí", "me consignaron", "me pagaron", "entró",
 paycheck or receiving fees/honorarios. Explicit spending signals such as
 "gasté", "pagué" or "compré" remain CREATE_EXPENSE and take precedence over
 incidental mentions of other movement types.
+For CREATE_INCOME, extract every value that is explicitly present in the user's
+message in the canonical income fields: put the received amount in amount, the
+income date in incomeDate, and the income description in incomeDescription or
+description. Do not return null for a canonical field when that value is
+explicitly present. When an income date is written as DD/MM/YYYY, convert it to
+YYYY-MM-DD before returning it in incomeDate. Keep totalAmount reserved for
+expense or ambiguous-movement data and keep date/expenseDate out of the
+income mapping. Extract all explicit income values from one sentence; do not
+require the user to provide them in separate messages.
 Expense totalAmount and income amount must be decimal strings with at most two
 decimal places. Dates must be ISO dates when explicitly known. Categories are
 closed and must never be invented; return the category name only when the user
