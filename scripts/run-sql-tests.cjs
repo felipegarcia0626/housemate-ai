@@ -82,6 +82,23 @@ async function runSqlFile(client, filePath, label) {
   console.log(`PASS ${label}`);
 }
 
+async function removeDatabaseDirectory(databaseDir) {
+  const retryableErrors = new Set(["EBUSY", "ENOTEMPTY", "EPERM"]);
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await fs.rm(databaseDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!retryableErrors.has(error.code) || attempt === 19) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+}
+
 async function main() {
   const { default: EmbeddedPostgres } = await import("embedded-postgres");
   const databaseDir = await fs.mkdtemp(
@@ -93,12 +110,7 @@ async function main() {
     "database",
     "migrations",
   );
-  const seedPath = path.join(
-    repositoryRoot,
-    "database",
-    "seeds",
-    "0001_initial_seed.sql",
-  );
+  const seedDirectory = path.join(repositoryRoot, "database", "seeds");
   const testDirectory = path.join(repositoryRoot, "tests");
   let postgres;
   let failure;
@@ -141,13 +153,20 @@ async function main() {
       }
     }
 
-    {
-      const client = postgres.getPgClient("housemate_test");
-      await client.connect();
-      try {
-        await runSqlFile(client, seedPath, "seed 0001_initial_seed.sql");
-      } finally {
-        await client.end();
+    const seedPaths = await sqlFiles(seedDirectory);
+    for (let pass = 1; pass <= 2; pass += 1) {
+      for (const seedPath of seedPaths) {
+        const client = postgres.getPgClient("housemate_test");
+        await client.connect();
+        try {
+          await runSqlFile(
+            client,
+            seedPath,
+            `seed pass ${pass} ${path.basename(seedPath)}`,
+          );
+        } finally {
+          await client.end();
+        }
       }
     }
 
@@ -172,13 +191,22 @@ async function main() {
         await postgres.stop();
         postgresStopped = true;
       } catch (error) {
-        failure ??= error;
+        if (error.code === "EBUSY" || error.code === "ENOTEMPTY") {
+          try {
+            await removeDatabaseDirectory(databaseDir);
+            postgresStopped = true;
+          } catch (cleanupError) {
+            failure ??= cleanupError;
+          }
+        } else {
+          failure ??= error;
+        }
       }
     }
 
     if (!postgresStopped) {
       try {
-        await fs.rm(databaseDir, { recursive: true, force: true });
+        await removeDatabaseDirectory(databaseDir);
       } catch (error) {
         failure ??= error;
       }
@@ -194,5 +222,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(`FAIL npm run test:sql: ${error.message}`);
-  process.exitCode = 1;
+  process.exit(1);
 });

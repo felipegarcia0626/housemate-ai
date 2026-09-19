@@ -391,19 +391,54 @@ Category
 
 Las categorías constituirán un catálogo preconfigurado mediante seed/configuración y consultable desde la aplicación. El MVP no requiere CRUD de categorías.
 
-`Category` está evolucionando hacia un catálogo canónico con separación semántica
-por `movement_type` y jerarquía `MACRO → MICRO`. Las filas históricas pueden
-permanecer temporalmente sin clasificación (`movement_type`, `level` y
-`parent_id` en `NULL`) para no inventar el uso de categorías compartidas.
+`Category` utiliza un catálogo canónico con separación semántica por
+`movement_type` (`EXPENSE` o `INCOME`) y exactamente dos niveles:
+`MACRO → MICRO`. El seed `database/seeds/0002_categories_hierarchical.sql`
+crea las categorías tipadas con UUIDs deterministas. No se agregan categorías
+por hogar ni un tercer nivel.
 
-Esta migración solo agrega la estructura y sus invariantes. La clasificación de
-las categorías existentes, el seed de la nueva taxonomía y el filtrado por tipo
-pertenecen a incrementos posteriores.
+Las 15 filas históricas del seed inicial se conservan con sus mismos IDs,
+nombres y referencias. Permanecen legacy (`movement_type`, `level` y `parent_id`
+en `NULL`) porque el repositorio no permite inferir de forma segura el tipo de
+movimiento de referencias históricas compartidas. La nueva taxonomía no
+reinterpreta ni migra automáticamente esos registros.
 
-Durante el MVP de un único hogar, `Category` continúa siendo el catálogo
-configurado y disponible para ese contexto. Esta evolución no añade propiedad
-por hogar ni cambia todavía el filtrado de Expense/Income; solo deja preparada
-la separación semántica futura.
+Catálogo canónico de Expense:
+
+| Macro | Micros |
+| --- | --- |
+| Vivienda | Arriendo; Administración; Servicios públicos; Empleada; Mantenimiento y reparaciones; Muebles y decoración; Electrodomésticos |
+| Alimentación | Supermercado; Comida en calle; Domicilios; Mecato; Restaurantes; Cafeterías |
+| Transporte | Gasolina; Transporte público; Taxi; Transporte por aplicación; Mantenimiento del vehículo; Seguro del vehículo; Parqueadero; Peajes; Transporte intermunicipal |
+| Salud | Seguro médico; Medicamentos; Consultas médicas; Exámenes médicos; Odontología |
+| Bienestar | Gimnasio; Suplementos; Spa; Masajes; Cuidado personal |
+| Educación | Cursos y capacitaciones; Matrículas; Materiales; Libros; Certificaciones |
+| Entretenimiento | Cine/Teatro; Suscripciones; Alcohol; Fiesta; Festivales; Videojuegos; Hobbies |
+| Viajes | Tiquetes; Hotel; Comida; Transporte; Actividades; Seguro de viaje |
+| Ropa y Calzado | Ropa; Calzado; Accesorios |
+| Cuidado Personal | Cuidado facial; Cuidado corporal; Maquillaje; Otros |
+| Comunicaciones | Celular; Internet; Telefonía; Otros |
+| Gastos Personales | Regalos; Donaciones; Rifas; Otros |
+| Mascota | Colegio; Veterinario; Medicamentos; Comida; Guardería; Accesorios; Higiene |
+| Impuestos y Obligaciones | Impuestos; Multas; Trámites; Comisiones bancarias; Otros |
+
+Catálogo canónico de Income:
+
+| Macro | Micros |
+| --- | --- |
+| Salario | Sueldo mensual; Bonos; Horas extras; Comisiones; Prestaciones; Otros |
+| Negocios y Freelance | Freelance; Servicios profesionales; Ventas de bienes; Ventas de productos; Otros |
+| Ingresos por Capital | Dividendos; Intereses; Rendimientos de inversiones; Alquileres; Otros |
+| Otros Ingresos | Regalos; Subsidios; Reembolsos; Premios; Otros |
+| Préstamos y Financiamiento | Préstamos recibidos; Otros |
+
+Los micros son clasificación estructurada. El detalle específico continúa en
+`description`: por ejemplo, `Vivienda → Servicios públicos` con descripción
+`Agua`, o `Cuidado Personal → Cuidado facial` con descripción `Retinol`.
+
+Durante este incremento `Category` continúa siendo un catálogo global. El seed
+prepara la separación semántica, pero el filtrado de categorías por tipo y la
+validación en Expense/Income se implementarán en el incremento siguiente.
 
 # 10. Income
 
@@ -1052,9 +1087,9 @@ Security
 Dejé `User`, `Household` y `HouseholdMember` en el **modelo conceptual**, pero no como funcionalidades que tengamos que construir ahora. Esto nos da una estructura coherente para el caso de uso de gastos compartidos sin obligarnos a desarrollar autenticación, invitaciones, permisos, selección de hogares, etc.
 
 Los ingresos forman parte del MVP mediante la entidad independiente `Income`,
-sin modificar `Expense`. El catálogo canónico ahora puede representar
-jerarquías separadas por `movement_type`, pero la clasificación y activación de
-las filas históricas se difieren a un incremento posterior.
+sin modificar `Expense`. El catálogo canónico ahora contiene una taxonomía
+tipada EXPENSE/INCOME en dos niveles y conserva las filas históricas legacy sin
+reinterpretarlas.
 
 Con esto, los cuatro documentos quedan bastante bien alineados:
 
@@ -1641,19 +1676,28 @@ Se utilizan dos User porque los dos HouseholdMember representan identidades dist
 | `00000000-0000-4000-8000-000000000049` | `Viajes` | `Alojamiento, vuelos y gastos de viaje` |
 | `00000000-0000-4000-8000-000000000050` | `Impuestos` | `Impuestos, tasas y contribuciones` |
 
-Este seed conserva temporalmente el catálogo legacy plano de trece categorías
-de gasto y dos categorías de ingreso. La migración jerárquica no clasifica ni
-reemplaza automáticamente esas filas; la nueva taxonomía se incorporará en un
-incremento posterior.
+`0001_initial_seed.sql` conserva las 15 categorías legacy planas con sus IDs y
+referencias. `0002_categories_hierarchical.sql` agrega 91 filas tipadas de
+Expense y 28 filas tipadas de Income, con macros y micros deterministas. No
+clasifica, elimina ni reemplaza automáticamente ninguna fila legacy.
 
-### Orden 5 — SharingRule
+### Orden 5 — Taxonomía jerárquica
+
+El seed `0002_categories_hierarchical.sql` se ejecuta después de `0001` y antes
+de cualquier fixture de tests. Inserta primero cada macro y sus micros con
+`movement_type`, `level`, `parent_id`, `is_active = TRUE` y timestamp
+determinista. Usa `INSERT ... ON CONFLICT (id) DO UPDATE`, por lo que es
+idempotente y no genera duplicados. No crea movimientos financieros ni cambia
+referencias históricas.
+
+### Orden 6 — SharingRule
 
 | id | household_id | name | description |
 | --- | --- | --- | --- |
 | `00000000-0000-4000-8000-000000000041` | `00000000-0000-4000-8000-000000000001` | `50 / 50` | `Distribución equitativa entre los dos integrantes` |
 | `00000000-0000-4000-8000-000000000042` | `00000000-0000-4000-8000-000000000001` | `100 / 0` | `Distribución completamente propia para Felipe` |
 
-### Orden 6 — SharingRuleMembers
+### Orden 7 — SharingRuleMembers
 
 | id | sharing_rule_id | household_member_id | percentage |
 | --- | --- | --- | --- |
@@ -1666,7 +1710,10 @@ El trigger diferido de porcentajes se evalúa al cerrar la transacción, despué
 
 ## 28.9 Pruebas SQL de Fase 1
 
-La Fase 1 no incorporó un test runner ni dependencias nuevas. Las comprobaciones existen como `tests/phase-1-integrity.sql` y `tests/phase-1-seed-idempotency.sql`; ambos scripts fueron ejecutados y validados contra PostgreSQL/Supabase mediante `psql`.
+La suite SQL se ejecuta mediante `npm run test:sql` sobre PostgreSQL real
+aislado. Las comprobaciones de la taxonomía están en
+`tests/phase-2-category-taxonomy.sql` y se ejecutan junto con los tests
+existentes.
 
 El script de integridad deberá ejecutarse dentro de `BEGIN ... ROLLBACK` y comprobar:
 
@@ -1688,7 +1735,11 @@ El script de integridad deberá ejecutarse dentro de `BEGIN ... ROLLBACK` y comp
 
 Los errores esperados se comprobarán con bloques PostgreSQL `DO ... EXCEPTION`. El script finalizará con `ROLLBACK` y no dejará datos de prueba.
 
-La idempotencia del seed se comprobará ejecutándolo dos veces y verificando por los UUID fijos que existan exactamente un hogar, dos usuarios, dos integrantes, cuatro categorías, una regla y dos participaciones con suma `100.00`.
+La idempotencia se comprueba ejecutando todos los seeds dos veces y verificando
+que existan exactamente 15 categorías legacy, 91 categorías tipadas de
+Expense, 28 categorías tipadas de Income, una regla y dos participaciones con
+suma `100.00`. `tests/phase-2-category-taxonomy.sql` valida IDs, nombres,
+tipo, nivel, padre, estado activo y conservación de los legacy.
 
 Las siguientes reglas no se probarán como invariantes SQL en Fase 1 porque corresponden a services de Fase 2:
 
@@ -1699,7 +1750,9 @@ Las siguientes reglas no se probarán como invariantes SQL en Fase 1 porque corr
 - exclusión de Income del balance entre integrantes;
 - filtros y agregaciones financieras del backend.
 
-Las pruebas SQL requieren una instancia PostgreSQL/Supabase disponible. Las comprobaciones estáticas de TypeScript, lint, formato y build no sustituyen la ejecución real de las migraciones.
+Los tests SQL no utilizan `DATABASE_URL`, Supabase remoto ni datos de usuario.
+Las comprobaciones estáticas de TypeScript, lint, formato y build no
+sustituyen la ejecución real de las migraciones, seed y constraints.
 
 ## 28.10 Compatibilidad y alcance
 
@@ -1714,4 +1767,9 @@ Esta especificación mantiene:
 - Income únicamente en resúmenes financieros generales;
 - receipts, propuestas y eventos como persistencia mínima de continuidad e idempotencia.
 
-No incorpora RLS, autenticación formal, soft delete, auditoría avanzada, eventos, colas, Redis, microservicios, nuevos endpoints ni nuevas entidades. La migración, seed y pruebas SQL se crearán únicamente después de aprobar esta especificación.
+No incorpora RLS, autenticación formal, soft delete, auditoría avanzada, eventos,
+colas, Redis, microservicios, nuevos endpoints ni nuevas entidades. Tampoco
+modifica Agent, PWA, Expense/Income services, Dashboard, RPCs financieras,
+PendingProposal, AgentDraft ni la resolución de categorías del Agent. El
+siguiente incremento podrá consumir `movement_type` e `is_active` desde los
+services sin cambiar este catálogo.

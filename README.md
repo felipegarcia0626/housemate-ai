@@ -249,9 +249,10 @@ npm run test:sql
 
 El comando crea un clúster temporal, crea la base `housemate_test`, prepara el
 rol local `service_role`, aplica todas las migraciones en orden lexicográfico,
-ejecuta el seed inicial y después todos los archivos `tests/*.sql`. Cada test
-existente controla su propia transacción y los fixtures se revierten según el
-contrato del archivo. El directorio temporal se elimina al finalizar.
+ejecuta todos los seeds en orden dos veces para comprobar idempotencia y después
+todos los archivos `tests/*.sql`. Cada test existente controla su propia
+transacción y los fixtures se revierten según el contrato del archivo. El
+directorio temporal se elimina al finalizar.
 
 El primer uso puede tardar más porque `embedded-postgres` descarga el binario
 de PostgreSQL correspondiente al sistema operativo. Node.js 20 o superior es
