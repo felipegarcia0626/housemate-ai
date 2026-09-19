@@ -411,7 +411,7 @@ Catálogo canónico de Expense:
 | Alimentación | Supermercado; Comida en calle; Domicilios; Mecato; Restaurantes; Cafeterías |
 | Transporte | Gasolina; Transporte público; Taxi; Transporte por aplicación; Mantenimiento del vehículo; Seguro del vehículo; Parqueadero; Peajes; Transporte intermunicipal |
 | Salud | Seguro médico; Medicamentos; Consultas médicas; Exámenes médicos; Odontología |
-| Bienestar | Gimnasio; Suplementos; Spa; Masajes; Cuidado personal |
+| Bienestar | Gimnasio; Suplementos; Spa; Masajes; Terapias y tratamientos |
 | Educación | Cursos y capacitaciones; Matrículas; Materiales; Libros; Certificaciones |
 | Entretenimiento | Cine/Teatro; Suscripciones; Alcohol; Fiesta; Festivales; Videojuegos; Hobbies |
 | Viajes | Tiquetes; Hotel; Comida; Transporte; Actividades; Seguro de viaje |
