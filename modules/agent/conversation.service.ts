@@ -109,8 +109,21 @@ function normalizeOperationMessage(value: string): string {
     .replace(/\s+/g, " ");
 }
 
-function normalizeDraftDate(value: string | null): string {
-  if (!value) return "";
+function toIsoDate(year: number, month: number, day: number): string | null {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    !Number.isFinite(date.getTime()) ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() + 1 !== month ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizeDraftDate(value: string | null): string | null {
+  if (!value) return null;
   const normalized = normalizeOperationMessage(value);
   const today = new Date();
   if (normalized === "hoy") return today.toISOString().slice(0, 10);
@@ -118,6 +131,22 @@ function normalizeDraftDate(value: string | null): string {
     const yesterday = new Date(today);
     yesterday.setUTCDate(yesterday.getUTCDate() - 1);
     return yesterday.toISOString().slice(0, 10);
+  }
+  const numericMatch = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (numericMatch) {
+    return toIsoDate(
+      Number(numericMatch[3]),
+      Number(numericMatch[2]),
+      Number(numericMatch[1]),
+    );
+  }
+  const isoMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return toIsoDate(
+      Number(isoMatch[1]),
+      Number(isoMatch[2]),
+      Number(isoMatch[3]),
+    );
   }
   const months: Record<string, number> = {
     enero: 0,
@@ -136,19 +165,11 @@ function normalizeDraftDate(value: string | null): string {
   const match = normalized.match(
     /^(\d{1,2}) de ([a-z]+)(?: de (\d{4}))?$/,
   );
-  if (!match || !(match[2] in months)) return value.trim();
+  if (!match || !(match[2] in months)) return null;
   const year = match[3] ? Number(match[3]) : today.getUTCFullYear();
   const day = Number(match[1]);
   const month = months[match[2]];
-  const date = new Date(Date.UTC(year, month, day));
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() !== month ||
-    date.getUTCDate() !== day
-  ) {
-    return value.trim();
-  }
-  return date.toISOString().slice(0, 10);
+  return toIsoDate(year, month + 1, day);
 }
 
 function resolveOperationChoice(
@@ -201,6 +222,7 @@ function operationDetailsClarification(
 ): AgentMessageResult {
   const labels = missingFields.map((field) => {
     if (field === "incomeDate") return "la fecha del ingreso";
+    if (field === "expenseDate") return "la fecha del gasto";
     if (field === "description") return "la descripción del ingreso";
     if (field === "amount") return "el monto";
     if (field === "totalAmount") return "el monto";
@@ -222,7 +244,7 @@ function operationPayloadFromInterpretation(
 ): AgentOperationDraftPayload {
   return {
     amount: interpretation.amount,
-    date: interpretation.date,
+    date: normalizeDraftDate(interpretation.date),
     merchant: interpretation.merchant,
     description: interpretation.description,
     paidBySelf: interpretation.paidBySelf,
@@ -236,7 +258,7 @@ function operationPayloadFromIncomeInterpretation(
 ): AgentOperationDraftPayload {
   return {
     amount: interpretation.amount,
-    date: interpretation.incomeDate,
+    date: normalizeDraftDate(interpretation.incomeDate),
     merchant: null,
     description: interpretation.description,
     paidBySelf: null,
@@ -270,7 +292,7 @@ function parseDraftDetails(
     /(?:monto|valor|por)\s*[:=]?\s*\$?\s*([\d.,]+)/i,
   );
   const dateMatch = message.match(
-    /(?:fecha|date)\s*[:=]?\s*(\d{4}-\d{2}-\d{2})/i,
+    /(?:fecha|date)\s*[:=]?\s*([^\s,;]+)/i,
   );
   const descriptionMatch = message.match(
     /(?:descripci[oó]n|description)\s*[:=]\s*(.*?)(?=\s+(?:categor[ií]a|category)\s*[:=]|$)/i,
@@ -284,7 +306,7 @@ function parseDraftDetails(
   const updatedPayload = {
     ...payload,
     amount: amountMatch?.[1] ?? payload.amount,
-    date: dateMatch?.[1] ?? payload.date,
+    date: dateMatch ? normalizeDraftDate(dateMatch[1]) ?? payload.date : payload.date,
     description: descriptionMatch?.[1]?.trim() ?? payload.description,
     paidByMemberName:
       payerMatch?.[1]?.trim() ?? payload.paidByMemberName,
@@ -297,12 +319,7 @@ function parseDraftDetails(
       .filter(Boolean);
     if (parts.length === 2) {
       const date = normalizeDraftDate(parts[0]);
-      const normalizedDate = normalizeOperationMessage(parts[0]);
-      const isDate =
-        normalizedDate === "hoy" ||
-        normalizedDate === "ayer" ||
-        /^\d{4}-\d{2}-\d{2}$/.test(date);
-      if (isDate && parts[1]) {
+      if (date && parts[1]) {
         updatedPayload.date = date;
         updatedPayload.description = parts[1];
       }
@@ -321,7 +338,8 @@ function parseDraftDetails(
     if (pendingFields[0] === "amount" || pendingFields[0] === "totalAmount") {
       updatedPayload.amount = value;
     } else if (pendingFields[0] === "incomeDate" || pendingFields[0] === "expenseDate") {
-      updatedPayload.date = value;
+      const date = normalizeDraftDate(value);
+      if (date) updatedPayload.date = date;
     } else if (pendingFields[0] === "description") {
       updatedPayload.description = value;
     } else if (pendingFields[0] === "paidByMemberName") {
@@ -455,7 +473,7 @@ function toAmount(value: string | null): number | null {
 
 function normalizeCorrectionDate(value: string): string | null {
   const date = normalizeDraftDate(value);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
   const parsed = new Date(`${date}T00:00:00Z`);
   return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date
     ? null
@@ -639,9 +657,12 @@ async function toProposalInput(
   interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_EXPENSE" }>,
 ): Promise<ProposalInputResult> {
   const totalAmount = toAmount(interpretation.totalAmount);
+  const rawExpenseDate = interpretation.expenseDate?.trim() ?? "";
+  const normalizedExpenseDate = normalizeDraftDate(rawExpenseDate);
   const expenseDate =
-    normalizeDraftDate(interpretation.expenseDate) ||
-    new Date().toISOString().slice(0, 10);
+    rawExpenseDate.length > 0
+      ? normalizedExpenseDate
+      : new Date().toISOString().slice(0, 10);
   const missingFields: string[] = [];
   if (totalAmount === null) missingFields.push("totalAmount");
   if (!expenseDate) missingFields.push("expenseDate");
@@ -696,7 +717,7 @@ async function toProposalInput(
     input: {
       paidByMemberId,
       totalAmount: totalAmount as number,
-      expenseDate,
+      expenseDate: expenseDate as string,
       merchant: interpretation.merchant,
       description: interpretation.description,
       items: [],
@@ -730,7 +751,7 @@ function toIncomeInput(
     input: {
       memberId: context.actorMemberId,
       amount: amount as number,
-      incomeDate,
+      incomeDate: incomeDate as string,
       description,
       categoryId: null,
     },
@@ -1191,7 +1212,7 @@ export async function processAgentMessage(
     const incomeInput = {
       memberId: context.actorMemberId,
       amount: amount as number,
-      incomeDate,
+      incomeDate: incomeDate as string,
       description: interpretation.description as string,
       categoryId: null,
     };

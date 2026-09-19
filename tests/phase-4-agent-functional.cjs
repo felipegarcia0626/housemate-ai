@@ -3739,6 +3739,158 @@ async function main() {
   });
   console.log("PASS direct CREATE_INCOME normalizes natural dates");
 
+  const validConversationalIncomeDates = [
+    ["03/09/2026", "2026-09-03"],
+    ["31/12/2026", "2026-12-31"],
+    ["01/01/2027", "2027-01-01"],
+  ];
+  for (const [inputDate, expectedDate] of validConversationalIncomeDates) {
+    mockInterpretation = {
+      kind: "CREATE_INCOME",
+      amount: "357000",
+      incomeDate: inputDate,
+      description: "Subsidio Sismo",
+      categoryName: "Food",
+    };
+    const conversationalDateContext = {
+      ...contextA,
+      conversationKey: `agent-income-date-${inputDate.replaceAll("/", "-")}`,
+    };
+    const conversationalDateProposal = await conversation.processAgentMessage(
+      conversationalDateContext,
+      { message: `Recibí un ingreso el ${inputDate}` },
+    );
+    assert.equal(conversationalDateProposal.type, "PROPOSAL_CREATED");
+    const conversationalDateStored = proposals.find(
+      (row) => row.id === conversationalDateProposal.proposalId,
+    );
+    assert.equal(
+      conversationalDateStored.payload.income.incomeDate,
+      expectedDate,
+    );
+    await conversation.processAgentMessage(conversationalDateContext, {
+      message: "no",
+    });
+  }
+  console.log("PASS CREATE_INCOME normalizes valid DD/MM/YYYY dates");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: null,
+    incomeDate: null,
+    description: "Subsidio Sismo",
+    categoryName: null,
+  };
+  const labeledConversationalDateContext = {
+    ...contextA,
+    conversationKey: "agent-income-labeled-date-continuation",
+  };
+  const labeledDateInitial = await conversation.processAgentMessage(
+    labeledConversationalDateContext,
+    { message: "Recibí un ingreso por concepto de Subsidio Sismo" },
+  );
+  assert.deepEqual(labeledDateInitial.missingFields, ["amount", "incomeDate"]);
+  const labeledDateDraft = categoryDrafts.find(
+    (row) => row.conversation_key === labeledConversationalDateContext.conversationKey,
+  );
+  const labeledDateCompleted = await conversation.processAgentMessage(
+    labeledConversationalDateContext,
+    { message: "Monto: 357000\nFecha: 03/09/2026" },
+    async () => {
+      throw new Error("OpenAI must not receive labeled draft details");
+    },
+  );
+  assert.equal(labeledDateCompleted.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(labeledDateCompleted.missingFields, ["categoryId"]);
+  assert.equal(labeledDateDraft.status, "AWAITING_CATEGORY");
+  assert.equal(labeledDateDraft.payload.income.amount, 357000);
+  assert.equal(labeledDateDraft.payload.income.incomeDate, "2026-09-03");
+  assert.equal(labeledDateDraft.payload.income.description, "Subsidio Sismo");
+  await conversation.processAgentMessage(labeledConversationalDateContext, {
+    message: "cancelar",
+  });
+  console.log("PASS labeled DD/MM/YYYY details complete income draft date");
+
+  const invalidConversationalIncomeDates = [
+    "03/09/206",
+    "31/02/2026",
+    "00/09/2026",
+    "03/13/2026",
+    "03/09/26",
+    "2026-02-31",
+  ];
+  for (const [index, invalidDate] of invalidConversationalIncomeDates.entries()) {
+    mockInterpretation = {
+      kind: "CREATE_INCOME",
+      amount: "357000",
+      incomeDate: null,
+      description: "Subsidio Sismo",
+      categoryName: null,
+    };
+    const invalidDateContext = {
+      ...contextA,
+      conversationKey: `agent-income-invalid-date-${index}`,
+    };
+    const invalidDateInitial = await conversation.processAgentMessage(
+      invalidDateContext,
+      { message: "Recibí un ingreso de 357000" },
+    );
+    assert.deepEqual(invalidDateInitial.missingFields, ["incomeDate"]);
+    const invalidDateDraft = categoryDrafts.find(
+      (row) => row.conversation_key === invalidDateContext.conversationKey,
+    );
+    const proposalsBeforeInvalidDate = proposals.length;
+    const incomesBeforeInvalidDate = createdIncomes.length;
+    const invalidDateResult = await conversation.processAgentMessage(
+      invalidDateContext,
+      { message: invalidDate },
+      async () => {
+        throw new Error("OpenAI must not receive invalid draft dates");
+      },
+    );
+    assert.equal(invalidDateResult.type, "CLARIFICATION_REQUIRED");
+    assert.deepEqual(invalidDateResult.missingFields, ["incomeDate"]);
+    assert.equal(invalidDateDraft.status, "AWAITING_DETAILS");
+    assert.equal(invalidDateDraft.payload.date, null);
+    assert.equal(proposals.length, proposalsBeforeInvalidDate);
+    assert.equal(createdIncomes.length, incomesBeforeInvalidDate);
+    await conversation.processAgentMessage(invalidDateContext, {
+      message: "cancelar",
+    });
+  }
+  console.log("PASS invalid conversational income dates stay in details");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Comercio de prueba",
+    description: "Compra de prueba",
+    totalAmount: "120000",
+    expenseDate: "03/09/2026",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const expenseConversationalDateContext = {
+    ...contextA,
+    conversationKey: "agent-expense-conversational-date-regression",
+  };
+  const expenseConversationalDateProposal =
+    await conversation.processAgentMessage(expenseConversationalDateContext, {
+      message: "Gasté 120000 el 03/09/2026",
+    });
+  assert.equal(expenseConversationalDateProposal.type, "PROPOSAL_CREATED");
+  const expenseConversationalDateStored = proposals.find(
+    (row) => row.id === expenseConversationalDateProposal.proposalId,
+  );
+  assert.equal(
+    expenseConversationalDateStored.payload.expense.expenseDate,
+    "2026-09-03",
+  );
+  await conversation.processAgentMessage(expenseConversationalDateContext, {
+    message: "no",
+  });
+  console.log("PASS Expense conversational date normalization regression");
+
   const reportedIncomePhrases = [
     "Recibí un salario de 3000000",
     "Me consignaron 3000000",
