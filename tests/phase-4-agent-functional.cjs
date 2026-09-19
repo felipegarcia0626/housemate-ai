@@ -152,6 +152,18 @@ function matches(row, filters) {
   return filters.every(({ column, value }) => row[column] === value);
 }
 
+async function captureInfoLogs(callback) {
+  const entries = [];
+  const previousInfo = console.info;
+  console.info = (...args) => entries.push(args);
+  try {
+    await callback();
+  } finally {
+    console.info = previousInfo;
+  }
+  return entries;
+}
+
 class FakeQuery {
   constructor(table) {
     this.table = table;
@@ -854,6 +866,153 @@ async function main() {
     console.log(
       "PASS CREATE_INCOME description fields normalize to the internal contract",
     );
+
+    const diagnosticAmountCases = [
+      ["357000", "plain_decimal"],
+      ["357.000", "grouped_decimal"],
+      ["$357000", "currency_prefixed"],
+      ["abc", "non_numeric"],
+    ];
+    for (const [diagnosticAmount, expectedFormat] of diagnosticAmountCases) {
+      incomeModelOutput.amount = diagnosticAmount;
+      incomeModelOutput.incomeDate = "03/09/2026";
+      const diagnosticLogs = await captureInfoLogs(async () => {
+        await realOpenAIAdapter.interpretExpenseMessage(
+          "Recibí un ingreso de prueba",
+        );
+      });
+      const diagnosticEvent = diagnosticLogs.find(
+        ([label, event]) =>
+          label === "[agent-income-diagnostic]" &&
+          event?.stage === "interpretation_parsed",
+      );
+      assert.ok(diagnosticEvent);
+      assert.equal(diagnosticEvent[1].amountFormat, expectedFormat);
+      assert.equal(diagnosticEvent[1].incomeDateFormat, "dd_mm_yyyy");
+      assert.equal(
+        JSON.stringify(diagnosticLogs).includes(diagnosticAmount),
+        false,
+      );
+    }
+    console.log("PASS CREATE_INCOME interpretation diagnostics are sanitized");
+
+    mockInterpretation = {
+      kind: "CREATE_INCOME",
+      amount: null,
+      incomeDate: null,
+      description: "Subsidio Sismo",
+      categoryName: null,
+    };
+    const diagnosticMissingContext = {
+      ...contextA,
+      conversationKey: "agent-income-diagnostic-missing",
+    };
+    const missingDiagnosticLogs = await captureInfoLogs(async () => {
+      const result = await conversation.processAgentMessage(
+        diagnosticMissingContext,
+        {
+          message:
+            "Recibí un ingreso de 357000 por concepto de Subsidio Sismo el 03/09/2026",
+        },
+      );
+      assert.deepEqual(result.missingFields, ["amount", "incomeDate"]);
+    });
+    const missingNormalizationEvent = missingDiagnosticLogs.find(
+      ([label, event]) =>
+        label === "[agent-income-diagnostic]" &&
+        event?.stage === "normalization",
+    );
+    assert.deepEqual(missingNormalizationEvent[1], {
+      stage: "normalization",
+      operation: "CREATE_INCOME",
+      source: "WEB",
+      conversationKeyPresent: true,
+      amountStatus: "missing",
+      dateStatus: "missing",
+    });
+    const missingFieldsEvent = missingDiagnosticLogs.find(
+      ([label, event]) =>
+        label === "[agent-income-diagnostic]" &&
+        event?.stage === "missing_fields",
+    );
+    assert.deepEqual(missingFieldsEvent[1].missingFields, [
+      "amount",
+      "incomeDate",
+    ]);
+    assert.equal(missingFieldsEvent[1].draftStatus, "AWAITING_DETAILS");
+    const missingDraftEvent = missingDiagnosticLogs.find(
+      ([label, event]) =>
+        label === "[agent-income-diagnostic]" &&
+        event?.stage === "draft_persisted",
+    );
+    assert.equal(missingDraftEvent[1].amountPresent, false);
+    assert.equal(missingDraftEvent[1].datePresent, false);
+    assert.equal(missingDraftEvent[1].descriptionPresent, true);
+    assert.equal(missingDraftEvent[1].categoryPresent, false);
+    const missingLogsText = JSON.stringify(missingDiagnosticLogs);
+    assert.equal(missingLogsText.includes("357000"), false);
+    assert.equal(missingLogsText.includes("03/09/2026"), false);
+    assert.equal(missingLogsText.includes("Subsidio Sismo"), false);
+    await conversation.processAgentMessage(diagnosticMissingContext, {
+      message: "cancelar",
+    });
+
+    mockInterpretation = {
+      kind: "CREATE_INCOME",
+      amount: "357000",
+      incomeDate: "03/09/2026",
+      description: null,
+      categoryName: null,
+    };
+    const normalizedDiagnosticContext = {
+      ...contextA,
+      conversationKey: "agent-income-diagnostic-normalized",
+    };
+    const normalizedDiagnosticLogs = await captureInfoLogs(async () => {
+      const result = await conversation.processAgentMessage(
+        normalizedDiagnosticContext,
+        { message: "Recibí un ingreso de prueba" },
+      );
+      assert.deepEqual(result.missingFields, ["description"]);
+    });
+    const normalizedEvent = normalizedDiagnosticLogs.find(
+      ([label, event]) =>
+        label === "[agent-income-diagnostic]" &&
+        event?.stage === "normalization",
+    );
+    assert.equal(normalizedEvent[1].amountStatus, "normalized");
+    assert.equal(normalizedEvent[1].dateStatus, "normalized");
+    const normalizedDraftEvent = normalizedDiagnosticLogs.find(
+      ([label, event]) =>
+        label === "[agent-income-diagnostic]" &&
+        event?.stage === "draft_persisted",
+    );
+    assert.equal(normalizedDraftEvent[1].amountPresent, true);
+    assert.equal(normalizedDraftEvent[1].datePresent, true);
+    assert.equal(normalizedDraftEvent[1].descriptionPresent, false);
+    assert.equal(normalizedDraftEvent[1].categoryPresent, false);
+    assert.equal(
+      JSON.stringify(normalizedDiagnosticLogs).includes("357000"),
+      false,
+    );
+    assert.equal(
+      JSON.stringify(normalizedDiagnosticLogs).includes("03/09/2026"),
+      false,
+    );
+    await conversation.processAgentMessage(normalizedDiagnosticContext, {
+      message: "cancelar",
+    });
+    console.log("PASS CREATE_INCOME normalization and draft diagnostics are sanitized");
+
+    mockInterpretation = {
+      kind: "CREATE_EXPENSE",
+      merchant: "mercado",
+      description: null,
+      totalAmount: "85000",
+      expenseDate: "2026-08-11",
+      paidBySelf: true,
+      categoryName: "Food",
+    };
 
     const semanticRecognitionCases = [
       ["Gasté 70000 en comida", "CREATE_EXPENSE"],

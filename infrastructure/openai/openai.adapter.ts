@@ -67,6 +67,23 @@ export type ExpenseInterpretation =
 
 type ParsedInterpretation = ExpenseInterpretation | CorrectionInterpretation;
 
+type IncomeAmountFormat =
+  | "missing"
+  | "plain_decimal"
+  | "grouped_decimal"
+  | "currency_prefixed"
+  | "non_numeric"
+  | "other";
+
+type IncomeDateFormat =
+  | "missing"
+  | "iso"
+  | "dd_mm_yyyy"
+  | "relative"
+  | "textual"
+  | "invalid"
+  | "other";
+
 export class OpenAIAdapterError extends Error {
   readonly code = "INTERPRETATION_ERROR" as const;
 
@@ -197,6 +214,57 @@ createdBy, source, member ids, or any persistence fields.`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function classifyIncomeAmountFormat(value: string | null): IncomeAmountFormat {
+  if (value === null || !value.trim()) return "missing";
+  const normalized = value.trim();
+  if (/^\d+(?:[.]\d{1,2})?$/.test(normalized)) return "plain_decimal";
+  if (/^\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?$/.test(normalized)) {
+    return "grouped_decimal";
+  }
+  if (/^(?:[$€£]|(?:cop|usd|eur)\s*)\s*[\d.,]+$/i.test(normalized)) {
+    return "currency_prefixed";
+  }
+  if (/[a-z]/i.test(normalized)) return "non_numeric";
+  return "other";
+}
+
+function classifyIncomeDateFormat(value: string | null): IncomeDateFormat {
+  if (value === null || !value.trim()) return "missing";
+  const normalized = value.trim().toLocaleLowerCase("es");
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return "iso";
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(normalized)) return "dd_mm_yyyy";
+  if (normalized === "hoy" || normalized === "ayer") return "relative";
+  if (/^\d{1,2} de [a-z]+(?: de \d{4})?$/.test(normalized)) {
+    return "textual";
+  }
+  if (/^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$/.test(normalized)) {
+    return "invalid";
+  }
+  return "other";
+}
+
+function logIncomeInterpretationDiagnostic(
+  interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_INCOME" }>,
+): void {
+  try {
+    console.info("[agent-income-diagnostic]", {
+      stage: "interpretation_parsed",
+      operation: "CREATE_INCOME",
+      kind: interpretation.kind,
+      amountPresent: Boolean(interpretation.amount?.trim()),
+      amountType: interpretation.amount === null ? "null" : "string",
+      amountFormat: classifyIncomeAmountFormat(interpretation.amount),
+      incomeDatePresent: Boolean(interpretation.incomeDate?.trim()),
+      incomeDateType: interpretation.incomeDate === null ? "null" : "string",
+      incomeDateFormat: classifyIncomeDateFormat(interpretation.incomeDate),
+      descriptionPresent: Boolean(interpretation.description?.trim()),
+      categoryPresent: Boolean(interpretation.categoryName?.trim()),
+    });
+  } catch {
+    // Diagnostic logging must never alter interpretation behavior.
+  }
 }
 
 function extractText(body: unknown): string | null {
@@ -453,6 +521,9 @@ export async function interpretExpenseMessage(
 
   try {
     const result = parseInterpretation(parsed);
+    if (result.kind === "CREATE_INCOME") {
+      logIncomeInterpretationDiagnostic(result);
+    }
     return result as ExpenseInterpretation;
   } catch {
     throw new OpenAIAdapterError();

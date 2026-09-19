@@ -471,6 +471,86 @@ function toAmount(value: string | null): number | null {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
+type IncomeDiagnosticFields = {
+  amountPresent?: boolean;
+  amountStatus?: "missing" | "normalized" | "invalid";
+  datePresent?: boolean;
+  dateStatus?: "missing" | "normalized" | "invalid";
+  descriptionPresent?: boolean;
+  categoryPresent?: boolean;
+  missingFields?: string[];
+  draftStatus?: AgentDraft["status"];
+};
+
+function hasDiagnosticValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  return typeof value === "string" ? value.trim().length > 0 : true;
+}
+
+function logIncomeDiagnostic(
+  context: AgentContext,
+  stage: "normalization" | "missing_fields" | "draft_persisted",
+  fields: IncomeDiagnosticFields,
+): void {
+  try {
+    console.info("[agent-income-diagnostic]", {
+      stage,
+      operation: "CREATE_INCOME",
+      source: context.source,
+      conversationKeyPresent: Boolean(context.conversationKey.trim()),
+      ...fields,
+    });
+  } catch {
+    // Diagnostic logging must never alter conversation behavior.
+  }
+}
+
+function logIncomeNormalization(
+  context: AgentContext,
+  amount: string | null,
+  normalizedAmount: number | null,
+  date: string | null,
+  normalizedDate: string | null,
+): void {
+  logIncomeDiagnostic(context, "normalization", {
+    amountStatus:
+      !hasDiagnosticValue(amount)
+        ? "missing"
+        : normalizedAmount === null
+          ? "invalid"
+          : "normalized",
+    dateStatus:
+      !hasDiagnosticValue(date)
+        ? "missing"
+        : normalizedDate === null
+          ? "invalid"
+          : "normalized",
+  });
+}
+
+function logIncomeDraft(
+  context: AgentContext,
+  status: AgentDraft["status"],
+  fields: {
+    amount?: unknown;
+    date?: unknown;
+    incomeDate?: unknown;
+    description?: unknown;
+    categoryName?: unknown;
+    categoryId?: unknown;
+  },
+): void {
+  logIncomeDiagnostic(context, "draft_persisted", {
+    draftStatus: status,
+    amountPresent: hasDiagnosticValue(fields.amount),
+    datePresent: hasDiagnosticValue(fields.date ?? fields.incomeDate),
+    descriptionPresent: hasDiagnosticValue(fields.description),
+    categoryPresent: hasDiagnosticValue(
+      fields.categoryName ?? fields.categoryId,
+    ),
+  });
+}
+
 function normalizeCorrectionDate(value: string): string | null {
   const date = normalizeDraftDate(value);
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
@@ -884,6 +964,13 @@ async function completeOperationDraft(
   }
 
   const income = toIncomeInput(context, operationPayload);
+  logIncomeNormalization(
+    context,
+    operationPayload.amount,
+    income.input.amount,
+    operationPayload.date,
+    income.input.incomeDate,
+  );
   if (income.missingFields.length > 0) {
     await updateDraftOrThrow(
       context,
@@ -892,6 +979,11 @@ async function completeOperationDraft(
       "AWAITING_DETAILS",
       operationPayload,
     );
+    logIncomeDiagnostic(context, "missing_fields", {
+      missingFields: income.missingFields,
+      draftStatus: "AWAITING_DETAILS",
+    });
+    logIncomeDraft(context, "AWAITING_DETAILS", operationPayload);
     return operationDetailsClarification(operation, income.missingFields);
   }
   const categories = await getCategoriesTool(context);
@@ -908,6 +1000,16 @@ async function completeOperationDraft(
         income: toCategoryIncomePayload(income.input),
       },
     );
+    logIncomeDiagnostic(context, "missing_fields", {
+      missingFields: ["categoryId"],
+      draftStatus: "AWAITING_CATEGORY",
+    });
+    logIncomeDraft(context, "AWAITING_CATEGORY", {
+      incomeDate: income.input.incomeDate,
+      amount: income.input.amount,
+      description: income.input.description,
+      categoryId: income.input.categoryId,
+    });
     return categoryClarification(
       context,
       operationPayload.categoryName
@@ -1197,16 +1299,31 @@ export async function processAgentMessage(
   if (interpretation.kind === "CREATE_INCOME") {
     const amount = toAmount(interpretation.amount);
     const incomeDate = normalizeDraftDate(interpretation.incomeDate);
+    logIncomeNormalization(
+      context,
+      interpretation.amount,
+      amount,
+      interpretation.incomeDate,
+      incomeDate,
+    );
     const missingFields: string[] = [];
     if (amount === null) missingFields.push("amount");
     if (!incomeDate) missingFields.push("incomeDate");
     if (!interpretation.description?.trim()) missingFields.push("description");
     if (missingFields.length > 0) {
+      const draftPayload = operationPayloadFromIncomeInterpretation(
+        interpretation,
+      );
       await persistDetailsDraft(
         context,
         "CREATE_INCOME",
-        operationPayloadFromIncomeInterpretation(interpretation),
+        draftPayload,
       );
+      logIncomeDiagnostic(context, "missing_fields", {
+        missingFields,
+        draftStatus: "AWAITING_DETAILS",
+      });
+      logIncomeDraft(context, "AWAITING_DETAILS", draftPayload);
       return operationDetailsClarification("CREATE_INCOME", missingFields);
     }
     const incomeInput = {
@@ -1228,6 +1345,16 @@ export async function processAgentMessage(
         },
         "CREATE_INCOME",
       );
+      logIncomeDiagnostic(context, "missing_fields", {
+        missingFields: ["categoryId"],
+        draftStatus: "AWAITING_CATEGORY",
+      });
+      logIncomeDraft(context, "AWAITING_CATEGORY", {
+        incomeDate: incomeInput.incomeDate,
+        amount: incomeInput.amount,
+        description: incomeInput.description,
+        categoryId: incomeInput.categoryId,
+      });
       return categoryClarification(
         context,
         interpretation.categoryName
