@@ -380,15 +380,30 @@ Honorarios
 Atributos
 Category
 ├── id
+├── movement_type?   (EXPENSE | INCOME)
+├── level?           (MACRO | MICRO)
+├── parent_id?
 ├── name
 ├── description
-└── created_at
+├── is_active
+├── created_at
+└── updated_at
 
 Las categorías constituirán un catálogo preconfigurado mediante seed/configuración y consultable desde la aplicación. El MVP no requiere CRUD de categorías.
 
-Una misma entidad `Category` podrá ser referenciada opcionalmente por ingresos. No se creará un catálogo o jerarquía independiente para categorías de ingresos.
+`Category` está evolucionando hacia un catálogo canónico con separación semántica
+por `movement_type` y jerarquía `MACRO → MICRO`. Las filas históricas pueden
+permanecer temporalmente sin clasificación (`movement_type`, `level` y
+`parent_id` en `NULL`) para no inventar el uso de categorías compartidas.
 
-Durante el MVP de un único hogar, `Category` funcionará como el catálogo configurado y disponible para ese contexto. No se añadirá una estructura adicional de propiedad de categorías para incorporar ingresos.
+Esta migración solo agrega la estructura y sus invariantes. La clasificación de
+las categorías existentes, el seed de la nueva taxonomía y el filtrado por tipo
+pertenecen a incrementos posteriores.
+
+Durante el MVP de un único hogar, `Category` continúa siendo el catálogo
+configurado y disponible para ese contexto. Esta evolución no añade propiedad
+por hogar ni cambia todavía el filtrado de Expense/Income; solo deja preparada
+la separación semántica futura.
 
 # 10. Income
 
@@ -607,8 +622,9 @@ La confirmación conserva además la versión `updated_at` observada al preparar
 
 `AgentCategoryDraft` conserva únicamente una operación incompleta de
 `CREATE_EXPENSE` o `CREATE_INCOME` mientras falta seleccionar una categoría del
-catálogo global. No es una `PendingProposal` y nunca representa una operación
-lista para confirmación.
+catálogo canónico. Durante la transición, las filas legacy sin clasificación
+siguen siendo válidas. No es una `PendingProposal` y nunca representa una
+operación lista para confirmación.
 
 ```text
 AgentCategoryDraft
@@ -1035,7 +1051,10 @@ Security
 
 Dejé `User`, `Household` y `HouseholdMember` en el **modelo conceptual**, pero no como funcionalidades que tengamos que construir ahora. Esto nos da una estructura coherente para el caso de uso de gastos compartidos sin obligarnos a desarrollar autenticación, invitaciones, permisos, selección de hogares, etc.
 
-Los ingresos forman parte del MVP mediante la entidad independiente `Income`, sin modificar `Expense` ni introducir una jerarquía compartida entre ambos.
+Los ingresos forman parte del MVP mediante la entidad independiente `Income`,
+sin modificar `Expense`. El catálogo canónico ahora puede representar
+jerarquías separadas por `movement_type`, pero la clasificación y activación de
+las filas históricas se difieren a un incremento posterior.
 
 Con esto, los cuatro documentos quedan bastante bien alineados:
 
@@ -1121,11 +1140,27 @@ Constraints adicionales:
 | Columna | Tipo | NULL | Default | Restricciones |
 | --- | --- | --- | --- | --- |
 | `id` | `UUID` | NOT NULL | `gen_random_uuid()` | PK `pk_tb_categories` |
-| `name` | `TEXT` | NOT NULL | — | UNIQUE `uq_tb_categories_name` |
+| `movement_type` | `TEXT` | NULL | — | `EXPENSE` o `INCOME`; NULL durante la transición legacy |
+| `level` | `TEXT` | NULL | — | `MACRO` o `MICRO`; NULL durante la transición legacy |
+| `parent_id` | `UUID` | NULL | — | FK a una MACRO del mismo `movement_type` |
+| `name` | `TEXT` | NOT NULL | — | Unicidad parcial por tipo/padre |
 | `description` | `TEXT` | NULL | — | — |
+| `is_active` | `BOOLEAN` | NOT NULL | `TRUE` | Disponibilidad para operaciones futuras |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | — |
+| `updated_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | trigger de actualización |
 
-`Category` es el catálogo preconfigurado global del único contexto del MVP; no se agrega `household_id`.
+`Category` continúa siendo un catálogo global y canónico; no se agrega
+`household_id`. Las filas legacy conservan el comportamiento histórico. Las
+filas tipadas deben ser `MACRO` sin padre o `MICRO` con un padre `MACRO` del
+mismo tipo de movimiento.
+
+La unicidad se implementa con índices parciales: los nombres legacy siguen
+siendo únicos, las macros son únicas por `(movement_type, name)` y las micros
+por `(movement_type, parent_id, name)`. Esto permite reutilizar un nombre entre
+Expense e Income sin duplicarlo dentro del mismo catálogo semántico.
+
+`idx_tb_categories_parent_id` acelera las consultas y comprobaciones de la
+jerarquía.
 
 ### 28.2.5 `public.tb_sharing_rules`
 
@@ -1415,6 +1450,14 @@ Función `BEFORE UPDATE` que asigna `NEW.updated_at = now()`. Se conecta mediant
 - `trg_tb_incomes_set_updated_at`.
 - `trg_tb_sharing_rules_set_updated_at`.
 - `trg_tb_pending_proposals_set_updated_at`.
+- `trg_tb_categories_set_updated_at`.
+
+### `fn_validate_category_hierarchy`
+
+El trigger `trg_tb_categories_validate_hierarchy` valida que una microcategoría
+tenga como padre una macrocategoría del mismo `movement_type` y que una
+categoría con hijos permanezca como macrocategoría del mismo tipo. Las filas
+legacy sin clasificación siguen permitidas durante la transición.
 
 No representa auditoría avanzada; únicamente mantiene el timestamp aprobado.
 
@@ -1598,7 +1641,10 @@ Se utilizan dos User porque los dos HouseholdMember representan identidades dist
 | `00000000-0000-4000-8000-000000000049` | `Viajes` | `Alojamiento, vuelos y gastos de viaje` |
 | `00000000-0000-4000-8000-000000000050` | `Impuestos` | `Impuestos, tasas y contribuciones` |
 
-Este catálogo global contiene trece categorías de gasto y dos categorías de ingreso. Permite probar gastos, categoría residual, ingresos sin categoría e ingresos categorizados sin crear una jerarquía separada.
+Este seed conserva temporalmente el catálogo legacy plano de trece categorías
+de gasto y dos categorías de ingreso. La migración jerárquica no clasifica ni
+reemplaza automáticamente esas filas; la nueva taxonomía se incorporará en un
+incremento posterior.
 
 ### Orden 5 — SharingRule
 
