@@ -7,7 +7,7 @@ SET LOCAL ROLE service_role;
 
 DO $$
 DECLARE
-  household_id UUID := '91000000-0000-4000-8000-000000000001';
+  test_household_id UUID := '91000000-0000-4000-8000-000000000001';
   receipt_id UUID := '91000000-0000-4000-8000-000000000002';
   status public.receipt_processing_status;
 BEGIN
@@ -22,7 +22,7 @@ BEGIN
     analysis_payload
   ) VALUES (
     receipt_id,
-    household_id,
+    test_household_id,
     'receipt-sql-test',
     'receipts/sql-test.jpg',
     'sql-test.jpg',
@@ -33,7 +33,7 @@ BEGIN
 
   SELECT r.processing_status INTO status
   FROM public.tb_receipts AS r
-  WHERE r.id = receipt_id AND r.household_id = household_id;
+  WHERE r.id = receipt_id AND r.household_id = test_household_id;
   IF status <> 'PENDING' THEN
     RAISE EXCEPTION 'Receipt must start in PENDING';
   END IF;
@@ -41,33 +41,33 @@ BEGIN
   UPDATE public.tb_receipts AS r
   SET processing_status = 'PROCESSED',
       analysis_payload = '{"merchant":"Fixture","date":"2026-08-12","totalAmount":100,"items":[],"missingFields":[]}'::jsonb
-  WHERE r.id = receipt_id AND r.household_id = household_id;
+  WHERE r.id = receipt_id AND r.household_id = test_household_id;
 
   SELECT r.processing_status INTO status
   FROM public.tb_receipts AS r
-  WHERE r.id = receipt_id AND r.household_id = household_id;
+  WHERE r.id = receipt_id AND r.household_id = test_household_id;
   IF status <> 'PROCESSED' THEN
     RAISE EXCEPTION 'Receipt must transition to PROCESSED';
   END IF;
 
   UPDATE public.tb_receipts AS r
   SET processing_status = 'FAILED'
-  WHERE r.id = receipt_id AND r.household_id = household_id;
+  WHERE r.id = receipt_id AND r.household_id = test_household_id;
 
   SELECT r.processing_status INTO status
   FROM public.tb_receipts AS r
-  WHERE r.id = receipt_id AND r.household_id = household_id;
+  WHERE r.id = receipt_id AND r.household_id = test_household_id;
   IF status <> 'FAILED' THEN
     RAISE EXCEPTION 'Receipt must support FAILED retry state';
   END IF;
 
   DELETE FROM public.tb_receipts AS r
-  WHERE r.id = receipt_id AND r.household_id = household_id;
+  WHERE r.id = receipt_id AND r.household_id = test_household_id;
 
   IF EXISTS (
     SELECT 1
     FROM public.tb_receipts AS r
-    WHERE r.id = receipt_id AND r.household_id = household_id
+    WHERE r.id = receipt_id AND r.household_id = test_household_id
   ) THEN
     RAISE EXCEPTION 'Receipt DELETE did not remove the fixture';
   END IF;

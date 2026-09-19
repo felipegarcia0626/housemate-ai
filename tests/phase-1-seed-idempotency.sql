@@ -96,8 +96,8 @@ BEGIN
         )
         OR (
           id = '00000000-0000-4000-8000-000000000012'
-          AND display_name = 'Pareja'
-          AND external_identifier = 'seed-user-pareja'
+          AND display_name = 'Alejandra'
+          AND external_identifier = 'seed-user-alejandra'
         )
       )
   ) <> 2 THEN
@@ -118,7 +118,7 @@ BEGIN
         OR (
           id = '00000000-0000-4000-8000-000000000022'
           AND user_id = '00000000-0000-4000-8000-000000000012'
-          AND display_name = 'Pareja'
+          AND display_name = 'Alejandra'
         )
       )
   ) <> 2 THEN

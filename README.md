@@ -235,7 +235,37 @@ Las migraciones están en `database/migrations/` y deben ejecutarse en orden lex
 
 El seed proporciona datos mínimos para la demostración, incluyendo hogar, integrantes, categorías y reglas de reparto. No edites una migración que ya haya sido aplicada; crea una nueva migración versionada para cambios posteriores.
 
-### Aplicación con `psql`
+### Tests SQL reproducibles
+
+Los tests SQL se ejecutan contra un PostgreSQL real aislado y temporal mediante
+`embedded-postgres`. El runner no lee `DATABASE_URL`, no usa Supabase remoto y
+no modifica la base de datos de desarrollo o producción.
+
+Ejecuta en PowerShell, macOS o Linux:
+
+```bash
+npm run test:sql
+```
+
+El comando crea un clúster temporal, crea la base `housemate_test`, prepara el
+rol local `service_role`, aplica todas las migraciones en orden lexicográfico,
+ejecuta el seed inicial y después todos los archivos `tests/*.sql`. Cada test
+existente controla su propia transacción y los fixtures se revierten según el
+contrato del archivo. El directorio temporal se elimina al finalizar.
+
+El primer uso puede tardar más porque `embedded-postgres` descarga el binario
+de PostgreSQL correspondiente al sistema operativo. Node.js 20 o superior es
+el único requisito adicional; no se necesita Docker, `psql` ni Supabase CLI.
+
+El runner cubre automáticamente los tests SQL de Fase 1, Fase 2 y Fase 4,
+incluido `tests/phase-2-category-hierarchy.sql`. Si una migración o test falla,
+`npm run test:sql` termina con código distinto de cero y muestra el archivo
+que falló.
+
+GitHub Actions ejecuta el mismo comando en cada `push` y `pull_request` mediante
+`.github/workflows/sql-tests.yml`.
+
+### Aplicación manual con `psql`
 
 En PowerShell, con `DATABASE_URL` configurada:
 

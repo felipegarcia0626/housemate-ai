@@ -81,7 +81,10 @@ BEGIN
         'tb_expenses',
         'tb_expense_items',
         'tb_expense_distributions',
-        'tb_incomes'
+        'tb_incomes',
+        'tb_pending_proposals',
+        'tb_receipts',
+        'tb_agent_category_drafts'
       )
   ) THEN
     RAISE EXCEPTION 'FAIL service_role has unexpected DELETE on another table';

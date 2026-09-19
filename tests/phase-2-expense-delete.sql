@@ -135,7 +135,7 @@ $$;
 SELECT pg_temp.expect_sqlstate(
   'PENDING Expense with Receipt is protected atomically',
   $sql$SELECT public.fn_delete_expense('50000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000102')$sql$,
-  '23503'
+  '23001'
 );
 
 DO $$
