@@ -436,9 +436,11 @@ Los micros son clasificación estructurada. El detalle específico continúa en
 `description`: por ejemplo, `Vivienda → Servicios públicos` con descripción
 `Agua`, o `Cuidado Personal → Cuidado facial` con descripción `Retinol`.
 
-Durante este incremento `Category` continúa siendo un catálogo global. El seed
-prepara la separación semántica, pero el filtrado de categorías por tipo y la
-validación en Expense/Income se implementarán en el incremento siguiente.
+`Category` continúa siendo un catálogo global, pero las nuevas operaciones de
+creación y actualización de Expense e Income validan que la categoría sea una
+microcategoría activa del tipo de movimiento correcto y con un padre macro
+válido. Las referencias de categorías legacy se preservan para mantener la
+compatibilidad de los registros históricos y sus lecturas.
 
 # 10. Income
 
@@ -1770,6 +1772,7 @@ Esta especificación mantiene:
 No incorpora RLS, autenticación formal, soft delete, auditoría avanzada, eventos,
 colas, Redis, microservicios, nuevos endpoints ni nuevas entidades. Tampoco
 modifica Agent, PWA, Expense/Income services, Dashboard, RPCs financieras,
-PendingProposal, AgentDraft ni la resolución de categorías del Agent. El
-siguiente incremento podrá consumir `movement_type` e `is_active` desde los
-services sin cambiar este catálogo.
+PendingProposal, AgentDraft ni la resolución de categorías del Agent. Los
+services de Expense e Income ya consumen `movement_type`, `level`, `parent_id` e
+`is_active` para validar nuevas operaciones sin cambiar este catálogo; la
+resolución de categorías del Agent permanece fuera de este incremento.

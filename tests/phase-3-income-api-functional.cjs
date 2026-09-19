@@ -28,7 +28,12 @@ const memberA = "42000000-0000-4000-8000-000000000011";
 const memberB = "42000000-0000-4000-8000-000000000012";
 const missingMember = "42000000-0000-4000-8000-000000000013";
 const categoryA = "42000000-0000-4000-8000-000000000021";
+const incomeMacroCategory = "42000000-0000-4000-8000-000000000023";
+const expenseCategory = "42000000-0000-4000-8000-000000000024";
+const inactiveIncomeCategory = "42000000-0000-4000-8000-000000000025";
+const legacyCategory = "42000000-0000-4000-8000-000000000026";
 const missingCategory = "42000000-0000-4000-8000-000000000022";
+const invalidHierarchyIncomeCategory = "42000000-0000-4000-8000-000000000028";
 const incomeFirst = "42000000-0000-4000-8000-000000000031";
 const incomeSecond = "42000000-0000-4000-8000-000000000032";
 const incomeThird = "42000000-0000-4000-8000-000000000033";
@@ -88,7 +93,44 @@ const baselineIncomes = [
     updated_at: "2026-08-04T14:00:00+00:00",
   },
 ];
-const categories = [{ id: categoryA }];
+const categories = [
+  {
+    id: categoryA,
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: incomeMacroCategory,
+    is_active: true,
+  },
+  {
+    id: incomeMacroCategory,
+    movement_type: "INCOME",
+    level: "MACRO",
+    parent_id: null,
+    is_active: true,
+  },
+  {
+    id: expenseCategory,
+    movement_type: "EXPENSE",
+    level: "MICRO",
+    parent_id: "42000000-0000-4000-8000-000000000027",
+    is_active: true,
+  },
+  {
+    id: inactiveIncomeCategory,
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: incomeMacroCategory,
+    is_active: false,
+  },
+  {
+    id: invalidHierarchyIncomeCategory,
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: "42000000-0000-4000-8000-000000000029",
+    is_active: true,
+  },
+  { id: legacyCategory },
+];
 
 let incomes = [...baselineIncomes];
 let failedTable;
@@ -116,6 +158,18 @@ class FakeQuery {
       operator: "eq",
       column,
       value,
+    });
+    return this;
+  }
+
+  in(column, values) {
+    this.filters.push({ operator: "in", column, value: values });
+    observedOperations.push({
+      type: "filter",
+      table: this.table,
+      operator: "in",
+      column,
+      value: values,
     });
     return this;
   }
@@ -221,6 +275,7 @@ class FakeQuery {
       this.filters.every(({ operator, column, value }) => {
         const current = row[column];
         if (operator === "eq") return current === value;
+        if (operator === "in") return value.includes(current);
         if (operator === "gte") return String(current) >= String(value);
         if (operator === "lte") return String(current) <= String(value);
         return false;
@@ -527,8 +582,26 @@ async function main() {
       (await readJson(createMissingCategoryResponse)).error.code,
       "NOT_FOUND",
     );
+    for (const categoryId of [
+      expenseCategory,
+      incomeMacroCategory,
+      inactiveIncomeCategory,
+      legacyCategory,
+      missingCategory,
+      invalidHierarchyIncomeCategory,
+    ]) {
+      const response = await route.POST(
+        postRequest({ ...createBody, categoryId }),
+      );
+      assert.equal(response.status, 404);
+      assert.equal((await readJson(response)).error.code, "NOT_FOUND");
+    }
+    const uncategorizedIncome = await route.POST(
+      postRequest({ ...createBody, categoryId: null }),
+    );
+    assert.equal(uncategorizedIncome.status, 201);
     console.log(
-      "PASS Income POST validates JSON, amount, date, members and category",
+      "PASS Income POST validates JSON, amount, date, members and movement categories",
     );
 
     delete process.env.HOUSEMATE_MVP_MEMBER_ID;
@@ -684,6 +757,15 @@ async function main() {
     assert.equal(typeof updatedBody.data.amount, "number");
     assert.ok(hasOperation({ type: "update", table: "tb_incomes" }));
     Object.assign(incomes[2], originalIncome);
+    const invalidUpdatedCategory = await updateRoute.PATCH(
+      patchRequest(incomeFirst, { categoryId: expenseCategory }),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(invalidUpdatedCategory.status, 404);
+    assert.equal(
+      (await readJson(invalidUpdatedCategory)).error.code,
+      "NOT_FOUND",
+    );
     console.log(
       "PASS Income PATCH updates domain fields and projects public DTO",
     );

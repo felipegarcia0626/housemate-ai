@@ -28,6 +28,12 @@ const memberA = "41000000-0000-4000-8000-000000000011";
 const memberB = "41000000-0000-4000-8000-000000000012";
 const missingMember = "41000000-0000-4000-8000-000000000013";
 const categoryA = "41000000-0000-4000-8000-000000000021";
+const expenseMacroCategory = "41000000-0000-4000-8000-000000000022";
+const incomeCategory = "41000000-0000-4000-8000-000000000023";
+const inactiveExpenseCategory = "41000000-0000-4000-8000-000000000024";
+const legacyCategory = "41000000-0000-4000-8000-000000000025";
+const missingCategory = "41000000-0000-4000-8000-000000000026";
+const invalidHierarchyExpenseCategory = "41000000-0000-4000-8000-000000000028";
 const expenseNewer = "41000000-0000-4000-8000-000000000031";
 const expenseOlder = "41000000-0000-4000-8000-000000000032";
 const expenseCancelled = "41000000-0000-4000-8000-000000000033";
@@ -39,7 +45,49 @@ const members = [
   { id: memberA, household_id: householdA },
   { id: memberB, household_id: householdB },
 ];
-const categories = [{ id: categoryA, name: "Food" }];
+const categories = [
+  {
+    id: categoryA,
+    name: "Food",
+    movement_type: "EXPENSE",
+    level: "MICRO",
+    parent_id: expenseMacroCategory,
+    is_active: true,
+  },
+  {
+    id: expenseMacroCategory,
+    name: "Food macro",
+    movement_type: "EXPENSE",
+    level: "MACRO",
+    parent_id: null,
+    is_active: true,
+  },
+  {
+    id: incomeCategory,
+    name: "Salary",
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: "41000000-0000-4000-8000-000000000027",
+    is_active: true,
+  },
+  {
+    id: inactiveExpenseCategory,
+    name: "Inactive expense",
+    movement_type: "EXPENSE",
+    level: "MICRO",
+    parent_id: expenseMacroCategory,
+    is_active: false,
+  },
+  {
+    id: invalidHierarchyExpenseCategory,
+    name: "Invalid hierarchy expense",
+    movement_type: "EXPENSE",
+    level: "MICRO",
+    parent_id: "41000000-0000-4000-8000-000000000029",
+    is_active: true,
+  },
+  { id: legacyCategory, name: "Legacy category" },
+];
 const distributions = [
   {
     id: "41000000-0000-4000-8000-000000000041",
@@ -961,6 +1009,19 @@ async function main() {
       ).length,
       1,
     );
+    const invalidUpdatedCategory = await detailRoute.PATCH(
+      new Request("http://localhost/api/expenses/" + expenseNewer, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ categoryId: incomeCategory }),
+      }),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(invalidUpdatedCategory.status, 404);
+    assert.equal(
+      (await readJson(invalidUpdatedCategory)).error.code,
+      "NOT_FOUND",
+    );
     console.log("PASS PATCH updates Expense and returns the public DTO");
 
     const patchRequest = (body, query = "", expenseId = expenseNewer) =>
@@ -1259,7 +1320,37 @@ async function main() {
       ).status,
       404,
     );
-    console.log("PASS POST validates JSON, fields, amounts and categories");
+    for (const categoryId of [
+      incomeCategory,
+      expenseMacroCategory,
+      inactiveExpenseCategory,
+      legacyCategory,
+      missingCategory,
+      invalidHierarchyExpenseCategory,
+    ]) {
+      const response = await route.POST(
+        postRequest({ ...createBody, categoryId }),
+      );
+      assert.equal(response.status, 404);
+      assert.equal((await readJson(response)).error.code, "NOT_FOUND");
+    }
+
+    const invalidItemCategory = await route.POST(
+      postRequest({
+        ...createBody,
+        items: [{ ...createBody.items[0], categoryId: incomeCategory }],
+      }),
+    );
+    assert.equal(invalidItemCategory.status, 404);
+    assert.equal((await readJson(invalidItemCategory)).error.code, "NOT_FOUND");
+
+    const uncategorizedExpense = await route.POST(
+      postRequest({ ...createBody, categoryId: null }),
+    );
+    assert.equal(uncategorizedExpense.status, 201);
+    console.log(
+      "PASS POST validates JSON, fields, amounts and movement categories",
+    );
 
     delete process.env.HOUSEMATE_MVP_MEMBER_ID;
     assert.equal((await route.POST(postRequest(createBody))).status, 500);

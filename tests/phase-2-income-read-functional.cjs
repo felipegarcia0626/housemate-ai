@@ -15,9 +15,32 @@ const memberB = "26000000-0000-4000-8000-000000000023";
 const memberWithoutExpenses = "26000000-0000-4000-8000-000000000025";
 const categorySalary = "26000000-0000-4000-8000-000000000031";
 const categoryFreelance = "26000000-0000-4000-8000-000000000032";
+const incomeMacroCategory = "26000000-0000-4000-8000-000000000033";
 const categories = [
-  { id: categorySalary, name: "Salary" },
-  { id: categoryFreelance, name: "Freelance" },
+  {
+    id: categorySalary,
+    name: "Salary",
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: incomeMacroCategory,
+    is_active: true,
+  },
+  {
+    id: categoryFreelance,
+    name: "Freelance",
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: incomeMacroCategory,
+    is_active: true,
+  },
+  {
+    id: incomeMacroCategory,
+    name: "Income macro",
+    movement_type: "INCOME",
+    level: "MACRO",
+    parent_id: null,
+    is_active: true,
+  },
 ];
 const sharingRules = [
   {
@@ -994,6 +1017,7 @@ async function main() {
   assert.deepEqual(categoryResult, [
     { id: categorySalary, name: "Salary" },
     { id: categoryFreelance, name: "Freelance" },
+    { id: incomeMacroCategory, name: "Income macro" },
   ]);
 
   const savedCategories = categories.splice(0, categories.length);
@@ -1016,8 +1040,11 @@ async function main() {
   );
   failCategoryRead = false;
 
-  assert.equal(observedCategoryQueries.length, 3);
-  for (const query of observedCategoryQueries) {
+  const categoryReadQueries = observedCategoryQueries.filter(
+    ({ selectedColumns }) => selectedColumns === "id,name",
+  );
+  assert.equal(categoryReadQueries.length, 3);
+  for (const query of categoryReadQueries) {
     assert.equal(query.selectedColumns, "id,name");
     assert.deepEqual(query.filters, []);
     assert.equal(query.isDelete, false);

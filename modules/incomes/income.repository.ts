@@ -1,4 +1,5 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import { getAvailableCategoryIds } from "@/modules/categories/category.repository";
 
 import type {
   Income,
@@ -102,17 +103,15 @@ export async function isIncomeMemberInHousehold(
 export async function isIncomeCategoryAvailable(
   categoryId: string,
 ): Promise<boolean> {
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_categories")
-    .select("id")
-    .eq("id", categoryId)
-    .maybeSingle();
-
-  if (error) {
+  try {
+    const availableIds = await getAvailableCategoryIds(
+      [categoryId],
+      "INCOME",
+    );
+    return availableIds.has(categoryId.toLowerCase());
+  } catch (error) {
     throw new IncomeRepositoryError("TECHNICAL", error);
   }
-
-  return data !== null;
 }
 
 export async function createIncome(

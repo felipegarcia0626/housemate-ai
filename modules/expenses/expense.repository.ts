@@ -1,4 +1,5 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import { getAvailableCategoryIds } from "@/modules/categories/category.repository";
 
 import type {
   Expense,
@@ -367,22 +368,11 @@ export async function getHouseholdMemberIds(
 export async function getExistingCategoryIds(
   categoryIds: readonly string[],
 ): Promise<Set<string>> {
-  const uniqueIds = [...new Set(categoryIds)];
-
-  if (uniqueIds.length === 0) {
-    return new Set();
-  }
-
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_categories")
-    .select("id")
-    .in("id", uniqueIds);
-
-  if (error) {
+  try {
+    return await getAvailableCategoryIds(categoryIds, "EXPENSE");
+  } catch (error) {
     throw dataAccessError("validate expense categories", error);
   }
-
-  return new Set((data ?? []).map((row) => (row.id as string).toLowerCase()));
 }
 
 export async function findReceiptForExpenseCreation(
