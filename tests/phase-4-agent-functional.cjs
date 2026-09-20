@@ -2076,6 +2076,12 @@ async function main() {
     ).payload.selectedMacroId,
     "Household",
   );
+  const categoryDraftAfterMacro = categoryDrafts.find(
+    (row) => row.conversation_key === categoryContext.conversationKey,
+  );
+  assert.equal(categoryDraftAfterMacro.payload.expense.categoryId, null);
+  assert.equal(categoryDraftAfterMacro.payload.expense.totalAmount, 10000);
+  assert.equal(categoryDraftAfterMacro.payload.expense.merchant, "Carulla");
   const categoryProposal = await conversation.processAgentMessage(
     categoryContext,
     { message: "Food" },
@@ -2085,6 +2091,16 @@ async function main() {
     (row) => row.id === categoryProposal.proposalId,
   );
   assert.equal(categoryStored.payload.expense.categoryId, "category-1");
+  const categorySelectionUpdate = operations
+    .filter(
+      (operation) =>
+        operation.type === "update" &&
+        operation.table === "tb_agent_category_drafts" &&
+        operation.payload?.payload?.expense?.categoryId === "category-1",
+    )
+    .at(-1);
+  assert.ok(categorySelectionUpdate);
+  assert.equal(categorySelectionUpdate.payload.payload.selectedMacroId, null);
   assert.equal(categoryDrafts.length, 0);
   const categoryConfirmed = await conversation.processAgentMessage(
     categoryContext,
@@ -2474,6 +2490,16 @@ async function main() {
   );
   assert.equal(incomeDraftProposal.type, "PROPOSAL_CREATED");
   assert.equal(createdIncomes.length, beforeAmbiguousIncomeCount);
+  const incomeCategoryUpdate = operations
+    .filter(
+      (operation) =>
+        operation.type === "update" &&
+        operation.table === "tb_agent_category_drafts" &&
+        operation.payload?.payload?.income?.categoryId === "category-1",
+    )
+    .at(-1);
+  assert.ok(incomeCategoryUpdate);
+  assert.equal(incomeCategoryUpdate.payload.payload.selectedMacroId, null);
   assert.equal("memberId" in incomeOperationDraft.payload.income, false);
   const incomeDraftConfirmation = await conversation.processAgentMessage(
     incomeOperationContext,
@@ -4417,6 +4443,52 @@ async function main() {
   assert.equal(negatedCorrection.type, "PROPOSAL_UPDATED");
   assert.equal(negatedCorrection.proposalId, correctionProposalId);
   assert.equal(negatedCorrection.payload.expense.totalAmount, 80000);
+  const macroCorrectionContext = {
+    ...contextA,
+    conversationKey: "agent-pending-macro-correction",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Macro Correction Market",
+    description: "Original macro correction",
+    totalAmount: "80000",
+    expenseDate: "2026-09-14",
+    paidBySelf: true,
+    categoryName: "Food",
+  };
+  const macroCorrectionProposal = await tool.createExpenseTool(
+    macroCorrectionContext,
+    {
+      paidByMemberId: memberA,
+      totalAmount: 80000,
+      expenseDate: "2026-09-14",
+      description: "Original macro correction",
+      categoryId: "category-1",
+      splits: [{ householdMemberId: memberA, percentage: 100 }],
+    },
+  );
+  const categoryBeforeMacroCorrection = "category-1";
+  mockInterpretation = { kind: "CORRECTION", field: "category", value: "Mobility" };
+  const proposalMacroCorrection = await conversation.processAgentMessage(
+    macroCorrectionContext,
+    { message: "Cámbialo a Transporte" },
+  );
+  assert.equal(proposalMacroCorrection.type, "CLARIFICATION_REQUIRED");
+  assert.match(proposalMacroCorrection.message, /Mobility → Transporte/);
+  assert.equal(
+    proposals.find((row) => row.id === macroCorrectionProposal.proposalId).payload.expense.categoryId,
+    categoryBeforeMacroCorrection,
+  );
+  mockInterpretation = { kind: "CORRECTION", field: "category", value: "Transporte" };
+  const proposalMicroCorrection = await conversation.processAgentMessage(
+    macroCorrectionContext,
+    { message: "Transporte" },
+  );
+  assert.equal(proposalMicroCorrection.type, "PROPOSAL_UPDATED");
+  assert.equal(proposalMicroCorrection.proposalId, macroCorrectionProposal.proposalId);
+  assert.equal(proposalMicroCorrection.payload.expense.categoryId, "category-transporte");
+  assert.equal(createdExpenses.length, correctionExpenseBefore);
+  await conversation.processAgentMessage(macroCorrectionContext, { message: "no" });
   const correctionConfirmed = await conversation.processAgentMessage(
     correctionContext,
     { message: "sí" },
@@ -4506,6 +4578,35 @@ async function main() {
   assert.equal(incomeCorrection.payload.income.amount, 600);
   assert.equal(incomeCorrection.payload.income.description, "Ingreso original");
   assert.equal(createdIncomes.length, beforeIncomeCorrection);
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "category",
+    value: "Health",
+  };
+  const incomeMacroCorrection = await conversation.processAgentMessage(
+    incomeCorrectionContext,
+    { message: "cambia la categoría a Health" },
+  );
+  assert.equal(incomeMacroCorrection.type, "CLARIFICATION_REQUIRED");
+  assert.match(incomeMacroCorrection.message, /Health → Salud/);
+  assert.equal(
+    proposals.find((row) => row.id === incomeCorrectionProposal.proposalId)
+      .payload.income.categoryId,
+    "category-1",
+  );
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "category",
+    value: "Salud",
+  };
+  const incomeMicroCorrection = await conversation.processAgentMessage(
+    incomeCorrectionContext,
+    { message: "Salud" },
+  );
+  assert.equal(incomeMicroCorrection.type, "PROPOSAL_UPDATED");
+  assert.equal(incomeMicroCorrection.proposalId, incomeCorrectionProposal.proposalId);
+  assert.equal(incomeMicroCorrection.payload.income.categoryId, "category-salud");
+  assert.equal(createdIncomes.length, beforeIncomeCorrection);
   const incomeCorrectionConfirmed = await conversation.processAgentMessage(
     incomeCorrectionContext,
     { message: "sí" },
@@ -4513,6 +4614,7 @@ async function main() {
   assert.equal(incomeCorrectionConfirmed.type, "CONFIRMED");
   assert.equal(createdIncomes.length, beforeIncomeCorrection + 1);
   assert.equal(createdIncomes.at(-1).input.amount, 600);
+  assert.equal(createdIncomes.at(-1).input.categoryId, "category-salud");
   console.log("PASS income correction preserves operation and confirms once");
 
   const incompatibleIncomeContext = {

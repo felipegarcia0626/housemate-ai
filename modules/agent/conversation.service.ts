@@ -274,7 +274,10 @@ function operationPayloadFromIncomeInterpretation(
 function toCategoryExpensePayload(
   input: ExpenseProposalInput,
 ): CategoryDraftExpensePayload["expense"] {
-  const payload = { ...input } as CategoryDraftExpensePayload["expense"];
+  const payload = {
+    ...input,
+    categoryId: input.categoryId ?? null,
+  } as CategoryDraftExpensePayload["expense"];
   delete payload.splits;
   return payload;
 }
@@ -427,8 +430,10 @@ async function categoryClarification(
   message = "¿En qué categoría lo quieres registrar?",
   movementType: CategoryMovementType,
   selectedMacroId: string | null = null,
+  availableCategories?: HierarchicalCategory[],
 ): Promise<AgentMessageResult> {
-  const categories = await getCategoriesTool(context, movementType);
+  const categories =
+    availableCategories ?? (await getCategoriesTool(context, movementType));
   const optionCategories = selectedMacroId
     ? categories
         .filter((category) => category.macroId === selectedMacroId)
@@ -527,21 +532,53 @@ async function completeCategoryDraft(
   try {
     if (draft.operationType === "CREATE_EXPENSE") {
       const payload = draft.payload as CategoryDraftExpensePayload;
+      const nextPayload: CategoryDraftExpensePayload = {
+        ...payload,
+        selectedMacroId: null,
+        expense: { ...payload.expense, categoryId: category.id },
+      };
+      if (
+        payload.expense.categoryId !== category.id ||
+        (payload.selectedMacroId !== null &&
+          payload.selectedMacroId !== undefined)
+      ) {
+        await updateCategoryDraft(
+          context,
+          draft.id,
+          nextPayload,
+          draft.updatedAt,
+        );
+      }
       const result = await createExpenseTool(context, {
-        ...payload.expense,
-        splits: payload.expense.splits ?? [
+        ...nextPayload.expense,
+        splits: nextPayload.expense.splits ?? [
           { householdMemberId: context.actorMemberId, percentage: 100 },
         ],
-        categoryId: category.id,
       });
       await deleteCategoryDraft(context, draft.id);
       return { type: "PROPOSAL_CREATED", ...result };
     }
     const payload = draft.payload as CategoryDraftIncomePayload;
+    const nextPayload: CategoryDraftIncomePayload = {
+      ...payload,
+      selectedMacroId: null,
+      income: { ...payload.income, categoryId: category.id },
+    };
+    if (
+      payload.income.categoryId !== category.id ||
+      (payload.selectedMacroId !== null &&
+        payload.selectedMacroId !== undefined)
+    ) {
+      await updateCategoryDraft(
+        context,
+        draft.id,
+        nextPayload,
+        draft.updatedAt,
+      );
+    }
     const result = await createIncomeTool(context, {
-      ...payload.income,
+      ...nextPayload.income,
       memberId: context.actorMemberId,
-      categoryId: category.id,
     });
     await deleteCategoryDraft(context, draft.id);
     return { type: "PROPOSAL_CREATED", ...result };
@@ -666,17 +703,39 @@ async function resolveCorrectionCategory(
   context: AgentContext,
   value: string,
   movementType: CategoryMovementType,
-): Promise<Category | null> {
+): Promise<{
+  category: Category | null;
+  macroId: string | null;
+  categories: HierarchicalCategory[];
+}> {
   const categories = await getCategoriesTool(context, movementType);
   const normalized = normalizeCategoryName(value);
-  if (!normalized) return null;
+  if (!normalized) {
+    return { category: null, macroId: null, categories };
+  }
   const matches = categories.filter(
     (category) =>
+      category.isActive &&
+      category.movementType === movementType &&
       category.level === "MICRO" &&
       (normalizeCategoryName(category.name) === normalized ||
         normalizeCategoryName(category.path) === normalized),
   );
-  return matches.length === 1 ? matches[0] : null;
+  const macroIds = new Set(
+    categories
+      .filter(
+        (category) =>
+          category.isActive &&
+          category.movementType === movementType &&
+          normalizeCategoryName(category.macroName) === normalized,
+      )
+      .map((category) => category.macroId),
+  );
+  return {
+    category: matches.length === 1 ? matches[0] : null,
+    macroId: macroIds.size === 1 ? [...macroIds][0] : null,
+    categories,
+  };
 }
 
 async function resolveCorrectionPayer(
@@ -729,13 +788,26 @@ async function applyPendingProposalCorrection(
     } else if (correction.field === "description") {
       expense.description = value;
     } else if (correction.field === "category") {
-      const category = await resolveCorrectionCategory(context, value, "EXPENSE");
-      if (!category) {
+      const selection = await resolveCorrectionCategory(
+        context,
+        value,
+        "EXPENSE",
+      );
+      if (!selection.category) {
+        if (selection.macroId) {
+          return categoryClarification(
+            context,
+            "Selecciona una categoría específica dentro de esa macro.",
+            "EXPENSE",
+            selection.macroId,
+            selection.categories,
+          );
+        }
         return correctionClarification(
           "No encontré una categoría única para esa corrección.",
         );
       }
-      expense.categoryId = category.id;
+      expense.categoryId = selection.category.id;
     } else if (correction.field === "payer") {
       const payerId = await resolveCorrectionPayer(context, value);
       if (!payerId) {
@@ -766,13 +838,26 @@ async function applyPendingProposalCorrection(
     } else if (correction.field === "description") {
       income.description = value;
     } else if (correction.field === "category") {
-      const category = await resolveCorrectionCategory(context, value, "INCOME");
-      if (!category) {
+      const selection = await resolveCorrectionCategory(
+        context,
+        value,
+        "INCOME",
+      );
+      if (!selection.category) {
+        if (selection.macroId) {
+          return categoryClarification(
+            context,
+            "Selecciona una categoría específica dentro de esa macro.",
+            "INCOME",
+            selection.macroId,
+            selection.categories,
+          );
+        }
         return correctionClarification(
           "No encontré una categoría única para esa corrección.",
         );
       }
-      income.categoryId = category.id;
+      income.categoryId = selection.category.id;
     } else {
       return correctionClarification(
         "Ese campo no aplica a la corrección de un ingreso.",
