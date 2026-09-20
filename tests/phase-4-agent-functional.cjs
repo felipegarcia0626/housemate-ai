@@ -5949,6 +5949,509 @@ async function main() {
   });
   console.log("PASS contextual CORRECTION fallback preserves household and conversation isolation");
 
+  const regression2I = [];
+  function record2ICase(name) {
+    regression2I.push(name);
+    console.log(`PASS 2I ${name}`);
+  }
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "357000",
+    incomeDate: "2026-09-03",
+    description: "Subsidio",
+    categoryName: "Food",
+  };
+  const completeIncome2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-income-complete",
+  };
+  const completeIncome2IProposal = await conversation.processAgentMessage(
+    completeIncome2IContext,
+    { message: "Recibí 357000 hoy por concepto de Subsidio" },
+  );
+  assert.equal(completeIncome2IProposal.type, "PROPOSAL_CREATED");
+  const completeIncome2IStored = proposals.find(
+    (row) => row.id === completeIncome2IProposal.proposalId,
+  );
+  assert.equal(completeIncome2IStored.operation_type, "CREATE_INCOME");
+  assert.equal(completeIncome2IStored.payload.income.amount, 357000);
+  assert.equal(completeIncome2IStored.payload.income.incomeDate, "2026-09-03");
+  assert.equal(completeIncome2IStored.payload.income.description, "Subsidio");
+  const completeIncome2IBeforeWrites = createdIncomes.length;
+  await conversation.processAgentMessage(completeIncome2IContext, {
+    message: "no",
+  });
+  assert.equal(createdIncomes.length, completeIncome2IBeforeWrites);
+  record2ICase("complete income data stays complete and asks no redundant fields");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "357000",
+    incomeDate: null,
+    description: null,
+    categoryName: null,
+  };
+  const splitIncome2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-income-two-turn",
+  };
+  const splitIncome2IInitial = await conversation.processAgentMessage(
+    splitIncome2IContext,
+    { message: "Recibí 357000" },
+  );
+  assert.deepEqual(splitIncome2IInitial.missingFields, [
+    "incomeDate",
+    "description",
+  ]);
+  const splitIncome2IDraft = categoryDrafts.find(
+    (row) => row.conversation_key === splitIncome2IContext.conversationKey,
+  );
+  assert.equal(splitIncome2IDraft.payload.amount, "357000");
+  const splitIncome2ICompleted = await conversation.processAgentMessage(
+    splitIncome2IContext,
+    { message: "Hoy, subsidio" },
+    async () => {
+      throw new Error("OpenAI must not receive persisted income details");
+    },
+  );
+  assert.deepEqual(splitIncome2ICompleted.missingFields, ["categoryId"]);
+  assert.equal(splitIncome2IDraft.status, "AWAITING_CATEGORY");
+  assert.equal(splitIncome2IDraft.payload.income.amount, 357000);
+  assert.equal(
+    splitIncome2IDraft.payload.income.incomeDate,
+    new Date().toISOString().slice(0, 10),
+  );
+  assert.equal(splitIncome2IDraft.payload.income.description, "subsidio");
+  const splitIncome2IProposal = await selectCategory(
+    splitIncome2IContext,
+    "Household",
+    "Food",
+  );
+  assert.equal(splitIncome2IProposal.type, "PROPOSAL_CREATED");
+  const splitIncome2IStored = proposals.find(
+    (row) => row.id === splitIncome2IProposal.proposalId,
+  );
+  assert.equal(splitIncome2IStored.payload.income.amount, 357000);
+  assert.equal(splitIncome2IStored.payload.income.description, "subsidio");
+  const splitIncome2IBeforeWrites = createdIncomes.length;
+  await conversation.processAgentMessage(splitIncome2IContext, {
+    message: "no",
+  });
+  assert.equal(createdIncomes.length, splitIncome2IBeforeWrites);
+  record2ICase("income details merge across two turns");
+
+  const threeTurnIncome2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-income-three-turn",
+  };
+  const threeTurnIncome2IInitial = await conversation.processAgentMessage(
+    threeTurnIncome2IContext,
+    { message: "Recibí 357000" },
+  );
+  assert.deepEqual(threeTurnIncome2IInitial.missingFields, [
+    "incomeDate",
+    "description",
+  ]);
+  const threeTurnIncome2IDate = await conversation.processAgentMessage(
+    threeTurnIncome2IContext,
+    { message: "Hoy" },
+    async () => {
+      throw new Error("OpenAI must not receive persisted income details");
+    },
+  );
+  assert.deepEqual(threeTurnIncome2IDate.missingFields, ["description"]);
+  const threeTurnIncome2IDescription = await conversation.processAgentMessage(
+    threeTurnIncome2IContext,
+    { message: "Subsidio" },
+    async () => {
+      throw new Error("OpenAI must not receive persisted income details");
+    },
+  );
+  assert.deepEqual(threeTurnIncome2IDescription.missingFields, ["categoryId"]);
+  const threeTurnIncome2IDraft = categoryDrafts.find(
+    (row) => row.conversation_key === threeTurnIncome2IContext.conversationKey,
+  );
+  assert.equal(threeTurnIncome2IDraft.payload.income.amount, 357000);
+  assert.equal(
+    threeTurnIncome2IDraft.payload.income.incomeDate,
+    new Date().toISOString().slice(0, 10),
+  );
+  assert.equal(threeTurnIncome2IDraft.payload.income.description, "Subsidio");
+  await conversation.processAgentMessage(threeTurnIncome2IContext, {
+    message: "cancelar",
+  });
+  record2ICase("income details merge across three turns without repeating amount");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Restaurante 2I",
+    description: "restaurante",
+    totalAmount: "45000",
+    expenseDate: "2026-09-02",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const completeExpense2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-expense-complete",
+  };
+  const completeExpense2IProposal = await conversation.processAgentMessage(
+    completeExpense2IContext,
+    { message: "Gasté 45000 ayer en un restaurante" },
+  );
+  assert.equal(completeExpense2IProposal.type, "PROPOSAL_CREATED");
+  const completeExpense2IStored = proposals.find(
+    (row) => row.id === completeExpense2IProposal.proposalId,
+  );
+  assert.equal(completeExpense2IStored.payload.expense.totalAmount, 45000);
+  assert.equal(completeExpense2IStored.payload.expense.expenseDate, "2026-09-02");
+  assert.equal(completeExpense2IStored.payload.expense.description, "restaurante");
+  const completeExpense2IBeforeWrites = createdExpenses.length;
+  await conversation.processAgentMessage(completeExpense2IContext, {
+    message: "no",
+  });
+  assert.equal(createdExpenses.length, completeExpense2IBeforeWrites);
+  record2ICase("complete expense data stays complete and asks no redundant fields");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: null,
+    description: null,
+    totalAmount: "45000",
+    expenseDate: null,
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const splitExpense2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-expense-two-turn",
+  };
+  const splitExpense2IInitial = await conversation.processAgentMessage(
+    splitExpense2IContext,
+    { message: "Gasté 45000" },
+  );
+  assert.deepEqual(splitExpense2IInitial.missingFields, ["expenseDate"]);
+  const splitExpense2IDraft = categoryDrafts.find(
+    (row) => row.conversation_key === splitExpense2IContext.conversationKey,
+  );
+  assert.equal(splitExpense2IDraft.payload.amount, "45000");
+  const splitExpense2ICompleted = await conversation.processAgentMessage(
+    splitExpense2IContext,
+    { message: "Ayer, restaurante" },
+    async () => {
+      throw new Error("OpenAI must not receive persisted expense details");
+    },
+  );
+  assert.deepEqual(splitExpense2ICompleted.missingFields, ["categoryId"]);
+  assert.equal(splitExpense2IDraft.status, "AWAITING_CATEGORY");
+  assert.equal(splitExpense2IDraft.payload.expense.totalAmount, 45000);
+  assert.equal(
+    splitExpense2IDraft.payload.expense.expenseDate,
+    new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+  );
+  assert.equal(splitExpense2IDraft.payload.expense.description, "restaurante");
+  const splitExpense2IProposal = await selectCategory(
+    splitExpense2IContext,
+    "Household",
+    "Food",
+  );
+  assert.equal(splitExpense2IProposal.type, "PROPOSAL_CREATED");
+  const splitExpense2IStored = proposals.find(
+    (row) => row.id === splitExpense2IProposal.proposalId,
+  );
+  assert.equal(splitExpense2IStored.payload.expense.totalAmount, 45000);
+  assert.equal(splitExpense2IStored.payload.expense.description, "restaurante");
+  const splitExpense2IBeforeWrites = createdExpenses.length;
+  await conversation.processAgentMessage(splitExpense2IContext, {
+    message: "no",
+  });
+  assert.equal(createdExpenses.length, splitExpense2IBeforeWrites);
+  record2ICase("expense details merge across two turns");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Macro Expense 2I",
+    description: "restaurante",
+    totalAmount: "45000",
+    expenseDate: "2026-09-02",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Household",
+  };
+  const expenseMacro2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-expense-macro",
+  };
+  const expenseMacro2IReply = await conversation.processAgentMessage(
+    expenseMacro2IContext,
+    { message: "Gasté 45000 ayer" },
+  );
+  assert.equal(expenseMacro2IReply.type, "CLARIFICATION_REQUIRED");
+  assert.match(expenseMacro2IReply.message, /categoría específica/);
+  const expenseMacro2IDraft = categoryDrafts.find(
+    (row) => row.conversation_key === expenseMacro2IContext.conversationKey,
+  );
+  assert.equal(expenseMacro2IDraft.payload.selectedMacroId, "Household");
+  const expenseMacro2IProposal = await conversation.processAgentMessage(
+    expenseMacro2IContext,
+    { message: "Food" },
+  );
+  assert.equal(expenseMacro2IProposal.type, "PROPOSAL_CREATED");
+  const expenseMacro2IStored = proposals.find(
+    (row) => row.id === expenseMacro2IProposal.proposalId,
+  );
+  assert.equal(expenseMacro2IStored.payload.expense.categoryId, "category-1");
+  const expenseMacro2IBeforeWrites = createdExpenses.length;
+  await conversation.processAgentMessage(expenseMacro2IContext, {
+    message: "no",
+  });
+  assert.equal(createdExpenses.length, expenseMacro2IBeforeWrites);
+  record2ICase("expense macro to micro preserves movement and details");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "200000",
+    incomeDate: "2026-09-02",
+    description: "Subsidio",
+    categoryName: "Household",
+  };
+  const incomeMacro2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-income-macro",
+  };
+  const incomeMacro2IReply = await conversation.processAgentMessage(
+    incomeMacro2IContext,
+    { message: "Recibí 200000 por subsidio" },
+  );
+  assert.equal(incomeMacro2IReply.type, "CLARIFICATION_REQUIRED");
+  const incomeMacro2IDraft = categoryDrafts.find(
+    (row) => row.conversation_key === incomeMacro2IContext.conversationKey,
+  );
+  assert.equal(incomeMacro2IDraft.payload.selectedMacroId, "Household");
+  const incomeMacro2IProposal = await conversation.processAgentMessage(
+    incomeMacro2IContext,
+    { message: "Food" },
+  );
+  assert.equal(incomeMacro2IProposal.type, "PROPOSAL_CREATED");
+  const incomeMacro2IStored = proposals.find(
+    (row) => row.id === incomeMacro2IProposal.proposalId,
+  );
+  assert.equal(incomeMacro2IStored.payload.income.categoryId, "category-1");
+  assert.equal(incomeMacro2IStored.payload.income.amount, 200000);
+  const incomeMacro2IBeforeWrites = createdIncomes.length;
+  await conversation.processAgentMessage(incomeMacro2IContext, {
+    message: "no",
+  });
+  assert.equal(createdIncomes.length, incomeMacro2IBeforeWrites);
+  record2ICase("income macro to micro preserves movement and details");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Invalid Date 2I",
+    description: "restaurante",
+    totalAmount: "45000",
+    expenseDate: "31 de febrero",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const invalidExpenseDate2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-expense-invalid-date",
+  };
+  const invalidExpenseDate2IInitial = await conversation.processAgentMessage(
+    invalidExpenseDate2IContext,
+    { message: "Gasté 45000 en un restaurante" },
+  );
+  assert.deepEqual(invalidExpenseDate2IInitial.missingFields, ["expenseDate"]);
+  const invalidExpenseDate2IDraft = categoryDrafts.find(
+    (row) => row.conversation_key === invalidExpenseDate2IContext.conversationKey,
+  );
+  const invalidExpenseDate2IProposals = proposals.length;
+  const invalidExpenseDate2IExpenses = createdExpenses.length;
+  const invalidExpenseDate2IResult = await conversation.processAgentMessage(
+    invalidExpenseDate2IContext,
+    { message: "31 de febrero" },
+    async () => {
+      throw new Error("OpenAI must not receive invalid expense dates");
+    },
+  );
+  assert.equal(invalidExpenseDate2IResult.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(invalidExpenseDate2IResult.missingFields, ["expenseDate"]);
+  assert.equal(invalidExpenseDate2IDraft.status, "AWAITING_DETAILS");
+  assert.equal(invalidExpenseDate2IDraft.payload.date, null);
+  assert.equal(proposals.length, invalidExpenseDate2IProposals);
+  assert.equal(createdExpenses.length, invalidExpenseDate2IExpenses);
+  await conversation.processAgentMessage(invalidExpenseDate2IContext, {
+    message: "cancelar",
+  });
+  record2ICase("invalid expense date remains pending without financial write");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Wrong Category Expense 2I",
+    description: "Compra",
+    totalAmount: "1000",
+    expenseDate: "2026-09-02",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const wrongExpenseCategory2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-expense-wrong-category",
+  };
+  await conversation.processAgentMessage(wrongExpenseCategory2IContext, {
+    message: "Gasté 1000",
+  });
+  const wrongExpenseCategory2IResult = await conversation.processAgentMessage(
+    wrongExpenseCategory2IContext,
+    { message: "Salario" },
+  );
+  assert.equal(wrongExpenseCategory2IResult.type, "CLARIFICATION_REQUIRED");
+  assert.doesNotMatch(wrongExpenseCategory2IResult.message, /Salario/);
+  await conversation.processAgentMessage(wrongExpenseCategory2IContext, {
+    message: "cancelar",
+  });
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "1000",
+    incomeDate: "2026-09-02",
+    description: "Ingreso",
+    categoryName: null,
+  };
+  const wrongIncomeCategory2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-income-wrong-category",
+  };
+  await conversation.processAgentMessage(wrongIncomeCategory2IContext, {
+    message: "Recibí 1000",
+  });
+  const wrongIncomeCategory2IResult = await conversation.processAgentMessage(
+    wrongIncomeCategory2IContext,
+    { message: "Restaurantes" },
+  );
+  assert.equal(wrongIncomeCategory2IResult.type, "CLARIFICATION_REQUIRED");
+  assert.doesNotMatch(wrongIncomeCategory2IResult.message, /Restaurantes/);
+  await conversation.processAgentMessage(wrongIncomeCategory2IContext, {
+    message: "cancelar",
+  });
+  record2ICase("wrong movement categories stay rejected");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Idempotent 2I",
+    description: "Compra original",
+    totalAmount: "50000",
+    expenseDate: "2026-09-02",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const idempotent2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-idempotency",
+  };
+  const idempotent2IStartProposals = proposals.length;
+  const idempotent2IStartExpenses = createdExpenses.length;
+  await conversation.processAgentMessage(idempotent2IContext, {
+    message: "Gasté 50000",
+  });
+  const idempotent2IDraft = categoryDrafts.find(
+    (row) => row.conversation_key === idempotent2IContext.conversationKey,
+  );
+  const firstMacro2I = await conversation.processAgentMessage(
+    idempotent2IContext,
+    { message: "Household" },
+  );
+  assert.equal(firstMacro2I.type, "CLARIFICATION_REQUIRED");
+  const repeatedMacro2I = await conversation.processAgentMessage(
+    idempotent2IContext,
+    { message: "Household" },
+  );
+  assert.equal(repeatedMacro2I.type, "CLARIFICATION_REQUIRED");
+  assert.equal(idempotent2IDraft.payload.selectedMacroId, "Household");
+  const idempotent2IProposal = await conversation.processAgentMessage(
+    idempotent2IContext,
+    { message: "Food" },
+  );
+  assert.equal(idempotent2IProposal.type, "PROPOSAL_CREATED");
+  assert.equal(proposals.length, idempotent2IStartProposals + 1);
+  assert.equal(createdExpenses.length, idempotent2IStartExpenses);
+  let repeatedMicro2IResult;
+  try {
+    repeatedMicro2IResult = await conversation.processAgentMessage(
+      idempotent2IContext,
+      { message: "Food" },
+    );
+  } catch (error) {
+    assert.equal(error?.code, "PENDING_PROPOSAL_EXISTS");
+  }
+  if (repeatedMicro2IResult) {
+    assert.notEqual(repeatedMicro2IResult.type, "PROPOSAL_CREATED");
+  }
+  assert.equal(proposals.length, idempotent2IStartProposals + 1);
+  assert.equal(createdExpenses.length, idempotent2IStartExpenses);
+  await conversation.processAgentMessage(idempotent2IContext, {
+    message: "no",
+  });
+  record2ICase("repeated macro and micro selections do not duplicate proposals");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Correction 2I",
+    description: "Compra original",
+    totalAmount: "50000",
+    expenseDate: "2026-09-02",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const duplicateCorrection2IContext = {
+    ...contextA,
+    conversationKey: "agent-2i-duplicate-correction",
+  };
+  const duplicateCorrection2IProposal = await conversation.processAgentMessage(
+    duplicateCorrection2IContext,
+    { message: "Gasté 50000" },
+  );
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "amount",
+    value: "60000",
+  };
+  const duplicateCorrection2IFirst = await conversation.processAgentMessage(
+    duplicateCorrection2IContext,
+    { message: "En realidad fueron 60000" },
+  );
+  const duplicateCorrection2ISecond = await conversation.processAgentMessage(
+    duplicateCorrection2IContext,
+    { message: "En realidad fueron 60000" },
+  );
+  assert.equal(duplicateCorrection2IFirst.type, "PROPOSAL_UPDATED");
+  assert.equal(duplicateCorrection2ISecond.type, "PROPOSAL_UPDATED");
+  assert.equal(
+    duplicateCorrection2IFirst.proposalId,
+    duplicateCorrection2IProposal.proposalId,
+  );
+  assert.equal(
+    duplicateCorrection2ISecond.proposalId,
+    duplicateCorrection2IProposal.proposalId,
+  );
+  assert.equal(proposals.filter((row) => row.id === duplicateCorrection2IProposal.proposalId).length, 1);
+  assert.equal(createdExpenses.length, idempotent2IStartExpenses);
+  await conversation.processAgentMessage(duplicateCorrection2IContext, {
+    message: "no",
+  });
+  record2ICase("repeated identical corrections keep one proposal and no write");
+
+  assert.equal(regression2I.length, 11);
+  console.log(`PASS 2I regression matrix completed (${regression2I.length} cases)`);
+
   const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
   const createExpenseTypeStart = openaiSource.indexOf('kind: "CREATE_EXPENSE"');
   const createIncomeTypeStart = openaiSource.indexOf('kind: "CREATE_INCOME"');

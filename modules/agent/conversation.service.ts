@@ -383,6 +383,13 @@ function parseDraftDetails(
     .split(/\s*[,;]\s*/)
     .map((part) => part.trim())
     .filter(Boolean);
+  const canCaptureDescription =
+    (!looksLikeCorrection(message) && pendingFields.includes("description")) ||
+    (!looksLikeCorrection(message) &&
+      !payload.description &&
+      pendingFields.some(
+        (field) => field === "incomeDate" || field === "expenseDate",
+      ));
 
   for (const part of parts) {
     if (dateFields.length > 0 && isDraftDateValue(part)) {
@@ -395,7 +402,7 @@ function parseDraftDetails(
       continue;
     }
     if (
-      pendingFields.includes("description") &&
+      canCaptureDescription &&
       !descriptionMatch &&
       part
     ) {
@@ -984,6 +991,7 @@ interface ProposalInputResult {
 async function toProposalInput(
   context: AgentContext,
   interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_EXPENSE" }>,
+  options: { defaultExpenseDate?: boolean } = {},
 ): Promise<ProposalInputResult> {
   const totalAmount = toAmount(interpretation.totalAmount);
   const rawExpenseDate = interpretation.expenseDate?.trim() ?? "";
@@ -991,7 +999,9 @@ async function toProposalInput(
   const expenseDate =
     rawExpenseDate.length > 0
       ? normalizedExpenseDate
-      : new Date().toISOString().slice(0, 10);
+      : options.defaultExpenseDate === true
+        ? new Date().toISOString().slice(0, 10)
+        : null;
   const missingFields: string[] = [];
   if (totalAmount === null) missingFields.push("totalAmount");
   if (!expenseDate) missingFields.push("expenseDate");
@@ -1106,7 +1116,7 @@ async function getDraftMissingFields(
       paidBySelf: payload.paidBySelf,
       paidByMemberName: payload.paidByMemberName,
       categoryName: payload.categoryName,
-    })
+    }, { defaultExpenseDate: false })
   ).missingFields;
 }
 
@@ -1157,6 +1167,7 @@ async function completeOperationDraft(
   context: AgentContext,
   draft: AgentDraft,
   operation: "CREATE_EXPENSE" | "CREATE_INCOME",
+  options: { defaultExpenseDate?: boolean } = {},
 ): Promise<AgentMessageResult> {
   const operationPayload = draft.payload as AgentOperationDraftPayload;
   if (operation === "CREATE_EXPENSE") {
@@ -1169,6 +1180,8 @@ async function completeOperationDraft(
       paidBySelf: operationPayload.paidBySelf,
       paidByMemberName: operationPayload.paidByMemberName,
       categoryName: operationPayload.categoryName,
+    }, {
+      defaultExpenseDate: options.defaultExpenseDate === true,
     });
     if (proposal.missingFields.length > 0) {
       await updateDraftOrThrow(
@@ -1498,7 +1511,11 @@ export async function processAgentMessage(
 
   if (activeDraft?.status === "AWAITING_OPERATION") {
     const operation = resolveOperationChoice(message);
-    if (operation) return completeOperationDraft(context, activeDraft, operation);
+    if (operation) {
+      return completeOperationDraft(context, activeDraft, operation, {
+        defaultExpenseDate: true,
+      });
+    }
     if (looksLikeMovementRequest(message)) {
       return clarification(
         ["operation"],
@@ -1697,7 +1714,9 @@ export async function processAgentMessage(
     });
     return { type: "PROPOSAL_CREATED", ...result };
   }
-  const proposal = await toProposalInput(context, interpretation);
+  const proposal = await toProposalInput(context, interpretation, {
+    defaultExpenseDate: Boolean(interpretation.categoryName),
+  });
   if (proposal.missingFields.length > 0) {
     const draftPayload = operationPayloadFromExpenseInterpretation(
       interpretation,
