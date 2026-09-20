@@ -22,6 +22,7 @@ export interface AgentOperationDraftPayload {
 export interface CategoryDraftExpensePayload {
   actorMemberId?: string;
   source?: ExpenseSource;
+  selectedMacroId?: string | null;
   expense: Omit<ExpenseProposalInput, "splits"> & {
     splits?: ExpenseProposalInput["splits"];
   };
@@ -30,6 +31,7 @@ export interface CategoryDraftExpensePayload {
 export interface CategoryDraftIncomePayload {
   actorMemberId?: string;
   source?: ExpenseSource;
+  selectedMacroId?: string | null;
   income: Omit<IncomeCreateInput, "memberId"> & { memberId?: string };
 }
 

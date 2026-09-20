@@ -32,6 +32,7 @@ import type {
 import type {
   Category,
   CategoryMovementType,
+  HierarchicalCategory,
 } from "@/modules/categories/category.types";
 import type {
   AgentContext,
@@ -354,30 +355,106 @@ function parseDraftDetails(
 
 function resolveCategorySelection(
   message: string,
-  categories: Category[],
+  categories: HierarchicalCategory[],
 ): Category | null {
   const normalized = normalizeCategoryName(message);
-  return (
-    categories.find(
-      (category) => normalizeCategoryName(category.name) === normalized,
-    ) ?? null
+  const matches = categories.filter(
+    (category) =>
+      category.level === "MICRO" &&
+      normalizeCategoryName(category.name) === normalized,
   );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function categoryMovementType(
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME",
+): CategoryMovementType {
+  return operationType === "CREATE_EXPENSE" ? "EXPENSE" : "INCOME";
+}
+
+function resolveMacroSelection(
+  message: string,
+  categories: HierarchicalCategory[],
+): string | null {
+  const macros = new Map<string, { name: string; ids: Set<string> }>();
+  for (const category of categories) {
+    const macro = macros.get(category.macroName);
+    if (macro) {
+      macro.ids.add(category.macroId);
+    } else {
+      macros.set(category.macroName, {
+        name: category.macroName,
+        ids: new Set([category.macroId]),
+      });
+    }
+  }
+  const options = [...macros.values()].flatMap(({ name, ids }) =>
+    [...ids].map((id) => ({ id, name, isUnique: ids.size === 1 })),
+  );
+  const numeric = Number.parseInt(message.trim(), 10);
+  if (Number.isInteger(numeric) && String(numeric) === message.trim()) {
+    return options[numeric - 1]?.id ?? null;
+  }
+  const normalized = normalizeCategoryName(message);
+  const matches = options.filter(
+    ({ name, isUnique }) =>
+      isUnique && normalizeCategoryName(name) === normalized,
+  );
+  return matches.length === 1 ? matches[0].id : null;
+}
+
+function resolveMicroSelection(
+  message: string,
+  categories: HierarchicalCategory[],
+  macroId: string,
+): HierarchicalCategory | null {
+  const options = categories.filter((category) => category.macroId === macroId);
+  const numeric = Number.parseInt(message.trim(), 10);
+  if (Number.isInteger(numeric) && String(numeric) === message.trim()) {
+    return options[numeric - 1] ?? null;
+  }
+  const normalized = normalizeCategoryName(message);
+  const matches = options.filter(
+    (category) =>
+      normalizeCategoryName(category.name) === normalized ||
+      normalizeCategoryName(category.path) === normalized,
+  );
+  return matches.length === 1 ? matches[0] : null;
 }
 
 async function categoryClarification(
   context: AgentContext,
   message = "¿En qué categoría lo quieres registrar?",
   movementType: CategoryMovementType,
+  selectedMacroId: string | null = null,
 ): Promise<AgentMessageResult> {
   const categories = await getCategoriesTool(context, movementType);
-  const options = categories
+  const optionCategories = selectedMacroId
+    ? categories
+        .filter((category) => category.macroId === selectedMacroId)
+        .map((category) => ({
+          id: category.id,
+          name: category.path,
+        }))
+    : [
+        ...new Map(
+          categories.map((category) => [
+            category.macroId,
+            { id: category.macroId, name: category.macroName },
+          ]),
+        ).values(),
+      ];
+  const options = optionCategories
     .map((category) => category.name)
     .map((name, index) => `${index + 1}. ${name}`)
     .join("\n");
+  const prompt = selectedMacroId
+    ? "Selecciona una categoría específica:"
+    : "Selecciona una categoría principal:";
   return clarification(
     ["categoryId"],
-    `${message}\n\n${options}`,
-    categories,
+    `${message}\n\n${prompt}\n\n${options}`,
+    optionCategories,
   );
 }
 
@@ -437,8 +514,16 @@ async function persistDetailsDraft(
 async function completeCategoryDraft(
   context: AgentContext,
   draft: AgentCategoryDraft,
-  category: Category,
+  category: HierarchicalCategory,
 ): Promise<AgentMessageResult> {
+  if (
+    category.level !== "MICRO" ||
+    category.movementType !== categoryMovementType(draft.operationType)
+  ) {
+    return correctionClarification(
+      "Selecciona una categoría específica de la operación.",
+    );
+  }
   try {
     if (draft.operationType === "CREATE_EXPENSE") {
       const payload = draft.payload as CategoryDraftExpensePayload;
@@ -586,7 +671,10 @@ async function resolveCorrectionCategory(
   const normalized = normalizeCategoryName(value);
   if (!normalized) return null;
   const matches = categories.filter(
-    (category) => normalizeCategoryName(category.name) === normalized,
+    (category) =>
+      category.level === "MICRO" &&
+      (normalizeCategoryName(category.name) === normalized ||
+        normalizeCategoryName(category.path) === normalized),
   );
   return matches.length === 1 ? matches[0] : null;
 }
@@ -950,6 +1038,7 @@ async function completeOperationDraft(
         operation,
         "AWAITING_CATEGORY",
         {
+          selectedMacroId: null,
           expense: toCategoryExpensePayload(proposal.input),
         },
       );
@@ -1003,6 +1092,7 @@ async function completeOperationDraft(
       operation,
       "AWAITING_CATEGORY",
       {
+        selectedMacroId: null,
         income: toCategoryIncomePayload(income.input),
       },
     );
@@ -1159,9 +1249,62 @@ export async function processAgentMessage(
     const categoryDraft = activeDraft as AgentCategoryDraft;
     const categories = await getCategoriesTool(
       context,
-      categoryDraft.operationType === "CREATE_EXPENSE" ? "EXPENSE" : "INCOME",
+      categoryMovementType(categoryDraft.operationType),
     );
-    const category = resolveCategorySelection(message, categories);
+    const selectedMacroId = categoryDraft.payload.selectedMacroId ?? null;
+    if (!selectedMacroId) {
+      const macroId = resolveMacroSelection(message, categories);
+      if (macroId) {
+        try {
+          await updateCategoryDraft(
+            context,
+            categoryDraft.id,
+            { ...categoryDraft.payload, selectedMacroId: macroId },
+            categoryDraft.updatedAt,
+          );
+        } catch (error) {
+          if (isCategoryDraftRepositoryError(error)) {
+            throw new AgentDomainError(
+              "PERSISTENCE_ERROR",
+              "The category clarification could not be updated.",
+            );
+          }
+          throw error;
+        }
+        return categoryClarification(
+          context,
+          "Ahora elige una categoría específica.",
+          categoryMovementType(categoryDraft.operationType),
+          macroId,
+        );
+      }
+      try {
+        await updateCategoryDraft(
+          context,
+          categoryDraft.id,
+          categoryDraft.payload,
+          categoryDraft.updatedAt,
+        );
+      } catch (error) {
+        if (isCategoryDraftRepositoryError(error)) {
+          throw new AgentDomainError(
+            "PERSISTENCE_ERROR",
+            "The category clarification could not be updated.",
+          );
+        }
+        throw error;
+      }
+      return categoryClarification(
+        context,
+        "No tengo esa categoría disponible. Elige una de estas opciones:",
+        categoryMovementType(categoryDraft.operationType),
+      );
+    }
+    const category = resolveMicroSelection(
+      message,
+      categories,
+      selectedMacroId,
+    );
     if (!category) {
       try {
         await updateCategoryDraft(
@@ -1182,7 +1325,8 @@ export async function processAgentMessage(
       return categoryClarification(
         context,
         "No tengo esa categoría disponible. Elige una de estas opciones:",
-        categoryDraft.operationType === "CREATE_EXPENSE" ? "EXPENSE" : "INCOME",
+        categoryMovementType(categoryDraft.operationType),
+        selectedMacroId,
       );
     }
     return completeCategoryDraft(context, categoryDraft, category);
@@ -1356,6 +1500,7 @@ export async function processAgentMessage(
       await persistCategoryDraft(
         context,
         {
+          selectedMacroId: null,
           income: toCategoryIncomePayload(incomeInput),
         },
         "CREATE_INCOME",
@@ -1393,11 +1538,12 @@ export async function processAgentMessage(
     ? resolveCategorySelection(interpretation.categoryName, categories)
     : null;
   if (!category) {
-      await persistCategoryDraft(
-        context,
-        {
-          expense: toCategoryExpensePayload(proposal.input),
-        },
+    await persistCategoryDraft(
+      context,
+      {
+        selectedMacroId: null,
+        expense: toCategoryExpensePayload(proposal.input),
+      },
       "CREATE_EXPENSE",
     );
     return categoryClarification(

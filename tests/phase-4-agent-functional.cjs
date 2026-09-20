@@ -147,6 +147,7 @@ let confirmationPayloadMutation = null;
 let rejectionFailure = false;
 let ambiguousMemberNames = false;
 let normalizedMemberNames = false;
+let duplicateCategoryNames = false;
 
 function matches(row, filters) {
   return filters.every(({ column, value }) => row[column] === value);
@@ -662,8 +663,21 @@ async function main() {
         ["category-transporte", "Transporte", "Mobility", "Mobility"],
         ["category-mascotas", "Mascotas", "Pets", "Pets"],
         ["category-ocio", "Ocio", "Leisure", "Leisure"],
-        ["category-food-duplicate", "Food", "Leisure", "Leisure"],
       ];
+      if (movementType === "INCOME") {
+        const transporteIndex = categories.findIndex(
+          ([id]) => id === "category-transporte",
+        );
+        categories.splice(transporteIndex, 1);
+      }
+      if (duplicateCategoryNames) {
+        categories.push([
+          "category-food-duplicate",
+          "Food",
+          "Leisure",
+          "Leisure",
+        ]);
+      }
       return categories.map(([id, name, macroId, macroName]) => ({
         id,
         name,
@@ -739,6 +753,13 @@ async function main() {
   const pendingProposalRepository = load(pendingProposalRepositoryModule);
   const tool = load(toolModule);
   const conversation = load(conversationModule);
+  async function selectCategory(context, macro, micro) {
+    const macroReply = await conversation.processAgentMessage(context, {
+      message: macro,
+    });
+    assert.equal(macroReply.type, "CLARIFICATION_REQUIRED");
+    return conversation.processAgentMessage(context, { message: micro });
+  }
   const createIncome = load(incomeToolModule);
   const getExpenses = load(getExpensesToolModule);
   const getIncomes = load(getIncomesToolModule);
@@ -1982,9 +2003,10 @@ async function main() {
     (row) => row.conversation_key === payerCategoryContext.conversationKey,
   );
   assert.equal(payerDraft.payload.expense.paidByMemberId, memberB);
-  const payerCategoryProposal = await conversation.processAgentMessage(
+  const payerCategoryProposal = await selectCategory(
     payerCategoryContext,
-    { message: "Food" },
+    "Household",
+    "Food",
   );
   assert.equal(payerCategoryProposal.type, "PROPOSAL_CREATED");
   const payerCategoryStored = proposals.find(
@@ -2042,6 +2064,18 @@ async function main() {
   assert.equal(operations.at(-1).movementType, "EXPENSE");
   assert.equal(categoryDrafts.length, 1);
   assert.equal(proposals.length, beforeCategoryProposalCount);
+  const categoryMacroReply = await conversation.processAgentMessage(
+    categoryContext,
+    { message: "Household" },
+  );
+  assert.equal(categoryMacroReply.type, "CLARIFICATION_REQUIRED");
+  assert.match(categoryMacroReply.message, /Household → Food/);
+  assert.equal(
+    categoryDrafts.find(
+      (row) => row.conversation_key === categoryContext.conversationKey,
+    ).payload.selectedMacroId,
+    "Household",
+  );
   const categoryProposal = await conversation.processAgentMessage(
     categoryContext,
     { message: "Food" },
@@ -2061,6 +2095,45 @@ async function main() {
   console.log(
     "PASS category clarification resolves a real category before proposal",
   );
+
+  duplicateCategoryNames = true;
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Ambiguous category market",
+    description: null,
+    totalAmount: "10100",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    categoryName: "Food",
+  };
+  const ambiguousCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-ambiguous-hierarchical-category",
+  };
+  const beforeAmbiguousCategoryProposals = proposals.length;
+  const beforeAmbiguousCategoryExpenses = createdExpenses.length;
+  const ambiguousCategory = await conversation.processAgentMessage(
+    ambiguousCategoryContext,
+    { message: "Registra un gasto de 10100 en Ambiguous category market" },
+  );
+  assert.equal(ambiguousCategory.type, "CLARIFICATION_REQUIRED");
+  assert.equal(
+    ambiguousCategory.options.some(({ name }) => name === "Household"),
+    true,
+  );
+  assert.equal(proposals.length, beforeAmbiguousCategoryProposals);
+  assert.equal(createdExpenses.length, beforeAmbiguousCategoryExpenses);
+  duplicateCategoryNames = false;
+  const ambiguousCategoryResolved = await selectCategory(
+    ambiguousCategoryContext,
+    "Household",
+    "Food",
+  );
+  assert.equal(ambiguousCategoryResolved.type, "PROPOSAL_CREATED");
+  await conversation.processAgentMessage(ambiguousCategoryContext, {
+    message: "no",
+  });
+  console.log("PASS ambiguous category names require hierarchical disambiguation");
 
   const canonicalCategories = [
     ["Vivienda", "category-vivienda"],
@@ -2125,9 +2198,14 @@ async function main() {
   assert.equal(proposals.filter((row) => row.household_id === householdA).length > 0, true);
   const invalidCategoryProposal = await conversation.processAgentMessage(
     invalidCategoryContext,
+    { message: "Household" },
+  );
+  assert.equal(invalidCategoryProposal.type, "CLARIFICATION_REQUIRED");
+  const validCategoryProposal = await conversation.processAgentMessage(
+    invalidCategoryContext,
     { message: "Food" },
   );
-  assert.equal(invalidCategoryProposal.type, "PROPOSAL_CREATED");
+  assert.equal(validCategoryProposal.type, "PROPOSAL_CREATED");
   await conversation.processAgentMessage(invalidCategoryContext, {
     message: "no",
   });
@@ -2190,13 +2268,14 @@ async function main() {
   });
   const otherHouseholdCategory = await conversation.processAgentMessage(
     { ...isolatedCategoryContext, householdId: householdB, actorMemberId: memberB },
-    { message: "Food" },
+    { message: "Household" },
   );
   assert.equal(otherHouseholdCategory.type, "CLARIFICATION_REQUIRED");
   assert.equal(categoryDrafts.some((row) => row.household_id === householdA), true);
-  const isolatedCompleted = await conversation.processAgentMessage(
+  const isolatedCompleted = await selectCategory(
     isolatedCategoryContext,
-    { message: "Food" },
+    "Household",
+    "Food",
   );
   assert.equal(isolatedCompleted.type, "PROPOSAL_CREATED");
   await conversation.processAgentMessage(isolatedCategoryContext, {
@@ -2275,9 +2354,10 @@ async function main() {
   assert.ok(operations.length > beforeCategoryResolutionCalls);
   console.log("PASS gasto resolves the persisted operation without OpenAI");
 
-  const expenseCategoryProposal = await conversation.processAgentMessage(
+  const expenseCategoryProposal = await selectCategory(
     ambiguousMovementContext,
-    { message: "Food" },
+    "Household",
+    "Food",
   );
   assert.equal(expenseCategoryProposal.type, "PROPOSAL_CREATED");
   assert.equal(
@@ -2387,9 +2467,10 @@ async function main() {
   assert.equal(incomeDetails.type, "CLARIFICATION_REQUIRED");
   assert.equal(incomeOperationDraft.status, "AWAITING_CATEGORY");
   assert.equal("memberId" in incomeOperationDraft.payload.income, false);
-  const incomeDraftProposal = await conversation.processAgentMessage(
+  const incomeDraftProposal = await selectCategory(
     incomeOperationContext,
-    { message: "Food" },
+    "Household",
+    "Food",
   );
   assert.equal(incomeDraftProposal.type, "PROPOSAL_CREATED");
   assert.equal(createdIncomes.length, beforeAmbiguousIncomeCount);
@@ -2806,9 +2887,10 @@ async function main() {
   assert.equal(incomeCategoryClarification.type, "CLARIFICATION_REQUIRED");
   assert.equal(operations.at(-1).type, "category-hierarchical-read");
   assert.equal(operations.at(-1).movementType, "INCOME");
-  const incomeCategoryProposal = await conversation.processAgentMessage(
+  const incomeCategoryProposal = await selectCategory(
     incomeCategoryContext,
-    { message: "Food" },
+    "Household",
+    "Food",
   );
   assert.equal(incomeCategoryProposal.type, "PROPOSAL_CREATED");
   const incomeCategoryStored = proposals.find(
@@ -2816,6 +2898,33 @@ async function main() {
   );
   assert.equal(incomeCategoryStored.payload.income.categoryId, "category-1");
   console.log("PASS income category clarification creates a categorized proposal");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "126",
+    incomeDate: "2026-08-12",
+    description: "Otro ingreso",
+    categoryName: null,
+  };
+  const wrongMovementCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-income-wrong-movement-category",
+  };
+  const wrongMovementInitial = await conversation.processAgentMessage(
+    wrongMovementCategoryContext,
+    { message: "Recibí un ingreso de 126" },
+  );
+  assert.equal(wrongMovementInitial.type, "CLARIFICATION_REQUIRED");
+  const wrongMovementCategory = await conversation.processAgentMessage(
+    wrongMovementCategoryContext,
+    { message: "Mobility" },
+  );
+  assert.equal(wrongMovementCategory.type, "CLARIFICATION_REQUIRED");
+  assert.doesNotMatch(wrongMovementCategory.message, /Mobility/);
+  await conversation.processAgentMessage(wrongMovementCategoryContext, {
+    message: "cancelar",
+  });
+  console.log("PASS wrong movement category is rejected for income selection");
   /*
   await expectAgentError(
     conversation.processAgentMessage(
@@ -3593,7 +3702,7 @@ async function main() {
     contextA,
     "EXPENSE",
   );
-  assert.equal(expenseCategories.length, 7);
+  assert.equal(expenseCategories.length, 6);
   assert.equal(expenseCategories[0].id, "category-1");
   assert.equal(expenseCategories[0].path, "Household → Food");
   assert.equal(
@@ -3610,22 +3719,38 @@ async function main() {
     ),
     true,
   );
-  assert.notEqual(expenseCategories[0].path, expenseCategories[1].path);
   console.log(
-    "PASS typed expense categories preserve hierarchy, IDs and duplicate-name paths",
+    "PASS typed expense categories preserve hierarchy and IDs",
   );
+
+  duplicateCategoryNames = true;
+  const duplicateExpenseCategories = await getCategories.getCategoriesTool(
+    contextA,
+    "EXPENSE",
+  );
+  assert.equal(duplicateExpenseCategories.length, 7);
+  assert.notEqual(
+    duplicateExpenseCategories[0].path,
+    duplicateExpenseCategories[6].path,
+  );
+  duplicateCategoryNames = false;
+  console.log("PASS duplicate category names remain distinguishable by path");
 
   const incomeCategories = await getCategories.getCategoriesTool(
     contextA,
     "INCOME",
   );
-  assert.equal(incomeCategories.length, 7);
+  assert.equal(incomeCategories.length, 5);
   assert.equal(incomeCategories[0].id, "category-1");
   assert.equal(incomeCategories[0].path, "Household → Food");
   assert.equal(operations.at(-1).movementType, "INCOME");
   assert.equal(
     incomeCategories.every((category) => category.movementType === "INCOME"),
     true,
+  );
+  assert.equal(
+    incomeCategories.some((category) => category.name === "Transporte"),
+    false,
   );
   console.log("PASS typed income categories do not mix expense categories");
 
@@ -3792,11 +3917,16 @@ async function main() {
   ]);
   assert.ok(
     completeIncomeCategoryClarification.options.some(
-      ({ name }) => name === "Food",
+      ({ name }) => name === "Household",
     ),
   );
   assert.equal(proposals.length, beforeIncomeWithoutCategoryProposals);
   assert.equal(createdIncomes.length, beforeIncomeWithoutCategoryCount);
+  const completeIncomeCategoryMacro =
+    await conversation.processAgentMessage(incomeWithoutCategoryContext, {
+      message: "Household",
+    });
+  assert.equal(completeIncomeCategoryMacro.type, "CLARIFICATION_REQUIRED");
   const completeIncomeCategoryProposal =
     await conversation.processAgentMessage(incomeWithoutCategoryContext, {
       message: "Food",
@@ -3961,9 +4091,10 @@ async function main() {
   assert.equal(incomeDetailsDraft.payload.income.description, "salario");
   assert.equal(proposals.length, beforeIncomeDetailsProposals);
   assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes);
-  const incomeDetailsProposal = await conversation.processAgentMessage(
+  const incomeDetailsProposal = await selectCategory(
     incomeDetailsContext,
-    { message: "Food" },
+    "Household",
+    "Food",
   );
   assert.equal(incomeDetailsProposal.type, "PROPOSAL_CREATED");
   const incomeDetailsStoredProposal = proposals.find(
@@ -4701,6 +4832,20 @@ async function main() {
     assert.equal(createdExpenses.length, correctionPrefixBeforeExpenses);
     testCase.assertPayload(corrected.payload.expense);
   }
+  mockInterpretation = {
+    kind: "CORRECTION",
+    field: "category",
+    value: "Health",
+  };
+  const beforeMacroCorrectionProposals = proposals.length;
+  const macroCorrection = await conversation.processAgentMessage(
+    correctionPrefixContext,
+    { message: "La categoría principal es Health" },
+  );
+  assert.equal(macroCorrection.type, "CLARIFICATION_REQUIRED");
+  assert.equal(proposals.length, beforeMacroCorrectionProposals);
+  assert.equal(createdExpenses.length, correctionPrefixBeforeExpenses);
+  console.log("PASS category correction rejects macro-only selections");
   mockInterpretation = {
     kind: "CORRECTION",
     field: "payer",

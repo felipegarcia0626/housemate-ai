@@ -177,11 +177,18 @@ function isIncomeCreateInput(value: unknown): boolean {
 
 function isCategoryPayload(value: unknown, operationType: AgentCategoryDraftOperation): boolean {
   if (!isRecord(value)) return false;
-  const allowed = new Set(["actorMemberId", "source", "expense", "income"]);
+  const allowed = new Set([
+    "actorMemberId",
+    "source",
+    "selectedMacroId",
+    "expense",
+    "income",
+  ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) return false;
   if (
     ("actorMemberId" in value && !isString(value.actorMemberId)) ||
-    ("source" in value && !isSource(value.source))
+    ("source" in value && !isSource(value.source)) ||
+    ("selectedMacroId" in value && !isNullableString(value.selectedMacroId))
   ) {
     return false;
   }
