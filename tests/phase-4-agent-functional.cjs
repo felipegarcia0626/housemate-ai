@@ -653,6 +653,48 @@ async function main() {
         { id: "category-ocio", name: "Ocio" },
       ];
     },
+    async listHierarchicalCategories(movementType) {
+      operations.push({ type: "category-hierarchical-read", movementType });
+      if (movementType === "EXPENSE") {
+        return [
+          {
+            id: "expense-food",
+            name: "Food",
+            movementType: "EXPENSE",
+            level: "MICRO",
+            parentId: "expense-living",
+            isActive: true,
+            macroId: "expense-living",
+            macroName: "Living",
+            path: "Living → Food",
+          },
+          {
+            id: "expense-other-food",
+            name: "Food",
+            movementType: "EXPENSE",
+            level: "MICRO",
+            parentId: "expense-leisure",
+            isActive: true,
+            macroId: "expense-leisure",
+            macroName: "Leisure",
+            path: "Leisure → Food",
+          },
+        ];
+      }
+      return [
+        {
+          id: "income-salary",
+          name: "Salary",
+          movementType: "INCOME",
+          level: "MICRO",
+          parentId: "income-work",
+          isActive: true,
+          macroId: "income-work",
+          macroName: "Work",
+          path: "Work → Salary",
+        },
+      ];
+    },
   };
   const fakeSharingRuleService = {
     async listSharingRules(context) {
@@ -3561,6 +3603,90 @@ async function main() {
   console.log(
     "PASS get_categories delegates without context or persistence access",
   );
+
+  const expenseCategories = await getCategories.getCategoriesTool(
+    contextA,
+    "EXPENSE",
+  );
+  assert.deepEqual(
+    expenseCategories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      movementType: category.movementType,
+      level: category.level,
+      macroId: category.macroId,
+      macroName: category.macroName,
+      path: category.path,
+    })),
+    [
+      {
+        id: "expense-food",
+        name: "Food",
+        movementType: "EXPENSE",
+        level: "MICRO",
+        macroId: "expense-living",
+        macroName: "Living",
+        path: "Living → Food",
+      },
+      {
+        id: "expense-other-food",
+        name: "Food",
+        movementType: "EXPENSE",
+        level: "MICRO",
+        macroId: "expense-leisure",
+        macroName: "Leisure",
+        path: "Leisure → Food",
+      },
+    ],
+  );
+  assert.equal(
+    operations.at(-1).type,
+    "category-hierarchical-read",
+  );
+  assert.equal(operations.at(-1).movementType, "EXPENSE");
+  assert.equal(
+    expenseCategories.every(
+      (category) =>
+        category.movementType === "EXPENSE" &&
+        category.level === "MICRO" &&
+        category.isActive === true,
+    ),
+    true,
+  );
+  assert.notEqual(expenseCategories[0].path, expenseCategories[1].path);
+  console.log(
+    "PASS typed expense categories preserve hierarchy, IDs and duplicate-name paths",
+  );
+
+  const incomeCategories = await getCategories.getCategoriesTool(
+    contextA,
+    "INCOME",
+  );
+  assert.deepEqual(incomeCategories, [
+    {
+      id: "income-salary",
+      name: "Salary",
+      movementType: "INCOME",
+      level: "MICRO",
+      parentId: "income-work",
+      isActive: true,
+      macroId: "income-work",
+      macroName: "Work",
+      path: "Work → Salary",
+    },
+  ]);
+  assert.equal(operations.at(-1).movementType, "INCOME");
+  assert.equal(
+    incomeCategories.every((category) => category.movementType === "INCOME"),
+    true,
+  );
+  console.log("PASS typed income categories do not mix expense categories");
+
+  await assert.rejects(
+    getCategories.getCategoriesTool(contextA, "INVALID"),
+    /Invalid category movement type/,
+  );
+  console.log("PASS category movement type is validated strictly");
 
   const sharingRead = await getSharingRules.getSharingRulesTool(contextA);
   assert.equal(sharingRead[0].id, "rule-1");
