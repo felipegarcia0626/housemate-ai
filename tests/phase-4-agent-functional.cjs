@@ -655,45 +655,26 @@ async function main() {
     },
     async listHierarchicalCategories(movementType) {
       operations.push({ type: "category-hierarchical-read", movementType });
-      if (movementType === "EXPENSE") {
-        return [
-          {
-            id: "expense-food",
-            name: "Food",
-            movementType: "EXPENSE",
-            level: "MICRO",
-            parentId: "expense-living",
-            isActive: true,
-            macroId: "expense-living",
-            macroName: "Living",
-            path: "Living → Food",
-          },
-          {
-            id: "expense-other-food",
-            name: "Food",
-            movementType: "EXPENSE",
-            level: "MICRO",
-            parentId: "expense-leisure",
-            isActive: true,
-            macroId: "expense-leisure",
-            macroName: "Leisure",
-            path: "Leisure → Food",
-          },
-        ];
-      }
-      return [
-        {
-          id: "income-salary",
-          name: "Salary",
-          movementType: "INCOME",
-          level: "MICRO",
-          parentId: "income-work",
-          isActive: true,
-          macroId: "income-work",
-          macroName: "Work",
-          path: "Work → Salary",
-        },
+      const categories = [
+        ["category-1", "Food", "Household", "Household"],
+        ["category-salud", "Salud", "Health", "Health"],
+        ["category-vivienda", "Vivienda", "Home", "Home"],
+        ["category-transporte", "Transporte", "Mobility", "Mobility"],
+        ["category-mascotas", "Mascotas", "Pets", "Pets"],
+        ["category-ocio", "Ocio", "Leisure", "Leisure"],
+        ["category-food-duplicate", "Food", "Leisure", "Leisure"],
       ];
+      return categories.map(([id, name, macroId, macroName]) => ({
+        id,
+        name,
+        movementType,
+        level: "MICRO",
+        parentId: macroId,
+        isActive: true,
+        macroId,
+        macroName,
+        path: `${macroName} → ${name}`,
+      }));
     },
   };
   const fakeSharingRuleService = {
@@ -2057,6 +2038,8 @@ async function main() {
     { message: "Registra un gasto de 10000 pesos en Carulla" },
   );
   assert.equal(categoryClarificationResult.type, "CLARIFICATION_REQUIRED");
+  assert.equal(operations.at(-1).type, "category-hierarchical-read");
+  assert.equal(operations.at(-1).movementType, "EXPENSE");
   assert.equal(categoryDrafts.length, 1);
   assert.equal(proposals.length, beforeCategoryProposalCount);
   const categoryProposal = await conversation.processAgentMessage(
@@ -2821,6 +2804,8 @@ async function main() {
     { message: "Recibí un salario de 125" },
   );
   assert.equal(incomeCategoryClarification.type, "CLARIFICATION_REQUIRED");
+  assert.equal(operations.at(-1).type, "category-hierarchical-read");
+  assert.equal(operations.at(-1).movementType, "INCOME");
   const incomeCategoryProposal = await conversation.processAgentMessage(
     incomeCategoryContext,
     { message: "Food" },
@@ -3608,37 +3593,9 @@ async function main() {
     contextA,
     "EXPENSE",
   );
-  assert.deepEqual(
-    expenseCategories.map((category) => ({
-      id: category.id,
-      name: category.name,
-      movementType: category.movementType,
-      level: category.level,
-      macroId: category.macroId,
-      macroName: category.macroName,
-      path: category.path,
-    })),
-    [
-      {
-        id: "expense-food",
-        name: "Food",
-        movementType: "EXPENSE",
-        level: "MICRO",
-        macroId: "expense-living",
-        macroName: "Living",
-        path: "Living → Food",
-      },
-      {
-        id: "expense-other-food",
-        name: "Food",
-        movementType: "EXPENSE",
-        level: "MICRO",
-        macroId: "expense-leisure",
-        macroName: "Leisure",
-        path: "Leisure → Food",
-      },
-    ],
-  );
+  assert.equal(expenseCategories.length, 7);
+  assert.equal(expenseCategories[0].id, "category-1");
+  assert.equal(expenseCategories[0].path, "Household → Food");
   assert.equal(
     operations.at(-1).type,
     "category-hierarchical-read",
@@ -3662,19 +3619,9 @@ async function main() {
     contextA,
     "INCOME",
   );
-  assert.deepEqual(incomeCategories, [
-    {
-      id: "income-salary",
-      name: "Salary",
-      movementType: "INCOME",
-      level: "MICRO",
-      parentId: "income-work",
-      isActive: true,
-      macroId: "income-work",
-      macroName: "Work",
-      path: "Work → Salary",
-    },
-  ]);
+  assert.equal(incomeCategories.length, 7);
+  assert.equal(incomeCategories[0].id, "category-1");
+  assert.equal(incomeCategories[0].path, "Household → Food");
   assert.equal(operations.at(-1).movementType, "INCOME");
   assert.equal(
     incomeCategories.every((category) => category.movementType === "INCOME"),

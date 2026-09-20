@@ -29,7 +29,10 @@ import type {
   CategoryDraftIncomePayload,
   AgentOperationDraftPayload,
 } from "./category-draft.types";
-import type { Category } from "@/modules/categories/category.types";
+import type {
+  Category,
+  CategoryMovementType,
+} from "@/modules/categories/category.types";
 import type {
   AgentContext,
   AgentMessageInput,
@@ -364,8 +367,9 @@ function resolveCategorySelection(
 async function categoryClarification(
   context: AgentContext,
   message = "¿En qué categoría lo quieres registrar?",
+  movementType: CategoryMovementType,
 ): Promise<AgentMessageResult> {
-  const categories = await getCategoriesTool(context);
+  const categories = await getCategoriesTool(context, movementType);
   const options = categories
     .map((category) => category.name)
     .map((name, index) => `${index + 1}. ${name}`)
@@ -576,8 +580,9 @@ function correctionClarification(message: string): AgentMessageResult {
 async function resolveCorrectionCategory(
   context: AgentContext,
   value: string,
+  movementType: CategoryMovementType,
 ): Promise<Category | null> {
-  const categories = await getCategoriesTool(context);
+  const categories = await getCategoriesTool(context, movementType);
   const normalized = normalizeCategoryName(value);
   if (!normalized) return null;
   const matches = categories.filter(
@@ -636,7 +641,7 @@ async function applyPendingProposalCorrection(
     } else if (correction.field === "description") {
       expense.description = value;
     } else if (correction.field === "category") {
-      const category = await resolveCorrectionCategory(context, value);
+      const category = await resolveCorrectionCategory(context, value, "EXPENSE");
       if (!category) {
         return correctionClarification(
           "No encontré una categoría única para esa corrección.",
@@ -673,7 +678,7 @@ async function applyPendingProposalCorrection(
     } else if (correction.field === "description") {
       income.description = value;
     } else if (correction.field === "category") {
-      const category = await resolveCorrectionCategory(context, value);
+      const category = await resolveCorrectionCategory(context, value, "INCOME");
       if (!category) {
         return correctionClarification(
           "No encontré una categoría única para esa corrección.",
@@ -934,7 +939,7 @@ async function completeOperationDraft(
         proposal.missingFields,
       );
     }
-    const categories = await getCategoriesTool(context);
+    const categories = await getCategoriesTool(context, "EXPENSE");
     const category = operationPayload.categoryName
       ? resolveCategorySelection(operationPayload.categoryName, categories)
       : null;
@@ -953,6 +958,7 @@ async function completeOperationDraft(
         operationPayload.categoryName
           ? "No tengo esa categoría disponible. Elige una de estas opciones:"
           : "Claro. ¿En qué categoría lo quieres registrar?",
+        "EXPENSE",
       );
     }
     const result = await createExpenseTool(context, {
@@ -986,7 +992,7 @@ async function completeOperationDraft(
     logIncomeDraft(context, "AWAITING_DETAILS", operationPayload);
     return operationDetailsClarification(operation, income.missingFields);
   }
-  const categories = await getCategoriesTool(context);
+  const categories = await getCategoriesTool(context, "INCOME");
   const category = operationPayload.categoryName
     ? resolveCategorySelection(operationPayload.categoryName, categories)
     : null;
@@ -1015,6 +1021,7 @@ async function completeOperationDraft(
       operationPayload.categoryName
         ? "No tengo esa categoría disponible. Elige una de estas opciones:"
         : "¿En qué categoría quieres registrar el ingreso?",
+      "INCOME",
     );
   }
   const result = await createIncomeTool(context, {
@@ -1082,7 +1089,11 @@ export async function processAgentMessage(
       return { type: "CONFIRMED", ...result };
     }
     if (activeDraft?.status === "AWAITING_CATEGORY") {
-      return categoryClarification(context);
+      return categoryClarification(
+        context,
+        undefined,
+        activeDraft.operationType === "CREATE_EXPENSE" ? "EXPENSE" : "INCOME",
+      );
     }
     if (activeDraft?.status === "AWAITING_OPERATION") {
       return operationClarification();
@@ -1146,7 +1157,10 @@ export async function processAgentMessage(
 
   if (activeDraft?.status === "AWAITING_CATEGORY") {
     const categoryDraft = activeDraft as AgentCategoryDraft;
-    const categories = await getCategoriesTool(context);
+    const categories = await getCategoriesTool(
+      context,
+      categoryDraft.operationType === "CREATE_EXPENSE" ? "EXPENSE" : "INCOME",
+    );
     const category = resolveCategorySelection(message, categories);
     if (!category) {
       try {
@@ -1168,6 +1182,7 @@ export async function processAgentMessage(
       return categoryClarification(
         context,
         "No tengo esa categoría disponible. Elige una de estas opciones:",
+        categoryDraft.operationType === "CREATE_EXPENSE" ? "EXPENSE" : "INCOME",
       );
     }
     return completeCategoryDraft(context, categoryDraft, category);
@@ -1333,7 +1348,7 @@ export async function processAgentMessage(
       description: interpretation.description as string,
       categoryId: null,
     };
-    const categories = await getCategoriesTool(context);
+    const categories = await getCategoriesTool(context, "INCOME");
     const category = interpretation.categoryName
       ? resolveCategorySelection(interpretation.categoryName, categories)
       : null;
@@ -1360,6 +1375,7 @@ export async function processAgentMessage(
         interpretation.categoryName
           ? "No tengo esa categoría disponible. Elige una de estas opciones:"
           : "¿En qué categoría quieres registrar el ingreso?",
+        "INCOME",
       );
     }
     const result = await createIncomeTool(context, {
@@ -1372,7 +1388,7 @@ export async function processAgentMessage(
   if (proposal.missingFields.length > 0) {
     return clarification(proposal.missingFields, proposal.clarificationMessage);
   }
-  const categories = await getCategoriesTool(context);
+  const categories = await getCategoriesTool(context, "EXPENSE");
   const category = interpretation.categoryName
     ? resolveCategorySelection(interpretation.categoryName, categories)
     : null;
@@ -1389,6 +1405,7 @@ export async function processAgentMessage(
       interpretation.categoryName
         ? "No tengo esa categoría disponible. Elige una de estas opciones:"
         : "Claro. ¿En qué categoría lo quieres registrar?",
+      "EXPENSE",
     );
   }
   const result = await createExpenseTool(context, {
