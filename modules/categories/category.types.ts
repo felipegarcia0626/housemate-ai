@@ -3,6 +3,22 @@ export interface Category {
   name: string;
 }
 
+export type CategoryMovementType = "EXPENSE" | "INCOME";
+
+export type CategoryLevel = "MACRO" | "MICRO";
+
+export interface HierarchicalCategory {
+  id: string;
+  name: string;
+  movementType: CategoryMovementType;
+  level: CategoryLevel;
+  parentId: string;
+  isActive: true;
+  macroId: string;
+  macroName: string;
+  path: string;
+}
+
 export type CategoryDomainErrorCode = "PERSISTENCE_ERROR";
 
 export class CategoryDomainError extends Error {

@@ -252,7 +252,7 @@ La eliminación de Income es física y se implementa mediante una única operaci
 Categories
 Obtener categorías.
 
-El incremento de lectura de Category consulta el catálogo global preconfigurado mediante una única operación PostgREST sobre `tb_categories` y expone únicamente `id` y `name`. Reutiliza el permiso `SELECT` concedido por la migración 0002, sin RPC, filtros de hogar ni permisos nuevos.
+El incremento de lectura de Category consulta el catálogo global preconfigurado mediante una única operación PostgREST sobre `tb_categories` y expone únicamente `id` y `name`. Reutiliza el permiso `SELECT` concedido por la migración 0002, sin RPC, filtros de hogar ni permisos nuevos. El incremento de consulta jerárquica añade la capacidad interna `listHierarchicalCategories`, filtrada explícitamente por `EXPENSE` o `INCOME`, que devuelve únicamente micros activas con su macro padre y ruta determinista; el endpoint público existente conserva su contrato.
 
 Calcular resúmenes por categoría atribuyendo los items categorizados a su propia categoría y la parte restante de `Expense.total_amount` a `Expense.category_id` cuando exista.
 

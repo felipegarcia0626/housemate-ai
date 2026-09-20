@@ -442,6 +442,13 @@ microcategoría activa del tipo de movimiento correcto y con un padre macro
 válido. Las referencias de categorías legacy se preservan para mantener la
 compatibilidad de los registros históricos y sus lecturas.
 
+Los consumidores internos pueden usar `listHierarchicalCategories` con un
+`movementType` explícito (`EXPENSE` o `INCOME`). Esta consulta devuelve solo
+micros activas tipadas, junto con `macroId`, `macroName`, `parentId` y la ruta
+`Macro → Micro`, con orden determinista por macro, micro e identificador. No
+devuelve macros finales ni categorías legacy. El endpoint público existente de
+categorías conserva su contrato `{ data: [{ id, name }] }` en este incremento.
+
 # 10. Income
 
 Representa una entrada de dinero que pertenece a un integrante del hogar.
