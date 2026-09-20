@@ -247,13 +247,13 @@ function operationPayloadFromInterpretation(
   >,
 ): AgentOperationDraftPayload {
   return {
-    amount: interpretation.amount,
+    amount: interpretation.amount ?? null,
     date: normalizeDraftDate(interpretation.date),
-    merchant: interpretation.merchant,
-    description: interpretation.description,
-    paidBySelf: interpretation.paidBySelf,
-    paidByMemberName: interpretation.paidByMemberName,
-    categoryName: interpretation.categoryName,
+    merchant: interpretation.merchant ?? null,
+    description: interpretation.description ?? null,
+    paidBySelf: interpretation.paidBySelf ?? null,
+    paidByMemberName: interpretation.paidByMemberName ?? null,
+    categoryName: interpretation.categoryName ?? null,
   };
 }
 
@@ -261,14 +261,67 @@ function operationPayloadFromIncomeInterpretation(
   interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_INCOME" }>,
 ): AgentOperationDraftPayload {
   return {
-    amount: interpretation.amount,
+    amount: interpretation.amount ?? null,
     date: normalizeDraftDate(interpretation.incomeDate),
     merchant: null,
-    description: interpretation.description,
+    description: interpretation.description ?? null,
     paidBySelf: null,
     paidByMemberName: null,
-    categoryName: interpretation.categoryName,
+    categoryName: interpretation.categoryName ?? null,
   };
+}
+
+function operationPayloadFromExpenseInterpretation(
+  interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_EXPENSE" }>,
+): AgentOperationDraftPayload {
+  return {
+    amount: interpretation.totalAmount ?? null,
+    date: normalizeDraftDate(interpretation.expenseDate),
+    merchant: interpretation.merchant ?? null,
+    description: interpretation.description ?? null,
+    paidBySelf: interpretation.paidBySelf ?? null,
+    paidByMemberName: interpretation.paidByMemberName ?? null,
+    categoryName: interpretation.categoryName ?? null,
+  };
+}
+
+function isDraftDateValue(value: string): boolean {
+  return /^(?:hoy|ayer|\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2} de [a-záéíóúñ]+(?: de \d{4})?)$/i.test(
+    normalizeOperationMessage(value),
+  );
+}
+
+function isDraftAmountValue(value: string): boolean {
+  return /^\$?\s*\d[\d.,]*$/.test(value.trim());
+}
+
+function canResolveDraftDetails(
+  message: string,
+  pendingFields: string[],
+): boolean {
+  if (!looksLikeMovementRequest(message)) return true;
+  const parts = message
+    .split(/\s*[,;]\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return false;
+  return parts.every((part) => {
+    if (
+      pendingFields.some(
+        (field) => field === "incomeDate" || field === "expenseDate",
+      ) && isDraftDateValue(part)
+    ) {
+      return true;
+    }
+    if (
+      pendingFields.some(
+        (field) => field === "amount" || field === "totalAmount",
+      ) && isDraftAmountValue(part)
+    ) {
+      return true;
+    }
+    return pendingFields.includes("description") && part.length > 0;
+  });
 }
 
 function toCategoryExpensePayload(
@@ -319,19 +372,37 @@ function parseDraftDetails(
       payerMatch?.[1]?.trim() ?? payload.paidByMemberName,
     categoryName: categoryMatch?.[1]?.trim() ?? payload.categoryName,
   };
-  if (pendingFields.includes("incomeDate") && pendingFields.includes("description")) {
-    const parts = message
-      .split(/\s*[,;]\s*/)
-      .map((part) => part.trim())
-      .filter(Boolean);
-    if (parts.length === 2) {
-      const date = normalizeDraftDate(parts[0]);
-      if (date && parts[1]) {
-        updatedPayload.date = date;
-        updatedPayload.description = parts[1];
-      }
+
+  const dateFields = pendingFields.filter(
+    (field) => field === "incomeDate" || field === "expenseDate",
+  );
+  const amountFields = pendingFields.filter(
+    (field) => field === "amount" || field === "totalAmount",
+  );
+  const parts = message
+    .split(/\s*[,;]\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  for (const part of parts) {
+    if (dateFields.length > 0 && isDraftDateValue(part)) {
+      const date = normalizeDraftDate(part);
+      if (date) updatedPayload.date = date;
+      continue;
+    }
+    if (amountFields.length > 0 && isDraftAmountValue(part)) {
+      updatedPayload.amount = part.replace(/^\$\s*/, "").trim();
+      continue;
+    }
+    if (
+      pendingFields.includes("description") &&
+      !descriptionMatch &&
+      part
+    ) {
+      updatedPayload.description = part;
     }
   }
+
   if (
     pendingFields.length === 1 &&
     !amountMatch &&
@@ -1117,13 +1188,16 @@ async function completeOperationDraft(
       ? resolveCategorySelection(operationPayload.categoryName, categories)
       : null;
     if (!category) {
+      const selectedMacroId = operationPayload.categoryName
+        ? resolveMacroSelection(operationPayload.categoryName, categories)
+        : null;
       await updateDraftOrThrow(
         context,
         draft,
         operation,
         "AWAITING_CATEGORY",
         {
-          selectedMacroId: null,
+          selectedMacroId,
           expense: toCategoryExpensePayload(proposal.input),
         },
       );
@@ -1133,6 +1207,7 @@ async function completeOperationDraft(
           ? "No tengo esa categoría disponible. Elige una de estas opciones:"
           : "Claro. ¿En qué categoría lo quieres registrar?",
         "EXPENSE",
+        selectedMacroId,
       );
     }
     const result = await createExpenseTool(context, {
@@ -1171,13 +1246,16 @@ async function completeOperationDraft(
     ? resolveCategorySelection(operationPayload.categoryName, categories)
     : null;
   if (!category) {
+    const selectedMacroId = operationPayload.categoryName
+      ? resolveMacroSelection(operationPayload.categoryName, categories)
+      : null;
     await updateDraftOrThrow(
       context,
       draft,
       operation,
       "AWAITING_CATEGORY",
       {
-        selectedMacroId: null,
+        selectedMacroId,
         income: toCategoryIncomePayload(income.input),
       },
     );
@@ -1197,6 +1275,7 @@ async function completeOperationDraft(
         ? "No tengo esa categoría disponible. Elige una de estas opciones:"
         : "¿En qué categoría quieres registrar el ingreso?",
       "INCOME",
+      selectedMacroId,
     );
   }
   const result = await createIncomeTool(context, {
@@ -1437,7 +1516,8 @@ export async function processAgentMessage(
   }
 
   if (activeDraft?.status === "AWAITING_DETAILS") {
-    if (looksLikeMovementRequest(message)) {
+    const pendingFields = await getDraftMissingFields(context, activeDraft);
+    if (!canResolveDraftDetails(message, pendingFields)) {
       return clarification(
         [],
         'Primero completa la operación anterior. Responde con los datos solicitados o "cancelar".',
@@ -1445,7 +1525,6 @@ export async function processAgentMessage(
     }
     const operationPayload =
       activeDraft.payload as AgentOperationDraftPayload;
-    const pendingFields = await getDraftMissingFields(context, activeDraft);
     const updatedPayload = parseDraftDetails(
       message,
       operationPayload,
@@ -1582,10 +1661,13 @@ export async function processAgentMessage(
       ? resolveCategorySelection(interpretation.categoryName, categories)
       : null;
     if (!category) {
+      const selectedMacroId = interpretation.categoryName
+        ? resolveMacroSelection(interpretation.categoryName, categories)
+        : null;
       await persistCategoryDraft(
         context,
         {
-          selectedMacroId: null,
+          selectedMacroId,
           income: toCategoryIncomePayload(incomeInput),
         },
         "CREATE_INCOME",
@@ -1606,6 +1688,7 @@ export async function processAgentMessage(
           ? "No tengo esa categoría disponible. Elige una de estas opciones:"
           : "¿En qué categoría quieres registrar el ingreso?",
         "INCOME",
+        selectedMacroId,
       );
     }
     const result = await createIncomeTool(context, {
@@ -1616,17 +1699,27 @@ export async function processAgentMessage(
   }
   const proposal = await toProposalInput(context, interpretation);
   if (proposal.missingFields.length > 0) {
-    return clarification(proposal.missingFields, proposal.clarificationMessage);
+    const draftPayload = operationPayloadFromExpenseInterpretation(
+      interpretation,
+    );
+    await persistDetailsDraft(context, "CREATE_EXPENSE", draftPayload);
+    return operationDetailsClarification(
+      "CREATE_EXPENSE",
+      proposal.missingFields,
+    );
   }
   const categories = await getCategoriesTool(context, "EXPENSE");
   const category = interpretation.categoryName
     ? resolveCategorySelection(interpretation.categoryName, categories)
     : null;
   if (!category) {
+    const selectedMacroId = interpretation.categoryName
+      ? resolveMacroSelection(interpretation.categoryName, categories)
+      : null;
     await persistCategoryDraft(
       context,
       {
-        selectedMacroId: null,
+        selectedMacroId,
         expense: toCategoryExpensePayload(proposal.input),
       },
       "CREATE_EXPENSE",
@@ -1637,6 +1730,7 @@ export async function processAgentMessage(
         ? "No tengo esa categoría disponible. Elige una de estas opciones:"
         : "Claro. ¿En qué categoría lo quieres registrar?",
       "EXPENSE",
+      selectedMacroId,
     );
   }
   const result = await createExpenseTool(context, {

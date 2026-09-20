@@ -1960,6 +1960,9 @@ async function main() {
   assert.equal(unknownPayer.type, "CLARIFICATION_REQUIRED");
   assert.equal(proposals.length, beforeUnknownPayerProposals);
   assert.equal(createdExpenses.at(-1).input.paidByMemberId, memberB);
+  await conversation.processAgentMessage(unknownPayerContext, {
+    message: "cancelar",
+  });
   console.log("PASS unknown household payer does not fall back to actor");
 
   mockInterpretation = {
@@ -1972,12 +1975,19 @@ async function main() {
     paidByMemberName: null,
     categoryName: "Food",
   };
+  const missingPayerContext = {
+    ...contextA,
+    conversationKey: "agent-expense-missing-payer",
+  };
   const missingPayer = await conversation.processAgentMessage(
-    { ...contextA, conversationKey: "agent-expense-missing-payer" },
+    missingPayerContext,
     { message: "Alguien pagó 100 de mercado" },
   );
   assert.equal(missingPayer.type, "CLARIFICATION_REQUIRED");
   assert.equal(proposals.length, beforeUnknownPayerProposals);
+  await conversation.processAgentMessage(missingPayerContext, {
+    message: "cancelar",
+  });
   console.log("PASS missing explicit payer requests clarification");
 
   mockInterpretation = {
@@ -2039,6 +2049,10 @@ async function main() {
   assert.equal(proposals.length, beforeAmbiguousPayerProposals);
   assert.equal(createdExpenses.at(-1).input.paidByMemberId, memberB);
   ambiguousMemberNames = false;
+  await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-expense-ambiguous-payer" },
+    { message: "cancelar" },
+  );
   console.log("PASS ambiguous household payer requests clarification");
 
   mockInterpretation = {
@@ -2980,8 +2994,70 @@ async function main() {
   );
   assert.equal(clarification.type, "CLARIFICATION_REQUIRED");
   assert.deepEqual(clarification.missingFields, ["totalAmount"]);
+  const incompleteExpenseDraft = categoryDrafts.find(
+    (row) => row.conversation_key === "agent-clarification",
+  );
+  assert.equal(incompleteExpenseDraft.status, "AWAITING_DETAILS");
+  assert.equal(incompleteExpenseDraft.operation_type, "CREATE_EXPENSE");
+  assert.equal(incompleteExpenseDraft.payload.amount, null);
+  assert.equal(incompleteExpenseDraft.payload.merchant, "algo");
+  await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-clarification" },
+    { message: "cancelar" },
+  );
   console.log(
-    "PASS incomplete intent asks for clarification without persistence",
+    "PASS incomplete Expense intent persists details without financial persistence",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Restaurante de prueba",
+    description: "Almuerzo",
+    totalAmount: null,
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const expenseDetailsContext = {
+    ...contextA,
+    conversationKey: "agent-expense-details-continuation",
+  };
+  const beforeExpenseDetailsCreated = createdExpenses.length;
+  const expenseDetailsInitial = await conversation.processAgentMessage(
+    expenseDetailsContext,
+    { message: "Gasté en un restaurante" },
+  );
+  assert.deepEqual(expenseDetailsInitial.missingFields, ["totalAmount"]);
+  const expenseDetailsDraft = categoryDrafts.find(
+    (row) => row.conversation_key === expenseDetailsContext.conversationKey,
+  );
+  const expenseDetailsCompleted = await conversation.processAgentMessage(
+    expenseDetailsContext,
+    { message: "45000" },
+    async () => {
+      throw new Error("OpenAI must not receive persisted expense details");
+    },
+  );
+  assert.equal(expenseDetailsCompleted.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(expenseDetailsCompleted.missingFields, ["categoryId"]);
+  assert.equal(expenseDetailsDraft.status, "AWAITING_CATEGORY");
+  assert.equal(expenseDetailsDraft.payload.expense.totalAmount, 45000);
+  assert.equal(expenseDetailsDraft.payload.expense.expenseDate, "2026-08-16");
+  assert.equal(expenseDetailsDraft.payload.expense.description, "Almuerzo");
+  const expenseDetailsProposal = await selectCategory(
+    expenseDetailsContext,
+    "Household",
+    "Food",
+  );
+  assert.equal(expenseDetailsProposal.type, "PROPOSAL_CREATED");
+  assert.equal(proposals.at(-1).payload.expense.totalAmount, 45000);
+  assert.equal(createdExpenses.length, beforeExpenseDetailsCreated);
+  await conversation.processAgentMessage(expenseDetailsContext, {
+    message: "no",
+  });
+  console.log(
+    "PASS incomplete Expense preserves amount, date and description through category selection",
   );
 
   mockInterpretation = {
@@ -3987,6 +4063,40 @@ async function main() {
 
   mockInterpretation = {
     kind: "CREATE_INCOME",
+    amount: "200000",
+    incomeDate: "2026-08-20",
+    description: "Subsidio",
+    categoryName: "Household",
+  };
+  const incomeMacroContext = {
+    ...contextA,
+    conversationKey: "agent-income-macro-initial-selection",
+  };
+  const incomeMacroReply = await conversation.processAgentMessage(
+    incomeMacroContext,
+    { message: "Recibí 200000 por subsidio" },
+  );
+  assert.equal(incomeMacroReply.type, "CLARIFICATION_REQUIRED");
+  assert.match(incomeMacroReply.message, /categoría específica/);
+  const incomeMacroDraft = categoryDrafts.find(
+    (row) => row.conversation_key === incomeMacroContext.conversationKey,
+  );
+  assert.equal(incomeMacroDraft.payload.selectedMacroId, "Household");
+  assert.ok(incomeMacroReply.options.some(({ name }) => name.includes("Food")));
+  const incomeMacroProposal = await conversation.processAgentMessage(
+    incomeMacroContext,
+    { message: "Food" },
+  );
+  assert.equal(incomeMacroProposal.type, "PROPOSAL_CREATED");
+  await conversation.processAgentMessage(incomeMacroContext, {
+    message: "no",
+  });
+  console.log(
+    "PASS initial income macro selection preserves details and narrows micro options",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
     amount: "3000000",
     incomeDate: null,
     description: "Salario",
@@ -4144,6 +4254,48 @@ async function main() {
   console.log(
     "PASS incomplete CREATE_INCOME preserves amount through details, category and confirmation",
   );
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: null,
+    incomeDate: null,
+    description: null,
+    categoryName: null,
+  };
+  const multiFieldIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-income-multi-field-details",
+  };
+  const multiFieldIncomeInitial = await conversation.processAgentMessage(
+    multiFieldIncomeContext,
+    { message: "Recibí un ingreso" },
+  );
+  assert.deepEqual(multiFieldIncomeInitial.missingFields, [
+    "amount",
+    "incomeDate",
+    "description",
+  ]);
+  const multiFieldIncomeCompleted = await conversation.processAgentMessage(
+    multiFieldIncomeContext,
+    { message: "3000000, hoy, salario" },
+    async () => {
+      throw new Error("OpenAI must not receive multi-field draft details");
+    },
+  );
+  assert.deepEqual(multiFieldIncomeCompleted.missingFields, ["categoryId"]);
+  const multiFieldIncomeDraft = categoryDrafts.find(
+    (row) => row.conversation_key === multiFieldIncomeContext.conversationKey,
+  );
+  assert.equal(multiFieldIncomeDraft.payload.income.amount, 3000000);
+  assert.equal(
+    multiFieldIncomeDraft.payload.income.incomeDate,
+    new Date().toISOString().slice(0, 10),
+  );
+  assert.equal(multiFieldIncomeDraft.payload.income.description, "salario");
+  await conversation.processAgentMessage(multiFieldIncomeContext, {
+    message: "cancelar",
+  });
+  console.log("PASS multi-field income details merge in one turn");
 
   mockInterpretation = {
     kind: "CREATE_INCOME",
