@@ -215,6 +215,35 @@ export async function findPendingProposalForConversation(
   return data ? mapRow(data as PendingProposalRow) : null;
 }
 
+export async function findLatestTerminalProposalForConversation(
+  householdId: string,
+  conversationKey: string,
+): Promise<PendingProposal | null> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_pending_proposals")
+    .select(
+      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+    )
+    .eq("household_id", householdId)
+    .eq("conversation_key", conversationKey);
+
+  if (error) throw persistenceError("read terminal conversation", error);
+
+  const terminalRows = (Array.isArray(data) ? data : [])
+    .filter(
+      (row): row is PendingProposalRow =>
+        (row as PendingProposalRow).status === "COMPLETED" ||
+        (row as PendingProposalRow).status === "REJECTED",
+    )
+    .sort((left, right) => {
+      const leftResolved = Date.parse(left.resolved_at ?? "");
+      const rightResolved = Date.parse(right.resolved_at ?? "");
+      return rightResolved - leftResolved;
+    });
+
+  return terminalRows[0] ? mapRow(terminalRows[0]) : null;
+}
+
 export type PendingExpenseConfirmationStatus =
   | "CREATED"
   | "ALREADY_COMPLETED"

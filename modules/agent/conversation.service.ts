@@ -2,6 +2,8 @@ import { createExpenseTool } from "./tools/create-expense.tool";
 import {
   confirmAgentProposal,
   findActiveProposalId,
+  findLatestTerminalProposal,
+  getTerminalProposalResult,
   rejectAgentProposal,
 } from "./agent.service";
 import { createIncomeTool } from "./tools/create-income.tool";
@@ -1346,6 +1348,18 @@ export async function processAgentMessage(
     if (proposalId) {
       const result = await confirmAgentProposal(context, proposalId);
       if (activeDraft) await deleteDraftOrThrow(context, activeDraft);
+      if (result.status === "REJECTED") {
+        return {
+          type: "REJECTED",
+          ...result,
+          message: "La propuesta ya había sido rechazada.",
+        };
+      }
+      return { type: "CONFIRMED", ...result };
+    }
+    const terminalProposal = await findLatestTerminalProposal(context);
+    if (terminalProposal) {
+      const result = await getTerminalProposalResult(context, terminalProposal);
       if (result.status === "REJECTED") {
         return {
           type: "REJECTED",

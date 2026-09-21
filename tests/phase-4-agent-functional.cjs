@@ -1810,6 +1810,60 @@ async function main() {
   assert.equal(createdExpenses.length, 3);
   console.log("PASS explicit confirmation reuses the existing Expense");
 
+  const contextualNaturalRetry = await conversation.processAgentMessage(
+    naturalContext,
+    { message: "sí" },
+  );
+  assert.equal(contextualNaturalRetry.type, "CONFIRMED");
+  assert.equal(contextualNaturalRetry.expenseId, naturalConfirmed.expenseId);
+  assert.equal(createdExpenses.length, 3);
+  assert.equal(
+    proposals.filter((row) => row.id === naturalProposal.proposalId).length,
+    1,
+  );
+  console.log("PASS contextual Expense confirmation retry reuses terminal result");
+
+  const terminalIsolationContext = {
+    ...contextA,
+    conversationKey: "agent-terminal-retry-isolation",
+  };
+  const terminalIsolationProposal = {
+    id: "62000000-0000-4000-8000-000000000097",
+    household_id: householdA,
+    conversation_key: terminalIsolationContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "COMPLETED",
+    payload: {
+      actorMemberId: memberA,
+      source: "WEB",
+      expense: expenseInput,
+    },
+    created_at: "2026-08-12T12:00:00.000Z",
+    updated_at: "2026-08-12T12:01:00.000Z",
+    resolved_at: "2026-08-12T12:01:00.000Z",
+    expense_id: "expense-terminal-isolation",
+    income_id: null,
+  };
+  proposals.push(terminalIsolationProposal);
+  const beforeForeignTerminalRetry = createdExpenses.length;
+  const foreignTerminalRetry = await conversation.processAgentMessage(
+    {
+      householdId: householdB,
+      actorMemberId: memberB,
+      source: "WEB",
+      conversationKey: "agent-terminal-retry-foreign",
+    },
+    { message: "sí" },
+  );
+  assert.equal(foreignTerminalRetry.type, "CLARIFICATION_REQUIRED");
+  assert.equal(createdExpenses.length, beforeForeignTerminalRetry);
+  assert.equal(
+    proposals.filter((row) => row.id === terminalIsolationProposal.id)
+      .length,
+    1,
+  );
+  console.log("PASS terminal confirmation retry preserves context isolation");
+
   const defaultExpenseDate = new Date().toISOString().slice(0, 10);
   mockInterpretation = {
     kind: "CREATE_EXPENSE",
@@ -1854,7 +1908,8 @@ async function main() {
     { ...contextA, conversationKey: "agent-expense-defaults" },
     { message: "si" },
   );
-  assert.equal(repeatedDefaultConfirmation.type, "CLARIFICATION_REQUIRED");
+  assert.equal(repeatedDefaultConfirmation.type, "CONFIRMED");
+  assert.equal(repeatedDefaultConfirmation.expenseId, defaultConfirmed.expenseId);
   assert.equal(createdExpenses.length, 4);
   assert.equal(createdExpenses[3].input.expenseDate, defaultExpenseDate);
   assert.equal(createdExpenses[3].input.paidByMemberId, memberA);
@@ -1900,7 +1955,8 @@ async function main() {
     otherPayerContext,
     { message: "si" },
   );
-  assert.equal(otherPayerRepeated.type, "CLARIFICATION_REQUIRED");
+  assert.equal(otherPayerRepeated.type, "CONFIRMED");
+  assert.equal(otherPayerRepeated.expenseId, otherPayerConfirmed.expenseId);
   assert.equal(createdExpenses.length, beforeOtherPayerExpenses + 1);
   console.log(
     "PASS explicit household member payer resolves without changing createdBy",
@@ -1935,8 +1991,15 @@ async function main() {
     { message: "no" },
   );
   assert.equal(normalizedPayerRejected.type, "REJECTED");
+  const normalizedPayerRetry = await conversation.processAgentMessage(
+    normalizedPayerContext,
+    { message: "sí" },
+  );
+  assert.equal(normalizedPayerRetry.type, "REJECTED");
+  assert.match(normalizedPayerRetry.message, /ya había sido rechazada/);
+  assert.equal(createdExpenses.length, beforeOtherPayerExpenses + 1);
   normalizedMemberNames = false;
-  console.log("PASS payer resolution normalizes accents and internal spaces");
+  console.log("PASS rejected proposal contextual retry stays terminal");
 
   mockInterpretation = {
     kind: "CREATE_EXPENSE",
@@ -2522,8 +2585,18 @@ async function main() {
   assert.equal(incomeDraftConfirmation.type, "CONFIRMED");
   assert.equal(createdIncomes.length, beforeAmbiguousIncomeCount + 1);
   assert.equal(createdIncomes.at(-1).input.memberId, memberA);
+  const contextualIncomeRetry = await conversation.processAgentMessage(
+    incomeOperationContext,
+    { message: "sí" },
+  );
+  assert.equal(contextualIncomeRetry.type, "CONFIRMED");
+  assert.equal(
+    contextualIncomeRetry.incomeId,
+    incomeDraftConfirmation.incomeId,
+  );
+  assert.equal(createdIncomes.length, beforeAmbiguousIncomeCount + 1);
   console.log(
-    "PASS ambiguous income persists details, category and confirmation flow",
+    "PASS ambiguous income persists details, category and contextual retry",
   );
 
   mockInterpretation = {
@@ -4249,7 +4322,12 @@ async function main() {
     incomeDetailsContext,
     { message: "sí" },
   );
-  assert.notEqual(repeatedIncomeDetailsConfirmation.type, "CONFIRMED");
+  assert.equal(repeatedIncomeDetailsConfirmation.type, "CONFIRMED");
+  assert.equal(
+    repeatedIncomeDetailsConfirmation.expenseId ??
+      repeatedIncomeDetailsConfirmation.incomeId,
+    incomeDetailsConfirmation.incomeId,
+  );
   assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes + 1);
   console.log(
     "PASS incomplete CREATE_INCOME preserves amount through details, category and confirmation",
@@ -5278,7 +5356,7 @@ async function main() {
     const repeated = await conversation.processAgentMessage(d3Context, {
       message: confirmationMessage,
     });
-    assert.equal(repeated.type, "CLARIFICATION_REQUIRED");
+    assert.equal(repeated.type, "CONFIRMED");
     assert.equal(createdExpenses.length, beforeExpenseCount + 1);
     recordD3Case(`confirmation ${confirmationMessage}`, "CONFIRMED once; duplicate ignored");
   }

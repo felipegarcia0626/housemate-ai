@@ -22,6 +22,7 @@ import {
   type ExpenseRejectionResult,
   type PendingExpenseProposal,
   type PendingExpenseProposalPayload,
+  type PendingProposal,
   type IncomeConfirmationResult,
   type IncomeProposalResult,
   type IncomeRejectionResult,
@@ -35,6 +36,7 @@ import {
   createPendingIncomeProposal,
   findPendingProposal,
   findPendingProposalForConversation,
+  findLatestTerminalProposalForConversation,
   findPendingIncomeProposal,
   rejectPendingProposal,
   PendingProposalRepositoryError,
@@ -345,6 +347,85 @@ export async function findActiveProposalId(
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
     throw mapRepositoryError(error);
+  }
+}
+
+export async function findLatestTerminalProposal(
+  context: AgentContext,
+): Promise<PendingProposal | null> {
+  validateContext(context);
+  try {
+    const proposal = await findLatestTerminalProposalForConversation(
+      context.householdId,
+      context.conversationKey,
+    );
+    if (!proposal) return null;
+    if (
+      proposal.payload.actorMemberId !== context.actorMemberId ||
+      proposal.payload.source !== context.source
+    ) {
+      return null;
+    }
+    return proposal;
+  } catch (error) {
+    if (error instanceof AgentDomainError) throw error;
+    throw mapRepositoryError(error);
+  }
+}
+
+export async function getTerminalProposalResult(
+  context: AgentContext,
+  proposal: PendingProposal,
+): Promise<
+  | ExpenseConfirmationResult
+  | ExpenseRejectionResult
+  | IncomeConfirmationResult
+  | IncomeRejectionResult
+> {
+  validateContext(context);
+  ensureProposalOwnership(
+    context,
+    proposal as unknown as PendingExpenseProposal,
+  );
+
+  if (proposal.status === "REJECTED") {
+    return { proposalId: proposal.id, status: "REJECTED" };
+  }
+
+  if (proposal.operationType === "CREATE_EXPENSE") {
+    if (!proposal.expenseId) throw persistenceError();
+    try {
+      const expense = await getExpenseById(
+        { householdId: context.householdId },
+        proposal.expenseId,
+      );
+      return {
+        proposalId: proposal.id,
+        status: "CONFIRMED",
+        expenseId: expense.id,
+        expense,
+      };
+    } catch (error) {
+      if (error instanceof ExpenseDomainError) throw error;
+      throw persistenceError();
+    }
+  }
+
+  if (!proposal.incomeId) throw persistenceError();
+  try {
+    const income = await getIncomeById(
+      { householdId: context.householdId },
+      proposal.incomeId,
+    );
+    return {
+      proposalId: proposal.id,
+      status: "CONFIRMED",
+      incomeId: income.id,
+      income,
+    };
+  } catch (error) {
+    if (error instanceof IncomeDomainError) throw error;
+    throw persistenceError();
   }
 }
 
