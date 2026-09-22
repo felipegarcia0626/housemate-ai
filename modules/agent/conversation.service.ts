@@ -1,7 +1,6 @@
 import { createExpenseTool } from "./tools/create-expense.tool";
 import {
   confirmAgentProposal,
-  findActiveProposalId,
   findLatestTerminalProposal,
   getTerminalProposalResult,
   rejectAgentProposal,
@@ -632,12 +631,22 @@ async function completeCategoryDraft(
           draft.updatedAt,
         );
       }
-      const result = await createExpenseTool(context, {
-        ...nextPayload.expense,
-        splits: nextPayload.expense.splits ?? [
-          { householdMemberId: context.actorMemberId, percentage: 100 },
-        ],
-      });
+      let result: Awaited<ReturnType<typeof createExpenseTool>>;
+      try {
+        result = await createExpenseTool(context, {
+          ...nextPayload.expense,
+          splits: nextPayload.expense.splits ?? [
+            { householdMemberId: context.actorMemberId, percentage: 100 },
+          ],
+        });
+      } catch (error) {
+        await restoreCategoryDraftAfterFailure(
+          context,
+          draft,
+          updatedCategoryDraft,
+        );
+        throw error;
+      }
       try {
         await deleteCategoryDraft(context, draft.id);
       } catch (error) {
@@ -646,14 +655,11 @@ async function completeCategoryDraft(
           draft.operationType,
           result.proposalId,
         );
-        if (updatedCategoryDraft) {
-          await updateCategoryDraft(
-            context,
-            draft.id,
-            draft.payload,
-            updatedCategoryDraft.updatedAt,
-          );
-        }
+        await restoreCategoryDraftAfterFailure(
+          context,
+          draft,
+          updatedCategoryDraft,
+        );
         throw error;
       }
       return { type: "PROPOSAL_CREATED", ...result };
@@ -677,10 +683,20 @@ async function completeCategoryDraft(
         draft.updatedAt,
       );
     }
-    const result = await createIncomeTool(context, {
-      ...nextPayload.income,
-      memberId: context.actorMemberId,
-    });
+    let result: Awaited<ReturnType<typeof createIncomeTool>>;
+    try {
+      result = await createIncomeTool(context, {
+        ...nextPayload.income,
+        memberId: context.actorMemberId,
+      });
+    } catch (error) {
+      await restoreCategoryDraftAfterFailure(
+        context,
+        draft,
+        updatedCategoryDraft,
+      );
+      throw error;
+    }
     try {
       await deleteCategoryDraft(context, draft.id);
     } catch (error) {
@@ -689,14 +705,11 @@ async function completeCategoryDraft(
         draft.operationType,
         result.proposalId,
       );
-      if (updatedCategoryDraft) {
-        await updateCategoryDraft(
-          context,
-          draft.id,
-          draft.payload,
-          updatedCategoryDraft.updatedAt,
-        );
-      }
+      await restoreCategoryDraftAfterFailure(
+        context,
+        draft,
+        updatedCategoryDraft,
+      );
       throw error;
     }
     return { type: "PROPOSAL_CREATED", ...result };
@@ -1233,6 +1246,58 @@ async function compensatePendingProposalAfterDraftFailure(
   }
 }
 
+function terminalProposalSupersedesDraft(
+  proposal: PendingProposal,
+  draft: AgentDraft,
+): boolean {
+  const resolvedAt = Date.parse(proposal.resolvedAt ?? proposal.updatedAt);
+  const draftUpdatedAt = Date.parse(draft.updatedAt);
+  return (
+    Number.isFinite(resolvedAt) &&
+    Number.isFinite(draftUpdatedAt) &&
+    resolvedAt > draftUpdatedAt
+  );
+}
+
+async function reconcileDraftWithProposal(
+  context: AgentContext,
+  draft: AgentDraft,
+): Promise<void> {
+  try {
+    await deleteDraftOrThrow(context, draft);
+  } catch (error) {
+    if (error instanceof AgentDomainError) throw error;
+    throw new AgentDomainError(
+      "PERSISTENCE_ERROR",
+      "The conversation state could not be reconciled.",
+    );
+  }
+}
+
+async function restoreCategoryDraftAfterFailure(
+  context: AgentContext,
+  draft: AgentCategoryDraft,
+  updatedDraft: AgentCategoryDraft | null,
+): Promise<void> {
+  if (!updatedDraft) return;
+  try {
+    await updateCategoryDraft(
+      context,
+      draft.id,
+      draft.payload,
+      updatedDraft.updatedAt,
+    );
+  } catch (error) {
+    if (isCategoryDraftRepositoryError(error)) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The category draft could not be restored after proposal failure.",
+      );
+    }
+    throw error;
+  }
+}
+
 async function completeOperationDraft(
   context: AgentContext,
   draft: AgentDraft,
@@ -1410,9 +1475,35 @@ export async function processAgentMessage(
     }
   };
 
+  let terminalProposal: PendingProposal | null = null;
+  let terminalProposalLoaded = false;
+  const getTerminalProposalForMessage = async (): Promise<PendingProposal | null> => {
+    if (terminalProposalLoaded) return terminalProposal;
+    terminalProposal = await findLatestTerminalProposal(context);
+    terminalProposalLoaded = true;
+    return terminalProposal;
+  };
+
+  if (activeDraft && !isConfirmation(message) && !isRejection(message)) {
+    const activePendingProposal = await getPendingProposalForMessage();
+    if (activePendingProposal) {
+      await reconcileDraftWithProposal(context, activeDraft);
+      activeDraft = null;
+    } else {
+      const latestTerminalProposal = await getTerminalProposalForMessage();
+      if (
+        latestTerminalProposal &&
+        terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
+      ) {
+        await reconcileDraftWithProposal(context, activeDraft);
+        activeDraft = null;
+      }
+    }
+  }
+
   if (isConfirmation(message)) {
     const proposalId =
-      input.proposalId ?? (await findActiveProposalId(context));
+      input.proposalId ?? (await getPendingProposalForMessage())?.id ?? null;
     if (proposalId) {
       const result = await confirmAgentProposal(context, proposalId);
       if (activeDraft) await deleteDraftOrThrow(context, activeDraft);
@@ -1424,6 +1515,15 @@ export async function processAgentMessage(
         };
       }
       return { type: "CONFIRMED", ...result };
+    }
+    const latestTerminalProposal = await getTerminalProposalForMessage();
+    if (
+      activeDraft &&
+      latestTerminalProposal &&
+      terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
+    ) {
+      await reconcileDraftWithProposal(context, activeDraft);
+      activeDraft = null;
     }
     if (activeDraft?.status === "AWAITING_CATEGORY") {
       return categoryClarification(
@@ -1442,9 +1542,11 @@ export async function processAgentMessage(
         missingFields,
       );
     }
-    const terminalProposal = await findLatestTerminalProposal(context);
-    if (terminalProposal) {
-      const result = await getTerminalProposalResult(context, terminalProposal);
+    if (latestTerminalProposal) {
+      const result = await getTerminalProposalResult(
+        context,
+        latestTerminalProposal,
+      );
       if (result.status === "REJECTED") {
         return {
           type: "REJECTED",
@@ -1458,11 +1560,20 @@ export async function processAgentMessage(
   }
   if (isRejection(message)) {
     const proposalId =
-      input.proposalId ?? (await findActiveProposalId(context));
+      input.proposalId ?? (await getPendingProposalForMessage())?.id ?? null;
     if (proposalId) {
       const result = await rejectAgentProposal(context, proposalId);
       if (activeDraft) await deleteDraftOrThrow(context, activeDraft);
       return { type: "REJECTED", ...result };
+    }
+    const latestTerminalProposal = await getTerminalProposalForMessage();
+    if (
+      activeDraft &&
+      latestTerminalProposal &&
+      terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
+    ) {
+      await reconcileDraftWithProposal(context, activeDraft);
+      activeDraft = null;
     }
     if (activeDraft) {
       await deleteDraftOrThrow(context, activeDraft);

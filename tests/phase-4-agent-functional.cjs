@@ -146,6 +146,10 @@ let confirmationFailure = false;
 let confirmationPayloadMutation = null;
 let rejectionFailure = false;
 let categoryDraftDeletionFailure = false;
+let categoryDraftRestorationFailure = false;
+let draftRestoreFailureArmed = false;
+let pendingProposalCreationFailure = false;
+let pendingProposalDeletionFailure = false;
 let ambiguousMemberNames = false;
 let normalizedMemberNames = false;
 let duplicateCategoryNames = false;
@@ -212,6 +216,10 @@ class FakeQuery {
 
     if (this.table === "tb_agent_category_drafts") {
       if (this.updatePayload !== undefined) {
+        if (categoryDraftRestorationFailure && draftRestoreFailureArmed) {
+          draftRestoreFailureArmed = false;
+          return { data: null, error: { code: "DRAFT_RESTORE_FAILURE" } };
+        }
         const row = categoryDrafts.find((candidate) =>
           matches(candidate, this.filters),
         );
@@ -245,6 +253,7 @@ class FakeQuery {
       const rows = categoryDrafts.filter((row) => matches(row, this.filters));
       if (this.deleteRequested) {
         if (categoryDraftDeletionFailure) {
+          draftRestoreFailureArmed = true;
           return { data: null, error: { code: "DRAFT_DELETE_FAILURE" } };
         }
         categoryDrafts = categoryDrafts.filter((row) => !rows.includes(row));
@@ -253,6 +262,9 @@ class FakeQuery {
     }
 
     if (this.insertPayload !== undefined) {
+      if (pendingProposalCreationFailure) {
+        return { data: null, error: { code: "PROPOSAL_CREATE_FAILURE" } };
+      }
       const conflict = proposals.some(
         (row) =>
           row.household_id === this.insertPayload.household_id &&
@@ -283,6 +295,9 @@ class FakeQuery {
 
     const rows = proposals.filter((row) => matches(row, this.filters));
     if (this.deleteRequested) {
+      if (pendingProposalDeletionFailure) {
+        return { data: null, error: { code: "PROPOSAL_DELETE_FAILURE" } };
+      }
       proposals = proposals.filter((row) => !rows.includes(row));
     }
     return { data: rows, error: null };
@@ -2326,6 +2341,334 @@ async function main() {
   console.log(
     "PASS failed draft cleanup compensates the newly created proposal",
   );
+
+  const creationFailureContext = {
+    ...contextA,
+    conversationKey: "agent-draft-proposal-creation-failure",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Creation Failure Market",
+    description: null,
+    totalAmount: "82000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    categoryName: null,
+  };
+  const creationFailureStart = await conversation.processAgentMessage(
+    creationFailureContext,
+    { message: "Registra 82000 en Creation Failure Market" },
+  );
+  assert.equal(creationFailureStart.type, "CLARIFICATION_REQUIRED");
+  await conversation.processAgentMessage(creationFailureContext, {
+    message: "Household",
+  });
+  const creationFailureExpensesBefore = createdExpenses.length;
+  pendingProposalCreationFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(creationFailureContext, {
+        message: "Food",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    pendingProposalCreationFailure = false;
+  }
+  assert.equal(
+    proposals.some(
+      (row) => row.conversation_key === creationFailureContext.conversationKey,
+    ),
+    false,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === creationFailureContext.conversationKey,
+    ),
+    true,
+  );
+  assert.equal(createdExpenses.length, creationFailureExpensesBefore);
+  const creationFailureRetry = await conversation.processAgentMessage(
+    creationFailureContext,
+    { message: "Food" },
+  );
+  assert.equal(creationFailureRetry.type, "PROPOSAL_CREATED");
+  assert.equal(
+    proposals.filter(
+      (row) => row.conversation_key === creationFailureContext.conversationKey,
+    ).length,
+    1,
+  );
+  console.log("PASS proposal creation failure preserves a coherent draft");
+
+  const doubleFailureContext = {
+    ...contextA,
+    conversationKey: "agent-draft-double-compensation-failure",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Double Failure Market",
+    description: null,
+    totalAmount: "83000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    categoryName: null,
+  };
+  const doubleFailureStart = await conversation.processAgentMessage(
+    doubleFailureContext,
+    { message: "Registra 83000 en Double Failure Market" },
+  );
+  assert.equal(doubleFailureStart.type, "CLARIFICATION_REQUIRED");
+  await conversation.processAgentMessage(doubleFailureContext, {
+    message: "Household",
+  });
+  const doubleFailureExpensesBefore = createdExpenses.length;
+  categoryDraftDeletionFailure = true;
+  pendingProposalDeletionFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(doubleFailureContext, {
+        message: "Food",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    categoryDraftDeletionFailure = false;
+    pendingProposalDeletionFailure = false;
+    categoryDraftRestorationFailure = false;
+    draftRestoreFailureArmed = false;
+  }
+  const doubleFailureProposal = proposals.find(
+    (row) =>
+      row.conversation_key === doubleFailureContext.conversationKey &&
+      row.status === "AWAITING_CONFIRMATION",
+  );
+  assert.ok(doubleFailureProposal);
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === doubleFailureContext.conversationKey,
+    ),
+    true,
+  );
+  assert.equal(createdExpenses.length, doubleFailureExpensesBefore);
+  const doubleFailureRecovery = await conversation.processAgentMessage(
+    doubleFailureContext,
+    { message: "si" },
+  );
+  assert.equal(doubleFailureRecovery.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, doubleFailureExpensesBefore + 1);
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === doubleFailureContext.conversationKey,
+    ),
+    false,
+  );
+  assert.equal(
+    proposals.filter(
+      (row) => row.conversation_key === doubleFailureContext.conversationKey,
+    ).length,
+    1,
+  );
+  console.log(
+    "PASS double compensation failure blocks independent processing and recovers on retry",
+  );
+
+  const restorationFailureContext = {
+    ...contextA,
+    conversationKey: "agent-draft-restoration-failure",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Restoration Failure Market",
+    description: null,
+    totalAmount: "84000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    categoryName: null,
+  };
+  const restorationFailureStart = await conversation.processAgentMessage(
+    restorationFailureContext,
+    { message: "Registra 84000 en Restoration Failure Market" },
+  );
+  assert.equal(restorationFailureStart.type, "CLARIFICATION_REQUIRED");
+  await conversation.processAgentMessage(restorationFailureContext, {
+    message: "Household",
+  });
+  const restorationFailureExpensesBefore = createdExpenses.length;
+  categoryDraftDeletionFailure = true;
+  categoryDraftRestorationFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(restorationFailureContext, {
+        message: "Food",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    categoryDraftDeletionFailure = false;
+    categoryDraftRestorationFailure = false;
+    draftRestoreFailureArmed = false;
+  }
+  assert.equal(
+    proposals.some(
+      (row) => row.conversation_key === restorationFailureContext.conversationKey,
+    ),
+    false,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === restorationFailureContext.conversationKey,
+    ),
+    true,
+  );
+  assert.equal(createdExpenses.length, restorationFailureExpensesBefore);
+  const restorationFailureRetryMacro = await conversation.processAgentMessage(
+    restorationFailureContext,
+    { message: "Household" },
+  );
+  assert.equal(restorationFailureRetryMacro.type, "CLARIFICATION_REQUIRED");
+  const restorationFailureRetry = await conversation.processAgentMessage(
+    restorationFailureContext,
+    { message: "Food" },
+  );
+  assert.equal(restorationFailureRetry.type, "PROPOSAL_CREATED");
+  assert.equal(
+    proposals.filter(
+      (row) => row.conversation_key === restorationFailureContext.conversationKey,
+    ).length,
+    1,
+  );
+  console.log("PASS draft restoration failure remains recoverable");
+
+  const terminalCleanupFailureContext = {
+    ...contextA,
+    conversationKey: "agent-terminal-cleanup-failure",
+  };
+  const terminalCleanupFailureFixture = seedLifecycleState(
+    terminalCleanupFailureContext,
+    6,
+  );
+  const terminalCleanupFailureTimestamp = new Date().toISOString();
+  terminalCleanupFailureFixture.draft.created_at =
+    terminalCleanupFailureTimestamp;
+  terminalCleanupFailureFixture.draft.updated_at =
+    terminalCleanupFailureTimestamp;
+  const terminalCleanupFailureExpensesBefore = createdExpenses.length;
+  categoryDraftDeletionFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(terminalCleanupFailureContext, {
+        message: "si",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    categoryDraftDeletionFailure = false;
+    draftRestoreFailureArmed = false;
+  }
+  terminalCleanupFailureFixture.proposal.resolved_at = new Date(
+    Date.now() + 1000,
+  ).toISOString();
+  assert.equal(
+    terminalCleanupFailureFixture.proposal.status,
+    "COMPLETED",
+  );
+  assert.equal(
+    createdExpenses.length,
+    terminalCleanupFailureExpensesBefore + 1,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.id === terminalCleanupFailureFixture.draft.id,
+    ),
+    true,
+  );
+  const terminalCleanupFailureRetry = await conversation.processAgentMessage(
+    terminalCleanupFailureContext,
+    { message: "si" },
+  );
+  assert.equal(terminalCleanupFailureRetry.type, "CONFIRMED");
+  assert.equal(
+    createdExpenses.length,
+    terminalCleanupFailureExpensesBefore + 1,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.id === terminalCleanupFailureFixture.draft.id,
+    ),
+    false,
+  );
+  console.log(
+    "PASS terminal confirmation remains idempotent after draft cleanup failure",
+  );
+
+  const terminalCleanupContext = {
+    ...contextA,
+    conversationKey: "agent-terminal-cleanup-recovery",
+  };
+  const terminalCleanupDraft = {
+    id: "62000000-0000-4000-8000-000000000906",
+    household_id: terminalCleanupContext.householdId,
+    actor_member_id: terminalCleanupContext.actorMemberId,
+    conversation_key: terminalCleanupContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_DETAILS",
+    payload: {
+      amount: "85000",
+      date: "2026-08-16",
+      merchant: "Terminal Cleanup Market",
+      description: null,
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: null,
+    },
+    created_at: "2026-08-16T12:00:00.000Z",
+    updated_at: "2026-08-16T12:01:00.000Z",
+  };
+  const terminalCleanupProposal = {
+    id: "62000000-0000-4000-8000-000000000907",
+    household_id: terminalCleanupContext.householdId,
+    conversation_key: terminalCleanupContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "COMPLETED",
+    payload: {
+      actorMemberId: terminalCleanupContext.actorMemberId,
+      source: terminalCleanupContext.source,
+      expense: {
+        paidByMemberId: terminalCleanupContext.actorMemberId,
+        totalAmount: 85000,
+        expenseDate: "2026-08-16",
+        description: "Terminal cleanup proposal",
+        items: [],
+        splits: [
+          {
+            householdMemberId: terminalCleanupContext.actorMemberId,
+            percentage: 100,
+          },
+        ],
+      },
+    },
+    created_at: "2026-08-16T12:02:00.000Z",
+    updated_at: "2026-08-16T12:02:00.000Z",
+    resolved_at: "2026-08-16T12:03:00.000Z",
+    expense_id: "expense-terminal-cleanup",
+    income_id: null,
+  };
+  categoryDrafts.push(terminalCleanupDraft);
+  proposals.push(terminalCleanupProposal);
+  const terminalCleanupExpensesBefore = createdExpenses.length;
+  const terminalCleanupRetry = await conversation.processAgentMessage(
+    terminalCleanupContext,
+    { message: "si" },
+  );
+  assert.equal(terminalCleanupRetry.type, "CONFIRMED");
+  assert.equal(terminalCleanupRetry.expenseId, "expense-terminal-cleanup");
+  assert.equal(createdExpenses.length, terminalCleanupExpensesBefore);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === terminalCleanupDraft.id),
+    false,
+  );
+  console.log("PASS terminal proposal supersedes stale draft on recovery");
 
   duplicateCategoryNames = true;
   mockInterpretation = {
