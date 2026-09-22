@@ -44,6 +44,8 @@ import type {
 } from "./agent.types";
 import { AgentDomainError } from "./agent.types";
 import {
+  consumePendingIncomeProposal,
+  consumePendingProposal,
   findPendingProposalForConversation,
   PendingProposalRepositoryError,
   updatePendingProposalConditionally,
@@ -617,12 +619,13 @@ async function completeCategoryDraft(
         selectedMacroId: null,
         expense: { ...payload.expense, categoryId: category.id },
       };
+      let updatedCategoryDraft: AgentCategoryDraft | null = null;
       if (
         payload.expense.categoryId !== category.id ||
         (payload.selectedMacroId !== null &&
           payload.selectedMacroId !== undefined)
       ) {
-        await updateCategoryDraft(
+        updatedCategoryDraft = await updateCategoryDraft(
           context,
           draft.id,
           nextPayload,
@@ -635,7 +638,24 @@ async function completeCategoryDraft(
           { householdMemberId: context.actorMemberId, percentage: 100 },
         ],
       });
-      await deleteCategoryDraft(context, draft.id);
+      try {
+        await deleteCategoryDraft(context, draft.id);
+      } catch (error) {
+        await compensatePendingProposalAfterDraftFailure(
+          context,
+          draft.operationType,
+          result.proposalId,
+        );
+        if (updatedCategoryDraft) {
+          await updateCategoryDraft(
+            context,
+            draft.id,
+            draft.payload,
+            updatedCategoryDraft.updatedAt,
+          );
+        }
+        throw error;
+      }
       return { type: "PROPOSAL_CREATED", ...result };
     }
     const payload = draft.payload as CategoryDraftIncomePayload;
@@ -644,12 +664,13 @@ async function completeCategoryDraft(
       selectedMacroId: null,
       income: { ...payload.income, categoryId: category.id },
     };
+    let updatedCategoryDraft: AgentCategoryDraft | null = null;
     if (
       payload.income.categoryId !== category.id ||
       (payload.selectedMacroId !== null &&
         payload.selectedMacroId !== undefined)
     ) {
-      await updateCategoryDraft(
+      updatedCategoryDraft = await updateCategoryDraft(
         context,
         draft.id,
         nextPayload,
@@ -660,7 +681,24 @@ async function completeCategoryDraft(
       ...nextPayload.income,
       memberId: context.actorMemberId,
     });
-    await deleteCategoryDraft(context, draft.id);
+    try {
+      await deleteCategoryDraft(context, draft.id);
+    } catch (error) {
+      await compensatePendingProposalAfterDraftFailure(
+        context,
+        draft.operationType,
+        result.proposalId,
+      );
+      if (updatedCategoryDraft) {
+        await updateCategoryDraft(
+          context,
+          draft.id,
+          draft.payload,
+          updatedCategoryDraft.updatedAt,
+        );
+      }
+      throw error;
+    }
     return { type: "PROPOSAL_CREATED", ...result };
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
@@ -1165,6 +1203,36 @@ async function deleteDraftOrThrow(
   }
 }
 
+async function compensatePendingProposalAfterDraftFailure(
+  context: AgentContext,
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME",
+  proposalId: string,
+): Promise<void> {
+  try {
+    if (operationType === "CREATE_EXPENSE") {
+      await consumePendingProposal(
+        proposalId,
+        context.householdId,
+        context.conversationKey,
+      );
+      return;
+    }
+    await consumePendingIncomeProposal(
+      proposalId,
+      context.householdId,
+      context.conversationKey,
+    );
+  } catch (error) {
+    if (error instanceof PendingProposalRepositoryError) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The pending proposal could not be rolled back after draft cleanup failed.",
+      );
+    }
+    throw error;
+  }
+}
+
 async function completeOperationDraft(
   context: AgentContext,
   draft: AgentDraft,
@@ -1357,18 +1425,6 @@ export async function processAgentMessage(
       }
       return { type: "CONFIRMED", ...result };
     }
-    const terminalProposal = await findLatestTerminalProposal(context);
-    if (terminalProposal) {
-      const result = await getTerminalProposalResult(context, terminalProposal);
-      if (result.status === "REJECTED") {
-        return {
-          type: "REJECTED",
-          ...result,
-          message: "La propuesta ya había sido rechazada.",
-        };
-      }
-      return { type: "CONFIRMED", ...result };
-    }
     if (activeDraft?.status === "AWAITING_CATEGORY") {
       return categoryClarification(
         context,
@@ -1385,6 +1441,18 @@ export async function processAgentMessage(
         activeDraft.operationType,
         missingFields,
       );
+    }
+    const terminalProposal = await findLatestTerminalProposal(context);
+    if (terminalProposal) {
+      const result = await getTerminalProposalResult(context, terminalProposal);
+      if (result.status === "REJECTED") {
+        return {
+          type: "REJECTED",
+          ...result,
+          message: "La propuesta ya había sido rechazada.",
+        };
+      }
+      return { type: "CONFIRMED", ...result };
     }
     return clarification(["proposalId"]);
   }

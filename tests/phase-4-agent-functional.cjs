@@ -145,6 +145,7 @@ let hydrationFailure = false;
 let confirmationFailure = false;
 let confirmationPayloadMutation = null;
 let rejectionFailure = false;
+let categoryDraftDeletionFailure = false;
 let ambiguousMemberNames = false;
 let normalizedMemberNames = false;
 let duplicateCategoryNames = false;
@@ -243,6 +244,9 @@ class FakeQuery {
       }
       const rows = categoryDrafts.filter((row) => matches(row, this.filters));
       if (this.deleteRequested) {
+        if (categoryDraftDeletionFailure) {
+          return { data: null, error: { code: "DRAFT_DELETE_FAILURE" } };
+        }
         categoryDrafts = categoryDrafts.filter((row) => !rows.includes(row));
       }
       return { data: rows, error: null };
@@ -2187,6 +2191,140 @@ async function main() {
   assert.equal(createdExpenses.at(-1).input.categoryId, "category-1");
   console.log(
     "PASS category clarification resolves a real category before proposal",
+  );
+
+  const terminalVsDraftContext = {
+    ...contextA,
+    conversationKey: "agent-terminal-vs-active-draft",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "New Draft Market",
+    description: null,
+    totalAmount: "80000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    categoryName: null,
+  };
+  const draftBeforeTerminalFallback = await conversation.processAgentMessage(
+    terminalVsDraftContext,
+    { message: "Registra 80000 en New Draft Market" },
+  );
+  assert.equal(draftBeforeTerminalFallback.type, "CLARIFICATION_REQUIRED");
+  const terminalProposalForDraft = {
+    id: "62000000-0000-4000-8000-000000000901",
+    household_id: terminalVsDraftContext.householdId,
+    conversation_key: terminalVsDraftContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "REJECTED",
+    payload: {
+      actorMemberId: terminalVsDraftContext.actorMemberId,
+      source: terminalVsDraftContext.source,
+      expense: {
+        paidByMemberId: terminalVsDraftContext.actorMemberId,
+        totalAmount: 70000,
+        expenseDate: "2026-08-15",
+        description: "Old terminal proposal",
+        items: [],
+        splits: [
+          {
+            householdMemberId: terminalVsDraftContext.actorMemberId,
+            percentage: 100,
+          },
+        ],
+      },
+    },
+    created_at: "2026-08-15T12:00:00.000Z",
+    updated_at: "2026-08-15T12:00:00.000Z",
+    resolved_at: "2026-08-15T12:01:00.000Z",
+    expense_id: null,
+    income_id: null,
+  };
+  proposals.push(terminalProposalForDraft);
+  const activeDraftBeforeTerminalFallback = categoryDrafts.find(
+    (row) => row.conversation_key === terminalVsDraftContext.conversationKey,
+  );
+  assert.ok(activeDraftBeforeTerminalFallback);
+  const draftConfirmation = await conversation.processAgentMessage(
+    terminalVsDraftContext,
+    { message: "si" },
+  );
+  assert.equal(draftConfirmation.type, "CLARIFICATION_REQUIRED");
+  assert.match(draftConfirmation.message, /categoría/i);
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.id === activeDraftBeforeTerminalFallback.id,
+    ),
+    true,
+  );
+  assert.equal(terminalProposalForDraft.status, "REJECTED");
+  console.log(
+    "PASS active AgentDraft takes precedence over an old terminal proposal",
+  );
+
+  const draftCompensationContext = {
+    ...contextA,
+    conversationKey: "agent-draft-proposal-compensation",
+  };
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Compensation Market",
+    description: null,
+    totalAmount: "81000",
+    expenseDate: "2026-08-16",
+    paidBySelf: true,
+    categoryName: null,
+  };
+  const compensationDraftStart = await conversation.processAgentMessage(
+    draftCompensationContext,
+    { message: "Registra 81000 en Compensation Market" },
+  );
+  assert.equal(compensationDraftStart.type, "CLARIFICATION_REQUIRED");
+  const compensationMacro = await conversation.processAgentMessage(
+    draftCompensationContext,
+    { message: "Household" },
+  );
+  assert.equal(compensationMacro.type, "CLARIFICATION_REQUIRED");
+  const compensationExpensesBefore = createdExpenses.length;
+  categoryDraftDeletionFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(draftCompensationContext, {
+        message: "Food",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    categoryDraftDeletionFailure = false;
+  }
+  assert.equal(
+    proposals.some(
+      (row) =>
+        row.conversation_key === draftCompensationContext.conversationKey &&
+        row.status === "AWAITING_CONFIRMATION",
+    ),
+    false,
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === draftCompensationContext.conversationKey,
+    ),
+    true,
+  );
+  assert.equal(createdExpenses.length, compensationExpensesBefore);
+  const compensationRetry = await conversation.processAgentMessage(
+    draftCompensationContext,
+    { message: "Food" },
+  );
+  assert.equal(compensationRetry.type, "PROPOSAL_CREATED");
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === draftCompensationContext.conversationKey,
+    ),
+    false,
+  );
+  console.log(
+    "PASS failed draft cleanup compensates the newly created proposal",
   );
 
   duplicateCategoryNames = true;
