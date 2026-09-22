@@ -1461,6 +1461,8 @@ export async function processAgentMessage(
       pendingProposal = await findPendingProposalForConversation(
         context.householdId,
         context.conversationKey,
+        context.actorMemberId,
+        context.source,
       );
       pendingProposalLoaded = true;
       return pendingProposal;

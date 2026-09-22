@@ -200,6 +200,8 @@ export async function findPendingIncomeProposal(
 export async function findPendingProposalForConversation(
   householdId: string,
   conversationKey: string,
+  actorMemberId: string,
+  source: PendingExpenseProposalPayload["source"],
 ): Promise<PendingProposal | null> {
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
@@ -212,7 +214,15 @@ export async function findPendingProposalForConversation(
     .maybeSingle();
 
   if (error) throw persistenceError("read conversation", error);
-  return data ? mapRow(data as PendingProposalRow) : null;
+  const proposal = data ? mapRow(data as PendingProposalRow) : null;
+  if (
+    !proposal ||
+    proposal.payload.actorMemberId !== actorMemberId ||
+    proposal.payload.source !== source
+  ) {
+    return null;
+  }
+  return proposal;
 }
 
 export async function findLatestTerminalProposalForConversation(

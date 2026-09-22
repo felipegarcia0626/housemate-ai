@@ -7008,6 +7008,219 @@ async function main() {
   });
   record2ICase("repeated identical corrections keep one proposal and no write");
 
+  const ownershipHardeningOwnContext = {
+    ...contextA,
+    conversationKey: "agent-2o-own-proposal-draft",
+  };
+  const ownershipHardeningDraftTimestamp = new Date().toISOString();
+  const ownershipHardeningOwnProposal = {
+    id: "72000000-0000-4000-8000-000000000001",
+    household_id: ownershipHardeningOwnContext.householdId,
+    conversation_key: ownershipHardeningOwnContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_CONFIRMATION",
+    payload: {
+      actorMemberId: ownershipHardeningOwnContext.actorMemberId,
+      source: ownershipHardeningOwnContext.source,
+      expense: expenseInput,
+    },
+    created_at: ownershipHardeningDraftTimestamp,
+    updated_at: ownershipHardeningDraftTimestamp,
+    resolved_at: null,
+    expense_id: null,
+    income_id: null,
+  };
+  const ownershipHardeningOwnDraft = {
+    id: "72000000-0000-4000-8000-000000000002",
+    household_id: ownershipHardeningOwnContext.householdId,
+    actor_member_id: ownershipHardeningOwnContext.actorMemberId,
+    conversation_key: ownershipHardeningOwnContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_DETAILS",
+    payload: {
+      amount: "100",
+      date: "2026-08-12",
+      merchant: "Draft residual",
+      description: null,
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: null,
+    },
+    created_at: ownershipHardeningDraftTimestamp,
+    updated_at: ownershipHardeningDraftTimestamp,
+  };
+  proposals.push(ownershipHardeningOwnProposal);
+  categoryDrafts.push(ownershipHardeningOwnDraft);
+  const ownershipHardeningOwnExpenses = createdExpenses.length;
+  const ownershipHardeningOwnIncomes = createdIncomes.length;
+  const ownershipHardeningOwnResult = await conversation.processAgentMessage(
+    ownershipHardeningOwnContext,
+    { message: "" },
+  );
+  assert.equal(ownershipHardeningOwnResult.type, "UNSUPPORTED");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === ownershipHardeningOwnDraft.id),
+    false,
+  );
+  assert.equal(
+    proposals.find((row) => row.id === ownershipHardeningOwnProposal.id).status,
+    "AWAITING_CONFIRMATION",
+  );
+  assert.equal(createdExpenses.length, ownershipHardeningOwnExpenses);
+  assert.equal(createdIncomes.length, ownershipHardeningOwnIncomes);
+
+  const ownershipHardeningForeignActorContext = {
+    ...contextA,
+    conversationKey: "agent-2o-foreign-actor",
+  };
+  const ownershipHardeningForeignActorProposal = {
+    id: "72000000-0000-4000-8000-000000000003",
+    household_id: ownershipHardeningForeignActorContext.householdId,
+    conversation_key: ownershipHardeningForeignActorContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_CONFIRMATION",
+    payload: {
+      actorMemberId: memberB,
+      source: ownershipHardeningForeignActorContext.source,
+      expense: expenseInput,
+    },
+    created_at: "2026-08-12T12:00:00.000Z",
+    updated_at: "2026-08-12T12:00:00.000Z",
+    resolved_at: null,
+    expense_id: null,
+    income_id: null,
+  };
+  const ownershipHardeningForeignActorDraft = {
+    ...ownershipHardeningOwnDraft,
+    id: "72000000-0000-4000-8000-000000000004",
+    household_id: ownershipHardeningForeignActorContext.householdId,
+    actor_member_id: ownershipHardeningForeignActorContext.actorMemberId,
+    conversation_key: ownershipHardeningForeignActorContext.conversationKey,
+  };
+  proposals.push(ownershipHardeningForeignActorProposal);
+  categoryDrafts.push(ownershipHardeningForeignActorDraft);
+  const ownershipHardeningForeignActorResult =
+    await conversation.processAgentMessage(
+      ownershipHardeningForeignActorContext,
+      { message: "" },
+    );
+  assert.equal(ownershipHardeningForeignActorResult.type, "UNSUPPORTED");
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.id === ownershipHardeningForeignActorDraft.id,
+    ),
+    true,
+  );
+  assert.equal(
+    proposals.find(
+      (row) => row.id === ownershipHardeningForeignActorProposal.id,
+    ).status,
+    "AWAITING_CONFIRMATION",
+  );
+
+  const ownershipHardeningForeignSourceContext = {
+    ...contextA,
+    source: "WHATSAPP",
+    conversationKey: "agent-2o-foreign-source",
+  };
+  const ownershipHardeningForeignSourceProposal = {
+    id: "72000000-0000-4000-8000-000000000005",
+    household_id: ownershipHardeningForeignSourceContext.householdId,
+    conversation_key: ownershipHardeningForeignSourceContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_CONFIRMATION",
+    payload: {
+      actorMemberId: ownershipHardeningForeignSourceContext.actorMemberId,
+      source: "WEB",
+      expense: expenseInput,
+    },
+    created_at: "2026-08-12T12:00:00.000Z",
+    updated_at: "2026-08-12T12:00:00.000Z",
+    resolved_at: null,
+    expense_id: null,
+    income_id: null,
+  };
+  const ownershipHardeningForeignSourceDraft = {
+    ...ownershipHardeningOwnDraft,
+    id: "72000000-0000-4000-8000-000000000006",
+    household_id: ownershipHardeningForeignSourceContext.householdId,
+    actor_member_id: ownershipHardeningForeignSourceContext.actorMemberId,
+    conversation_key: ownershipHardeningForeignSourceContext.conversationKey,
+  };
+  proposals.push(ownershipHardeningForeignSourceProposal);
+  categoryDrafts.push(ownershipHardeningForeignSourceDraft);
+  const ownershipHardeningForeignSourceResult =
+    await conversation.processAgentMessage(
+      ownershipHardeningForeignSourceContext,
+      { message: "" },
+    );
+  assert.equal(ownershipHardeningForeignSourceResult.type, "UNSUPPORTED");
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.id === ownershipHardeningForeignSourceDraft.id,
+    ),
+    true,
+  );
+  assert.equal(
+    proposals.find(
+      (row) => row.id === ownershipHardeningForeignSourceProposal.id,
+    ).status,
+    "AWAITING_CONFIRMATION",
+  );
+
+  const ownershipHardeningConfirmationContext = {
+    ...contextA,
+    conversationKey: "agent-2o-foreign-confirmation",
+  };
+  const ownershipHardeningConfirmationProposal = {
+    id: "72000000-0000-4000-8000-000000000007",
+    household_id: ownershipHardeningConfirmationContext.householdId,
+    conversation_key: ownershipHardeningConfirmationContext.conversationKey,
+    operation_type: "CREATE_EXPENSE",
+    status: "AWAITING_CONFIRMATION",
+    payload: {
+      actorMemberId: memberB,
+      source: ownershipHardeningConfirmationContext.source,
+      expense: expenseInput,
+    },
+    created_at: "2026-08-12T12:00:00.000Z",
+    updated_at: "2026-08-12T12:00:00.000Z",
+    resolved_at: null,
+    expense_id: null,
+    income_id: null,
+  };
+  const ownershipHardeningConfirmationDraft = {
+    ...ownershipHardeningOwnDraft,
+    id: "72000000-0000-4000-8000-000000000008",
+    household_id: ownershipHardeningConfirmationContext.householdId,
+    actor_member_id: ownershipHardeningConfirmationContext.actorMemberId,
+    conversation_key: ownershipHardeningConfirmationContext.conversationKey,
+  };
+  proposals.push(ownershipHardeningConfirmationProposal);
+  categoryDrafts.push(ownershipHardeningConfirmationDraft);
+  const ownershipHardeningConfirmationExpenses = createdExpenses.length;
+  await expectAgentError(
+    conversation.processAgentMessage(ownershipHardeningConfirmationContext, {
+      message: "si",
+      proposalId: ownershipHardeningConfirmationProposal.id,
+    }),
+    "HOUSEHOLD_MISMATCH",
+  );
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.id === ownershipHardeningConfirmationDraft.id,
+    ),
+    true,
+  );
+  assert.equal(
+    proposals.find(
+      (row) => row.id === ownershipHardeningConfirmationProposal.id,
+    ).status,
+    "AWAITING_CONFIRMATION",
+  );
+  assert.equal(createdExpenses.length, ownershipHardeningConfirmationExpenses);
+  console.log("PASS pending proposal ownership hardening regressions");
+
   assert.equal(regression2I.length, 11);
   console.log(`PASS 2I regression matrix completed (${regression2I.length} cases)`);
 

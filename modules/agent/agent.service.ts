@@ -342,6 +342,8 @@ export async function findActiveProposalId(
     const proposal = await findPendingProposalForConversation(
       context.householdId,
       context.conversationKey,
+      context.actorMemberId,
+      context.source,
     );
     return proposal?.id ?? null;
   } catch (error) {
