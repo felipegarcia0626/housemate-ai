@@ -7282,6 +7282,38 @@ async function main() {
     };
   }
 
+  function makeCausalIncomeProposal(
+    context,
+    id,
+    draftId,
+    status = "AWAITING_CONFIRMATION",
+  ) {
+    return {
+      id,
+      household_id: context.householdId,
+      conversation_key: context.conversationKey,
+      operation_type: "CREATE_INCOME",
+      status,
+      payload: {
+        actorMemberId: context.actorMemberId,
+        source: context.source,
+        ...(draftId ? { draftId } : {}),
+        income: {
+          memberId: context.actorMemberId,
+          amount: 321000,
+          incomeDate: "2026-08-12",
+          description: "Causal income proposal",
+          categoryId: "category-income",
+        },
+      },
+      created_at: "2026-08-12T12:00:00.000Z",
+      updated_at: "2026-08-12T12:00:00.000Z",
+      resolved_at: status === "AWAITING_CONFIRMATION" ? null : "2026-08-12T12:01:00.000Z",
+      expense_id: null,
+      income_id: status === "COMPLETED" ? `income-${id}` : null,
+    };
+  }
+
   const causalMismatchContext = {
     ...contextA,
     conversationKey: "agent-2p-independent-draft-confirm",
@@ -7539,6 +7571,29 @@ async function main() {
     categoryDrafts.some((row) => row.id === operationCompensationDraft.id),
     false,
   );
+  const operationCompensationExpensesBeforeConfirmation = createdExpenses.length;
+  const operationCompensationConfirmation = await conversation.processAgentMessage(
+    operationCompensationContext,
+    { message: "si" },
+  );
+  assert.equal(operationCompensationConfirmation.type, "CONFIRMED");
+  assert.equal(
+    createdExpenses.length,
+    operationCompensationExpensesBeforeConfirmation + 1,
+  );
+  const operationCompensationRepeatedConfirmation =
+    await conversation.processAgentMessage(operationCompensationContext, {
+      message: "si",
+    });
+  assert.equal(operationCompensationRepeatedConfirmation.type, "CONFIRMED");
+  assert.equal(
+    operationCompensationRepeatedConfirmation.expenseId,
+    operationCompensationConfirmation.expenseId,
+  );
+  assert.equal(
+    createdExpenses.length,
+    operationCompensationExpensesBeforeConfirmation + 1,
+  );
   console.log("PASS operation draft cleanup failure compensates proposal without duplication");
 
   mockInterpretation = {
@@ -7614,6 +7669,161 @@ async function main() {
     true,
   );
   console.log("PASS draftId cannot bypass proposal ownership or context isolation");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Foreign guard market",
+    description: null,
+    totalAmount: "12000",
+    expenseDate: "2026-09-22",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const foreignGuardContext = {
+    ...contextA,
+    conversationKey: "agent-2p-foreign-proposal-guard",
+    source: "WEB",
+  };
+  const foreignGuardProposal = makeCausalExpenseProposal(
+    foreignGuardContext,
+    "82000000-0000-4000-8000-000000000013",
+    "82000000-0000-4000-8000-000000000014",
+  );
+  const foreignGuardCurrentContext = {
+    ...foreignGuardContext,
+    actorMemberId: memberB,
+    source: "WHATSAPP",
+  };
+  proposals.push(foreignGuardProposal);
+  const foreignGuardResult = await conversation.processAgentMessage(
+    foreignGuardCurrentContext,
+    { message: "Registra 12000" },
+  );
+  assert.equal(foreignGuardResult.type, "CLARIFICATION_REQUIRED");
+  const foreignGuardDraft = categoryDrafts.find(
+    (row) =>
+      row.household_id === foreignGuardCurrentContext.householdId &&
+      row.actor_member_id === foreignGuardCurrentContext.actorMemberId &&
+      row.conversation_key === foreignGuardCurrentContext.conversationKey,
+  );
+  assert.ok(foreignGuardDraft);
+  assert.equal(foreignGuardProposal.status, "AWAITING_CONFIRMATION");
+  assert.equal(
+    categoryDrafts.filter(
+      (row) =>
+        row.conversation_key === foreignGuardCurrentContext.conversationKey,
+    ).length,
+    1,
+  );
+  console.log("PASS foreign active proposal does not block a new contextual draft");
+
+  const terminalGuardContext = {
+    ...contextA,
+    conversationKey: "agent-2p-terminal-proposal-guard",
+  };
+  const terminalGuardProposal = makeCausalExpenseProposal(
+    terminalGuardContext,
+    "82000000-0000-4000-8000-000000000015",
+    "82000000-0000-4000-8000-000000000016",
+    "COMPLETED",
+  );
+  proposals.push(terminalGuardProposal);
+  const terminalGuardResult = await conversation.processAgentMessage(
+    terminalGuardContext,
+    { message: "Registra 12000" },
+  );
+  assert.equal(terminalGuardResult.type, "CLARIFICATION_REQUIRED");
+  assert.equal(terminalGuardProposal.status, "COMPLETED");
+  assert.ok(
+    categoryDrafts.some(
+      (row) => row.conversation_key === terminalGuardContext.conversationKey,
+    ),
+  );
+
+  const rejectedGuardContext = {
+    ...contextA,
+    conversationKey: "agent-2p-rejected-proposal-guard",
+  };
+  const rejectedGuardProposal = makeCausalExpenseProposal(
+    rejectedGuardContext,
+    "82000000-0000-4000-8000-000000000017",
+    "82000000-0000-4000-8000-000000000018",
+    "REJECTED",
+  );
+  proposals.push(rejectedGuardProposal);
+  const rejectedGuardResult = await conversation.processAgentMessage(
+    rejectedGuardContext,
+    { message: "Registra 12000" },
+  );
+  assert.equal(rejectedGuardResult.type, "CLARIFICATION_REQUIRED");
+  assert.equal(rejectedGuardProposal.status, "REJECTED");
+  assert.ok(
+    categoryDrafts.some(
+      (row) => row.conversation_key === rejectedGuardContext.conversationKey,
+    ),
+  );
+  console.log("PASS terminal proposals do not block new contextual drafts");
+
+  const incomeMismatchConfirmContext = {
+    ...contextA,
+    conversationKey: "agent-2p-income-independent-confirm",
+  };
+  const incomeMismatchConfirmDraft = makeCausalDraft(
+    incomeMismatchConfirmContext,
+    "82000000-0000-4000-8000-000000000019",
+    "CREATE_INCOME",
+  );
+  const incomeMismatchConfirmProposal = makeCausalIncomeProposal(
+    incomeMismatchConfirmContext,
+    "82000000-0000-4000-8000-000000000020",
+    "82000000-0000-4000-8000-000000000021",
+  );
+  categoryDrafts.push(incomeMismatchConfirmDraft);
+  proposals.push(incomeMismatchConfirmProposal);
+  const incomeMismatchConfirmBefore = createdIncomes.length;
+  const incomeMismatchConfirmed = await conversation.processAgentMessage(
+    incomeMismatchConfirmContext,
+    { message: "si" },
+  );
+  assert.equal(incomeMismatchConfirmed.type, "CONFIRMED");
+  assert.equal(incomeMismatchConfirmProposal.status, "COMPLETED");
+  assert.equal(createdIncomes.length, incomeMismatchConfirmBefore + 1);
+  assert.ok(incomeMismatchConfirmProposal.income_id);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === incomeMismatchConfirmDraft.id),
+    true,
+  );
+
+  const incomeMismatchRejectContext = {
+    ...contextA,
+    conversationKey: "agent-2p-income-independent-reject",
+  };
+  const incomeMismatchRejectDraft = makeCausalDraft(
+    incomeMismatchRejectContext,
+    "82000000-0000-4000-8000-000000000022",
+    "CREATE_INCOME",
+  );
+  const incomeMismatchRejectProposal = makeCausalIncomeProposal(
+    incomeMismatchRejectContext,
+    "82000000-0000-4000-8000-000000000023",
+    "82000000-0000-4000-8000-000000000024",
+  );
+  categoryDrafts.push(incomeMismatchRejectDraft);
+  proposals.push(incomeMismatchRejectProposal);
+  const incomeMismatchRejectBefore = createdIncomes.length;
+  const incomeMismatchRejected = await conversation.processAgentMessage(
+    incomeMismatchRejectContext,
+    { message: "no" },
+  );
+  assert.equal(incomeMismatchRejected.type, "REJECTED");
+  assert.equal(incomeMismatchRejectProposal.status, "REJECTED");
+  assert.equal(createdIncomes.length, incomeMismatchRejectBefore);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === incomeMismatchRejectDraft.id),
+    true,
+  );
+  console.log("PASS Income proposal resolution never deletes an unrelated draft");
 
   assert.equal(regression2I.length, 11);
   console.log(`PASS 2I regression matrix completed (${regression2I.length} cases)`);
