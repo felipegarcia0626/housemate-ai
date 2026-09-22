@@ -2634,6 +2634,7 @@ async function main() {
     payload: {
       actorMemberId: terminalCleanupContext.actorMemberId,
       source: terminalCleanupContext.source,
+      draftId: terminalCleanupDraft.id,
       expense: {
         paidByMemberId: terminalCleanupContext.actorMemberId,
         totalAmount: 85000,
@@ -3702,6 +3703,7 @@ async function main() {
     payload: {
       actorMemberId: staleStateContext.actorMemberId,
       source: staleStateContext.source,
+      draftId: staleDraft.id,
       expense: {
         paidByMemberId: staleStateContext.actorMemberId,
         totalAmount: 321,
@@ -3807,6 +3809,7 @@ async function main() {
       payload: {
         actorMemberId: context.actorMemberId,
         source: context.source,
+        draftId: draft.id,
         expense: {
           paidByMemberId: context.actorMemberId,
           totalAmount: 321,
@@ -5211,7 +5214,7 @@ async function main() {
   assert.equal(createdExpenses.at(-1).input.categoryId, "category-vivienda");
   assert.equal(
     categoryDrafts.some((row) => row.id === correctionDraft.id),
-    false,
+    true,
   );
   assert.equal(
     proposals.find((row) => row.id === correctionProposalId)?.status,
@@ -7057,10 +7060,10 @@ async function main() {
     ownershipHardeningOwnContext,
     { message: "" },
   );
-  assert.equal(ownershipHardeningOwnResult.type, "UNSUPPORTED");
+  assert.equal(ownershipHardeningOwnResult.type, "CLARIFICATION_REQUIRED");
   assert.equal(
     categoryDrafts.some((row) => row.id === ownershipHardeningOwnDraft.id),
-    false,
+    true,
   );
   assert.equal(
     proposals.find((row) => row.id === ownershipHardeningOwnProposal.id).status,
@@ -7220,6 +7223,397 @@ async function main() {
   );
   assert.equal(createdExpenses.length, ownershipHardeningConfirmationExpenses);
   console.log("PASS pending proposal ownership hardening regressions");
+
+  function makeCausalDraft(context, id, operationType = "CREATE_EXPENSE") {
+    const timestamp = new Date().toISOString();
+    return {
+      id,
+      household_id: context.householdId,
+      actor_member_id: context.actorMemberId,
+      conversation_key: context.conversationKey,
+      operation_type: operationType,
+      status: "AWAITING_DETAILS",
+      payload:
+        operationType === "CREATE_INCOME"
+          ? {
+              amount: "321",
+              date: "2026-08-12",
+              merchant: null,
+              description: "Causal income",
+              paidBySelf: null,
+              paidByMemberName: null,
+              categoryName: "Salario",
+            }
+          : {
+              amount: "321",
+              date: "2026-08-12",
+              merchant: "Causal Market",
+              description: "Causal expense",
+              paidBySelf: true,
+              paidByMemberName: null,
+              categoryName: "Food",
+            },
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+  }
+
+  function makeCausalExpenseProposal(context, id, draftId, status = "AWAITING_CONFIRMATION") {
+    return {
+      id,
+      household_id: context.householdId,
+      conversation_key: context.conversationKey,
+      operation_type: "CREATE_EXPENSE",
+      status,
+      payload: {
+        actorMemberId: context.actorMemberId,
+        source: context.source,
+        ...(draftId ? { draftId } : {}),
+        expense: {
+          ...expenseInput,
+          description: "Causal proposal",
+        },
+      },
+      created_at: "2026-08-12T12:00:00.000Z",
+      updated_at: "2026-08-12T12:00:00.000Z",
+      resolved_at: status === "AWAITING_CONFIRMATION" ? null : "2026-08-12T12:01:00.000Z",
+      expense_id: status === "COMPLETED" ? `expense-${id}` : null,
+      income_id: null,
+    };
+  }
+
+  const causalMismatchContext = {
+    ...contextA,
+    conversationKey: "agent-2p-independent-draft-confirm",
+  };
+  const causalMismatchDraft = makeCausalDraft(
+    causalMismatchContext,
+    "82000000-0000-4000-8000-000000000001",
+  );
+  const causalMismatchProposal = makeCausalExpenseProposal(
+    causalMismatchContext,
+    "82000000-0000-4000-8000-000000000002",
+    "82000000-0000-4000-8000-000000000003",
+  );
+  categoryDrafts.push(causalMismatchDraft);
+  proposals.push(causalMismatchProposal);
+  const causalMismatchExpenses = createdExpenses.length;
+  const causalMismatchConfirmed = await conversation.processAgentMessage(
+    causalMismatchContext,
+    { message: "si" },
+  );
+  assert.equal(causalMismatchConfirmed.type, "CONFIRMED");
+  assert.equal(causalMismatchProposal.status, "COMPLETED");
+  assert.equal(createdExpenses.length, causalMismatchExpenses + 1);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === causalMismatchDraft.id),
+    true,
+  );
+
+  const causalMismatchRejectContext = {
+    ...contextA,
+    conversationKey: "agent-2p-independent-draft-reject",
+  };
+  const causalMismatchRejectDraft = makeCausalDraft(
+    causalMismatchRejectContext,
+    "82000000-0000-4000-8000-000000000004",
+  );
+  const causalMismatchRejectProposal = makeCausalExpenseProposal(
+    causalMismatchRejectContext,
+    "82000000-0000-4000-8000-000000000005",
+    "82000000-0000-4000-8000-000000000006",
+  );
+  categoryDrafts.push(causalMismatchRejectDraft);
+  proposals.push(causalMismatchRejectProposal);
+  const causalMismatchRejectExpenses = createdExpenses.length;
+  const causalMismatchRejected = await conversation.processAgentMessage(
+    causalMismatchRejectContext,
+    { message: "no" },
+  );
+  assert.equal(causalMismatchRejected.type, "REJECTED");
+  assert.equal(causalMismatchRejectProposal.status, "REJECTED");
+  assert.equal(createdExpenses.length, causalMismatchRejectExpenses);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === causalMismatchRejectDraft.id),
+    true,
+  );
+  console.log("PASS proposal resolution never deletes an unrelated active draft");
+
+  const causalConfirmFailureContext = {
+    ...contextA,
+    conversationKey: "agent-2p-causal-confirm-failure",
+  };
+  const causalConfirmFailureDraft = makeCausalDraft(
+    causalConfirmFailureContext,
+    "82000000-0000-4000-8000-000000000007",
+  );
+  const causalConfirmFailureProposal = makeCausalExpenseProposal(
+    causalConfirmFailureContext,
+    "82000000-0000-4000-8000-000000000008",
+    causalConfirmFailureDraft.id,
+  );
+  categoryDrafts.push(causalConfirmFailureDraft);
+  proposals.push(causalConfirmFailureProposal);
+  const causalConfirmFailureExpenses = createdExpenses.length;
+  categoryDraftDeletionFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(causalConfirmFailureContext, {
+        message: "si",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    categoryDraftDeletionFailure = false;
+  }
+  assert.equal(createdExpenses.length, causalConfirmFailureExpenses + 1);
+  assert.equal(causalConfirmFailureProposal.status, "COMPLETED");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === causalConfirmFailureDraft.id),
+    true,
+  );
+  const causalConfirmFailureRetry = await conversation.processAgentMessage(
+    causalConfirmFailureContext,
+    { message: "si" },
+  );
+  assert.equal(causalConfirmFailureRetry.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, causalConfirmFailureExpenses + 1);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === causalConfirmFailureDraft.id),
+    false,
+  );
+
+  const causalRejectFailureContext = {
+    ...contextA,
+    conversationKey: "agent-2p-causal-reject-failure",
+  };
+  const causalRejectFailureDraft = makeCausalDraft(
+    causalRejectFailureContext,
+    "82000000-0000-4000-8000-000000000009",
+  );
+  const causalRejectFailureProposal = makeCausalExpenseProposal(
+    causalRejectFailureContext,
+    "82000000-0000-4000-8000-000000000010",
+    causalRejectFailureDraft.id,
+  );
+  categoryDrafts.push(causalRejectFailureDraft);
+  proposals.push(causalRejectFailureProposal);
+  const causalRejectFailureExpenses = createdExpenses.length;
+  categoryDraftDeletionFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(causalRejectFailureContext, {
+        message: "no",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    categoryDraftDeletionFailure = false;
+  }
+  assert.equal(createdExpenses.length, causalRejectFailureExpenses);
+  assert.equal(causalRejectFailureProposal.status, "REJECTED");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === causalRejectFailureDraft.id),
+    true,
+  );
+  const causalRejectFailureRetry = await conversation.processAgentMessage(
+    causalRejectFailureContext,
+    { message: "no" },
+  );
+  assert.equal(causalRejectFailureRetry.type, "CLARIFICATION_REQUIRED");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === causalRejectFailureDraft.id),
+    false,
+  );
+  assert.equal(createdExpenses.length, causalRejectFailureExpenses);
+  console.log("PASS causal cleanup retries preserve idempotent resolution");
+
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    merchant: "Operation Draft Market",
+    description: "Operation draft",
+    totalAmount: "45000",
+    expenseDate: "2026-08-12",
+    amount: "45000",
+    date: "2026-08-12",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const operationCausalContext = {
+    ...contextA,
+    conversationKey: "agent-2p-operation-causal-expense",
+  };
+  const operationStart = await conversation.processAgentMessage(
+    operationCausalContext,
+    { message: "Registra un movimiento de 45000" },
+  );
+  assert.equal(operationStart.type, "CLARIFICATION_REQUIRED");
+  const operationCausalDraft = categoryDrafts.find(
+    (row) => row.conversation_key === operationCausalContext.conversationKey,
+  );
+  assert.ok(operationCausalDraft);
+  assert.equal(operationCausalDraft.status, "AWAITING_OPERATION");
+  operationCausalDraft.payload.categoryName = null;
+  const operationChoice = await conversation.processAgentMessage(operationCausalContext, {
+    message: "gasto",
+  });
+  assert.equal(operationChoice.type, "CLARIFICATION_REQUIRED");
+  const operationMacro = await conversation.processAgentMessage(operationCausalContext, {
+    message: "Household",
+  });
+  assert.equal(operationMacro.type, "CLARIFICATION_REQUIRED");
+  const operationProposal = await conversation.processAgentMessage(
+    operationCausalContext,
+    { message: "Food" },
+  );
+  assert.equal(operationProposal.type, "PROPOSAL_CREATED");
+  const operationStored = proposals.find(
+    (row) => row.id === operationProposal.proposalId,
+  );
+  assert.equal(operationStored.payload.draftId, operationCausalDraft.id);
+  await conversation.processAgentMessage(operationCausalContext, {
+    message: "si",
+  });
+  assert.equal(
+    categoryDrafts.some((row) => row.id === operationCausalDraft.id),
+    false,
+  );
+
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    merchant: "Operation Compensation Market",
+    description: "Operation compensation",
+    totalAmount: "46000",
+    expenseDate: "2026-08-12",
+    amount: "46000",
+    date: "2026-08-12",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+  };
+  const operationCompensationContext = {
+    ...contextA,
+    conversationKey: "agent-2p-operation-compensation",
+  };
+  const operationCompensationStart = await conversation.processAgentMessage(
+    operationCompensationContext,
+    { message: "Registra un movimiento de 46000" },
+  );
+  assert.equal(operationCompensationStart.type, "CLARIFICATION_REQUIRED");
+  const operationCompensationDraft = categoryDrafts.find(
+    (row) => row.conversation_key === operationCompensationContext.conversationKey,
+  );
+  assert.ok(operationCompensationDraft);
+  categoryDraftDeletionFailure = true;
+  try {
+    await expectAgentError(
+      conversation.processAgentMessage(operationCompensationContext, {
+        message: "gasto",
+      }),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    categoryDraftDeletionFailure = false;
+  }
+  assert.equal(
+    proposals.some(
+      (row) => row.conversation_key === operationCompensationContext.conversationKey,
+    ),
+    false,
+  );
+  assert.equal(
+    categoryDrafts.some((row) => row.id === operationCompensationDraft.id),
+    true,
+  );
+  const operationCompensationRetry = await conversation.processAgentMessage(
+    operationCompensationContext,
+    { message: "gasto" },
+  );
+  assert.equal(operationCompensationRetry.type, "PROPOSAL_CREATED");
+  const operationCompensationStored = proposals.find(
+    (row) => row.id === operationCompensationRetry.proposalId,
+  );
+  assert.equal(operationCompensationStored.payload.draftId, operationCompensationDraft.id);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === operationCompensationDraft.id),
+    false,
+  );
+  console.log("PASS operation draft cleanup failure compensates proposal without duplication");
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "300000",
+    incomeDate: "2026-08-12",
+    description: "Income causal",
+    categoryName: null,
+  };
+  const incomeCausalContext = {
+    ...contextA,
+    conversationKey: "agent-2p-causal-income",
+  };
+  const incomeCausalCategoryClarification = await conversation.processAgentMessage(
+    incomeCausalContext,
+    { message: "Recibí 300000" },
+  );
+  assert.equal(incomeCausalCategoryClarification.type, "CLARIFICATION_REQUIRED");
+  const incomeCausalDraft = categoryDrafts.find(
+    (row) => row.conversation_key === incomeCausalContext.conversationKey,
+  );
+  const incomeCausalProposal = await selectCategory(
+    incomeCausalContext,
+    "Household",
+    "Food",
+  );
+  assert.equal(incomeCausalProposal.type, "PROPOSAL_CREATED");
+  const incomeCausalStored = proposals.find(
+    (row) => row.id === incomeCausalProposal.proposalId,
+  );
+  assert.equal(incomeCausalStored.payload.draftId, incomeCausalDraft.id);
+  await conversation.processAgentMessage(incomeCausalContext, {
+    message: "si",
+  });
+  assert.equal(
+    categoryDrafts.some((row) => row.id === incomeCausalDraft.id),
+    false,
+  );
+  assert.equal(createdIncomes.at(-1).input.amount, 300000);
+  console.log("PASS Expense and Income proposals preserve their originating draft");
+
+  const causalOwnershipProposalContext = {
+    ...contextA,
+    conversationKey: "agent-2p-causal-ownership",
+  };
+  const causalOwnershipDraft = makeCausalDraft(
+    causalOwnershipProposalContext,
+    "82000000-0000-4000-8000-000000000011",
+  );
+  const causalOwnershipProposal = makeCausalExpenseProposal(
+    causalOwnershipProposalContext,
+    "82000000-0000-4000-8000-000000000012",
+    causalOwnershipDraft.id,
+  );
+  categoryDrafts.push(causalOwnershipDraft);
+  proposals.push(causalOwnershipProposal);
+  const causalOwnershipContext = {
+    ...causalOwnershipProposalContext,
+    actorMemberId: memberB,
+  };
+  const beforeCausalOwnershipExpenses = createdExpenses.length;
+  await expectAgentError(
+    conversation.processAgentMessage(causalOwnershipContext, {
+      message: "si",
+      proposalId: causalOwnershipProposal.id,
+    }),
+    "HOUSEHOLD_MISMATCH",
+  );
+  assert.equal(createdExpenses.length, beforeCausalOwnershipExpenses);
+  assert.equal(causalOwnershipProposal.status, "AWAITING_CONFIRMATION");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === causalOwnershipDraft.id),
+    true,
+  );
+  console.log("PASS draftId cannot bypass proposal ownership or context isolation");
 
   assert.equal(regression2I.length, 11);
   console.log(`PASS 2I regression matrix completed (${regression2I.length} cases)`);

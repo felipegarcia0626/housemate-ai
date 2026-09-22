@@ -32,6 +32,8 @@ export type ExpenseProposalInput = Omit<
 export interface PendingExpenseProposalPayload {
   actorMemberId: string;
   source: ExpenseSource;
+  /** Identifies the AgentDraft that originated this proposal, when applicable. */
+  draftId?: string;
   expense: ExpenseProposalInput;
 }
 
@@ -52,6 +54,8 @@ export interface PendingExpenseProposal {
 export interface PendingIncomeProposalPayload {
   actorMemberId: string;
   source: ExpenseSource;
+  /** Identifies the AgentDraft that originated this proposal, when applicable. */
+  draftId?: string;
   income: IncomeCreateInput;
 }
 

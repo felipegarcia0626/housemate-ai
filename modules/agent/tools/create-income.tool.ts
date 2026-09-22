@@ -14,8 +14,9 @@ import type { IncomeCreateInput } from "@/modules/incomes/income.types";
 export async function createIncomeTool(
   context: AgentContext,
   input: IncomeCreateInput,
+  draftId?: string,
 ): Promise<IncomeProposalResult> {
-  return createIncomeProposal(context, input);
+  return createIncomeProposal(context, input, draftId);
 }
 
 export async function confirmCreateIncomeTool(

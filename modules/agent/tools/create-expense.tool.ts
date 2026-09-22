@@ -14,8 +14,9 @@ import type {
 export async function createExpenseTool(
   context: AgentContext,
   input: ExpenseProposalInput,
+  draftId?: string,
 ): Promise<ExpenseProposalResult> {
-  return createExpenseProposal(context, input);
+  return createExpenseProposal(context, input, draftId);
 }
 
 export async function confirmCreateExpenseTool(

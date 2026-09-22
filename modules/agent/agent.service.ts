@@ -133,6 +133,7 @@ function mapRepositoryError(error: unknown): AgentDomainError {
 export async function createExpenseProposal(
   context: AgentContext,
   input: ExpenseProposalInput,
+  draftId?: string,
 ): Promise<ExpenseProposalResult> {
   validateContext(context);
   validateProposalShape(input);
@@ -140,6 +141,7 @@ export async function createExpenseProposal(
   const payload: PendingExpenseProposalPayload = {
     actorMemberId: context.actorMemberId,
     source: context.source,
+    ...(draftId ? { draftId } : {}),
     expense: input,
   };
 
@@ -161,11 +163,13 @@ export async function createExpenseProposal(
 export async function createIncomeProposal(
   context: AgentContext,
   input: IncomeCreateInput,
+  draftId?: string,
 ): Promise<IncomeProposalResult> {
   validateContext(context);
   const payload: PendingIncomeProposalPayload = {
     actorMemberId: context.actorMemberId,
     source: context.source,
+    ...(draftId ? { draftId } : {}),
     income: input,
   };
   try {

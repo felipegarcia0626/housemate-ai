@@ -638,7 +638,7 @@ async function completeCategoryDraft(
           splits: nextPayload.expense.splits ?? [
             { householdMemberId: context.actorMemberId, percentage: 100 },
           ],
-        });
+        }, draft.id);
       } catch (error) {
         await restoreCategoryDraftAfterFailure(
           context,
@@ -688,7 +688,7 @@ async function completeCategoryDraft(
       result = await createIncomeTool(context, {
         ...nextPayload.income,
         memberId: context.actorMemberId,
-      });
+      }, draft.id);
     } catch (error) {
       await restoreCategoryDraftAfterFailure(
         context,
@@ -1250,19 +1250,22 @@ function terminalProposalSupersedesDraft(
   proposal: PendingProposal,
   draft: AgentDraft,
 ): boolean {
-  const resolvedAt = Date.parse(proposal.resolvedAt ?? proposal.updatedAt);
-  const draftUpdatedAt = Date.parse(draft.updatedAt);
-  return (
-    Number.isFinite(resolvedAt) &&
-    Number.isFinite(draftUpdatedAt) &&
-    resolvedAt > draftUpdatedAt
-  );
+  return proposal.payload.draftId === draft.id;
+}
+
+function proposalOwnsDraft(
+  proposal: PendingProposal | null,
+  draft: AgentDraft | null,
+): boolean {
+  return Boolean(proposal && draft && proposal.payload.draftId === draft.id);
 }
 
 async function reconcileDraftWithProposal(
   context: AgentContext,
   draft: AgentDraft,
+  proposal: PendingProposal,
 ): Promise<void> {
+  if (!proposalOwnsDraft(proposal, draft)) return;
   try {
     await deleteDraftOrThrow(context, draft);
   } catch (error) {
@@ -1361,8 +1364,17 @@ async function completeOperationDraft(
     const result = await createExpenseTool(context, {
       ...proposal.input,
       categoryId: category.id,
-    });
-    await deleteDraftOrThrow(context, draft);
+    }, draft.id);
+    try {
+      await deleteDraftOrThrow(context, draft);
+    } catch (error) {
+      await compensatePendingProposalAfterDraftFailure(
+        context,
+        operation,
+        result.proposalId,
+      );
+      throw error;
+    }
     return { type: "PROPOSAL_CREATED", ...result };
   }
 
@@ -1429,8 +1441,17 @@ async function completeOperationDraft(
   const result = await createIncomeTool(context, {
     ...income.input,
     categoryId: category.id,
-  });
-  await deleteDraftOrThrow(context, draft);
+  }, draft.id);
+  try {
+    await deleteDraftOrThrow(context, draft);
+  } catch (error) {
+    await compensatePendingProposalAfterDraftFailure(
+      context,
+      operation,
+      result.proposalId,
+    );
+    throw error;
+  }
   return { type: "PROPOSAL_CREATED", ...result };
 }
 
@@ -1486,29 +1507,69 @@ export async function processAgentMessage(
     return terminalProposal;
   };
 
+  const blockDraftCreationIfProposalActive = async (): Promise<AgentMessageResult | null> => {
+    const activePendingProposal = await getPendingProposalForMessage();
+    return activePendingProposal
+      ? clarification(
+          ["proposalId"],
+          "Primero confirma o rechaza la propuesta pendiente.",
+        )
+      : null;
+  };
+
   if (activeDraft && !isConfirmation(message) && !isRejection(message)) {
     const activePendingProposal = await getPendingProposalForMessage();
     if (activePendingProposal) {
-      await reconcileDraftWithProposal(context, activeDraft);
-      activeDraft = null;
+      if (proposalOwnsDraft(activePendingProposal, activeDraft)) {
+        await reconcileDraftWithProposal(
+          context,
+          activeDraft,
+          activePendingProposal,
+        );
+        activeDraft = null;
+      } else if (looksLikeCorrection(message)) {
+        // Preserve an unrelated draft while allowing the pending proposal's
+        // explicit correction flow to run.
+      } else {
+        return clarification(
+          ["proposalId"],
+          "Primero confirma o rechaza la propuesta pendiente.",
+        );
+      }
     } else {
       const latestTerminalProposal = await getTerminalProposalForMessage();
       if (
         latestTerminalProposal &&
         terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
       ) {
-        await reconcileDraftWithProposal(context, activeDraft);
+        await reconcileDraftWithProposal(
+          context,
+          activeDraft,
+          latestTerminalProposal,
+        );
         activeDraft = null;
       }
     }
   }
 
   if (isConfirmation(message)) {
-    const proposalId =
-      input.proposalId ?? (await getPendingProposalForMessage())?.id ?? null;
+    const contextualProposal = await getPendingProposalForMessage();
+    const proposalId = input.proposalId ?? contextualProposal?.id ?? null;
     if (proposalId) {
+      let proposalForCleanup =
+        contextualProposal?.id === proposalId ? contextualProposal : null;
+      if (!proposalForCleanup) {
+        const latestTerminalProposal = await getTerminalProposalForMessage();
+        proposalForCleanup =
+          latestTerminalProposal?.id === proposalId
+            ? latestTerminalProposal
+            : null;
+      }
       const result = await confirmAgentProposal(context, proposalId);
-      if (activeDraft) await deleteDraftOrThrow(context, activeDraft);
+      if (activeDraft && proposalOwnsDraft(proposalForCleanup, activeDraft)) {
+        await deleteDraftOrThrow(context, activeDraft);
+        activeDraft = null;
+      }
       if (result.status === "REJECTED") {
         return {
           type: "REJECTED",
@@ -1524,7 +1585,11 @@ export async function processAgentMessage(
       latestTerminalProposal &&
       terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
     ) {
-      await reconcileDraftWithProposal(context, activeDraft);
+      await reconcileDraftWithProposal(
+        context,
+        activeDraft,
+        latestTerminalProposal,
+      );
       activeDraft = null;
     }
     if (activeDraft?.status === "AWAITING_CATEGORY") {
@@ -1561,11 +1626,23 @@ export async function processAgentMessage(
     return clarification(["proposalId"]);
   }
   if (isRejection(message)) {
-    const proposalId =
-      input.proposalId ?? (await getPendingProposalForMessage())?.id ?? null;
+    const contextualProposal = await getPendingProposalForMessage();
+    const proposalId = input.proposalId ?? contextualProposal?.id ?? null;
     if (proposalId) {
+      let proposalForCleanup =
+        contextualProposal?.id === proposalId ? contextualProposal : null;
+      if (!proposalForCleanup) {
+        const latestTerminalProposal = await getTerminalProposalForMessage();
+        proposalForCleanup =
+          latestTerminalProposal?.id === proposalId
+            ? latestTerminalProposal
+            : null;
+      }
       const result = await rejectAgentProposal(context, proposalId);
-      if (activeDraft) await deleteDraftOrThrow(context, activeDraft);
+      if (activeDraft && proposalOwnsDraft(proposalForCleanup, activeDraft)) {
+        await deleteDraftOrThrow(context, activeDraft);
+        activeDraft = null;
+      }
       return { type: "REJECTED", ...result };
     }
     const latestTerminalProposal = await getTerminalProposalForMessage();
@@ -1574,7 +1651,11 @@ export async function processAgentMessage(
       latestTerminalProposal &&
       terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
     ) {
-      await reconcileDraftWithProposal(context, activeDraft);
+      await reconcileDraftWithProposal(
+        context,
+        activeDraft,
+        latestTerminalProposal,
+      );
       activeDraft = null;
     }
     if (activeDraft) {
@@ -1790,6 +1871,8 @@ export async function processAgentMessage(
     };
   }
   if (interpretation.kind === "AMBIGUOUS_MOVEMENT") {
+    const draftCreationBlocked = await blockDraftCreationIfProposalActive();
+    if (draftCreationBlocked) return draftCreationBlocked;
     await persistOperationDraft(
       context,
       operationPayloadFromInterpretation(interpretation),
@@ -1849,6 +1932,8 @@ export async function processAgentMessage(
       const draftPayload = operationPayloadFromIncomeInterpretation(
         interpretation,
       );
+      const draftCreationBlocked = await blockDraftCreationIfProposalActive();
+      if (draftCreationBlocked) return draftCreationBlocked;
       await persistDetailsDraft(
         context,
         "CREATE_INCOME",
@@ -1876,6 +1961,8 @@ export async function processAgentMessage(
       const selectedMacroId = interpretation.categoryName
         ? resolveMacroSelection(interpretation.categoryName, categories)
         : null;
+      const draftCreationBlocked = await blockDraftCreationIfProposalActive();
+      if (draftCreationBlocked) return draftCreationBlocked;
       await persistCategoryDraft(
         context,
         {
@@ -1916,6 +2003,8 @@ export async function processAgentMessage(
     const draftPayload = operationPayloadFromExpenseInterpretation(
       interpretation,
     );
+    const draftCreationBlocked = await blockDraftCreationIfProposalActive();
+    if (draftCreationBlocked) return draftCreationBlocked;
     await persistDetailsDraft(context, "CREATE_EXPENSE", draftPayload);
     return operationDetailsClarification(
       "CREATE_EXPENSE",
@@ -1930,6 +2019,8 @@ export async function processAgentMessage(
     const selectedMacroId = interpretation.categoryName
       ? resolveMacroSelection(interpretation.categoryName, categories)
       : null;
+    const draftCreationBlocked = await blockDraftCreationIfProposalActive();
+    if (draftCreationBlocked) return draftCreationBlocked;
     await persistCategoryDraft(
       context,
       {
