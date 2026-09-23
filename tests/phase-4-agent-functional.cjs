@@ -7558,6 +7558,7 @@ async function main() {
     categoryDrafts.some((row) => row.id === operationCompensationDraft.id),
     true,
   );
+  const operationCompensationExpensesBeforeRetry = createdExpenses.length;
   const operationCompensationRetry = await conversation.processAgentMessage(
     operationCompensationContext,
     { message: "gasto" },
@@ -7571,7 +7572,10 @@ async function main() {
     categoryDrafts.some((row) => row.id === operationCompensationDraft.id),
     false,
   );
-  const operationCompensationExpensesBeforeConfirmation = createdExpenses.length;
+  assert.equal(
+    createdExpenses.length,
+    operationCompensationExpensesBeforeRetry,
+  );
   const operationCompensationConfirmation = await conversation.processAgentMessage(
     operationCompensationContext,
     { message: "si" },
@@ -7579,7 +7583,7 @@ async function main() {
   assert.equal(operationCompensationConfirmation.type, "CONFIRMED");
   assert.equal(
     createdExpenses.length,
-    operationCompensationExpensesBeforeConfirmation + 1,
+    operationCompensationExpensesBeforeRetry + 1,
   );
   const operationCompensationRepeatedConfirmation =
     await conversation.processAgentMessage(operationCompensationContext, {
@@ -7592,7 +7596,7 @@ async function main() {
   );
   assert.equal(
     createdExpenses.length,
-    operationCompensationExpensesBeforeConfirmation + 1,
+    operationCompensationExpensesBeforeRetry + 1,
   );
   console.log("PASS operation draft cleanup failure compensates proposal without duplication");
 
@@ -7708,7 +7712,11 @@ async function main() {
       row.conversation_key === foreignGuardCurrentContext.conversationKey,
   );
   assert.ok(foreignGuardDraft);
-  assert.equal(foreignGuardProposal.status, "AWAITING_CONFIRMATION");
+  const persistedForeignGuardProposal = proposals.find(
+    (proposal) => proposal.id === foreignGuardProposal.id,
+  );
+  assert.ok(persistedForeignGuardProposal);
+  assert.equal(persistedForeignGuardProposal.status, "AWAITING_CONFIRMATION");
   assert.equal(
     categoryDrafts.filter(
       (row) =>
@@ -7734,7 +7742,11 @@ async function main() {
     { message: "Registra 12000" },
   );
   assert.equal(terminalGuardResult.type, "CLARIFICATION_REQUIRED");
-  assert.equal(terminalGuardProposal.status, "COMPLETED");
+  const persistedTerminalGuardProposal = proposals.find(
+    (proposal) => proposal.id === terminalGuardProposal.id,
+  );
+  assert.ok(persistedTerminalGuardProposal);
+  assert.equal(persistedTerminalGuardProposal.status, "COMPLETED");
   assert.ok(
     categoryDrafts.some(
       (row) => row.conversation_key === terminalGuardContext.conversationKey,
@@ -7757,7 +7769,11 @@ async function main() {
     { message: "Registra 12000" },
   );
   assert.equal(rejectedGuardResult.type, "CLARIFICATION_REQUIRED");
-  assert.equal(rejectedGuardProposal.status, "REJECTED");
+  const persistedRejectedGuardProposal = proposals.find(
+    (proposal) => proposal.id === rejectedGuardProposal.id,
+  );
+  assert.ok(persistedRejectedGuardProposal);
+  assert.equal(persistedRejectedGuardProposal.status, "REJECTED");
   assert.ok(
     categoryDrafts.some(
       (row) => row.conversation_key === rejectedGuardContext.conversationKey,
@@ -7769,17 +7785,28 @@ async function main() {
     ...contextA,
     conversationKey: "agent-2p-income-independent-confirm",
   };
+  const incomeMismatchConfirmCausalDraft = makeCausalDraft(
+    incomeMismatchConfirmContext,
+    "82000000-0000-4000-8000-000000000021",
+    "CREATE_INCOME",
+  );
   const incomeMismatchConfirmDraft = makeCausalDraft(
     incomeMismatchConfirmContext,
     "82000000-0000-4000-8000-000000000019",
     "CREATE_INCOME",
   );
+  const incomeMismatchConfirmDraftPayload = structuredClone(
+    incomeMismatchConfirmDraft.payload,
+  );
   const incomeMismatchConfirmProposal = makeCausalIncomeProposal(
     incomeMismatchConfirmContext,
     "82000000-0000-4000-8000-000000000020",
-    "82000000-0000-4000-8000-000000000021",
+    incomeMismatchConfirmCausalDraft.id,
   );
-  categoryDrafts.push(incomeMismatchConfirmDraft);
+  categoryDrafts.push(
+    incomeMismatchConfirmCausalDraft,
+    incomeMismatchConfirmDraft,
+  );
   proposals.push(incomeMismatchConfirmProposal);
   const incomeMismatchConfirmBefore = createdIncomes.length;
   const incomeMismatchConfirmed = await conversation.processAgentMessage(
@@ -7791,25 +7818,62 @@ async function main() {
   assert.equal(createdIncomes.length, incomeMismatchConfirmBefore + 1);
   assert.ok(incomeMismatchConfirmProposal.income_id);
   assert.equal(
+    incomeMismatchConfirmProposal.payload.draftId,
+    incomeMismatchConfirmCausalDraft.id,
+  );
+  assert.equal(
+    categoryDrafts.some((row) => row.id === incomeMismatchConfirmCausalDraft.id),
+    false,
+  );
+  const persistedIncomeConfirmIndependentDraft = categoryDrafts.find(
+    (row) => row.id === incomeMismatchConfirmDraft.id,
+  );
+  assert.ok(persistedIncomeConfirmIndependentDraft);
+  assert.equal(
+    JSON.stringify(persistedIncomeConfirmIndependentDraft.payload),
+    JSON.stringify(incomeMismatchConfirmDraftPayload),
+  );
+  const incomeMismatchRepeatedConfirmation =
+    await conversation.processAgentMessage(incomeMismatchConfirmContext, {
+      message: "si",
+      proposalId: incomeMismatchConfirmProposal.id,
+    });
+  assert.equal(incomeMismatchRepeatedConfirmation.type, "CONFIRMED");
+  assert.equal(
+    incomeMismatchRepeatedConfirmation.incomeId,
+    incomeMismatchConfirmed.incomeId,
+  );
+  assert.equal(createdIncomes.length, incomeMismatchConfirmBefore + 1);
+  assert.ok(
     categoryDrafts.some((row) => row.id === incomeMismatchConfirmDraft.id),
-    true,
   );
 
   const incomeMismatchRejectContext = {
     ...contextA,
     conversationKey: "agent-2p-income-independent-reject",
   };
+  const incomeMismatchRejectCausalDraft = makeCausalDraft(
+    incomeMismatchRejectContext,
+    "82000000-0000-4000-8000-000000000024",
+    "CREATE_INCOME",
+  );
   const incomeMismatchRejectDraft = makeCausalDraft(
     incomeMismatchRejectContext,
     "82000000-0000-4000-8000-000000000022",
     "CREATE_INCOME",
   );
+  const incomeMismatchRejectDraftPayload = structuredClone(
+    incomeMismatchRejectDraft.payload,
+  );
   const incomeMismatchRejectProposal = makeCausalIncomeProposal(
     incomeMismatchRejectContext,
     "82000000-0000-4000-8000-000000000023",
-    "82000000-0000-4000-8000-000000000024",
+    incomeMismatchRejectCausalDraft.id,
   );
-  categoryDrafts.push(incomeMismatchRejectDraft);
+  categoryDrafts.push(
+    incomeMismatchRejectCausalDraft,
+    incomeMismatchRejectDraft,
+  );
   proposals.push(incomeMismatchRejectProposal);
   const incomeMismatchRejectBefore = createdIncomes.length;
   const incomeMismatchRejected = await conversation.processAgentMessage(
@@ -7820,8 +7884,35 @@ async function main() {
   assert.equal(incomeMismatchRejectProposal.status, "REJECTED");
   assert.equal(createdIncomes.length, incomeMismatchRejectBefore);
   assert.equal(
+    incomeMismatchRejectProposal.payload.draftId,
+    incomeMismatchRejectCausalDraft.id,
+  );
+  assert.equal(
+    categoryDrafts.some((row) => row.id === incomeMismatchRejectCausalDraft.id),
+    false,
+  );
+  const persistedIncomeRejectIndependentDraft = categoryDrafts.find(
+    (row) => row.id === incomeMismatchRejectDraft.id,
+  );
+  assert.ok(persistedIncomeRejectIndependentDraft);
+  assert.equal(
+    JSON.stringify(persistedIncomeRejectIndependentDraft.payload),
+    JSON.stringify(incomeMismatchRejectDraftPayload),
+  );
+  const incomeMismatchRepeatedRejection =
+    await conversation.processAgentMessage(incomeMismatchRejectContext, {
+      message: "no",
+      proposalId: incomeMismatchRejectProposal.id,
+    });
+  assert.equal(incomeMismatchRepeatedRejection.type, "REJECTED");
+  assert.equal(createdIncomes.length, incomeMismatchRejectBefore);
+  assert.equal(
+    proposals.find((proposal) => proposal.id === incomeMismatchRejectProposal.id)
+      ?.status,
+    "REJECTED",
+  );
+  assert.ok(
     categoryDrafts.some((row) => row.id === incomeMismatchRejectDraft.id),
-    true,
   );
   console.log("PASS Income proposal resolution never deletes an unrelated draft");
 
