@@ -364,6 +364,8 @@ export async function findLatestTerminalProposal(
     const proposal = await findLatestTerminalProposalForConversation(
       context.householdId,
       context.conversationKey,
+      context.actorMemberId,
+      context.source,
     );
     if (!proposal) return null;
     if (

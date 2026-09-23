@@ -228,6 +228,8 @@ export async function findPendingProposalForConversation(
 export async function findLatestTerminalProposalForConversation(
   householdId: string,
   conversationKey: string,
+  actorMemberId: string,
+  source: PendingExpenseProposalPayload["source"],
 ): Promise<PendingProposal | null> {
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
@@ -244,6 +246,11 @@ export async function findLatestTerminalProposalForConversation(
       (row): row is PendingProposalRow =>
         (row as PendingProposalRow).status === "COMPLETED" ||
         (row as PendingProposalRow).status === "REJECTED",
+    )
+    .filter(
+      (row) =>
+        row.payload.actorMemberId === actorMemberId &&
+        row.payload.source === source,
     )
     .sort((left, right) => {
       const leftResolved = Date.parse(left.resolved_at ?? "");

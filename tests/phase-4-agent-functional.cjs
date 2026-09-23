@@ -7781,6 +7781,172 @@ async function main() {
   );
   console.log("PASS terminal proposals do not block new contextual drafts");
 
+  const ownedTerminalSelectionContext = {
+    ...contextA,
+    conversationKey: "agent-2p-terminal-owned-selection",
+    source: "WHATSAPP",
+  };
+  const ownedTerminalDraft = makeCausalDraft(
+    ownedTerminalSelectionContext,
+    "82000000-0000-4000-8000-000000000031",
+  );
+  const foreignTerminalContext = {
+    ...ownedTerminalSelectionContext,
+    actorMemberId: memberB,
+    source: "WEB",
+  };
+  const foreignTerminalDraft = makeCausalDraft(
+    foreignTerminalContext,
+    "82000000-0000-4000-8000-000000000032",
+  );
+  const ownedTerminalProposal = makeCausalExpenseProposal(
+    ownedTerminalSelectionContext,
+    "82000000-0000-4000-8000-000000000033",
+    ownedTerminalDraft.id,
+    "REJECTED",
+  );
+  ownedTerminalProposal.resolved_at = "2026-09-22T10:00:00.000Z";
+  const foreignTerminalProposal = makeCausalExpenseProposal(
+    foreignTerminalContext,
+    "82000000-0000-4000-8000-000000000034",
+    foreignTerminalDraft.id,
+    "REJECTED",
+  );
+  foreignTerminalProposal.resolved_at = "2026-09-22T11:00:00.000Z";
+  categoryDrafts.push(ownedTerminalDraft, foreignTerminalDraft);
+  proposals.push(ownedTerminalProposal, foreignTerminalProposal);
+  const ownedTerminalSelectionExpenses = createdExpenses.length;
+  const ownedTerminalSelectionResult =
+    await conversation.processAgentMessage(ownedTerminalSelectionContext, {
+      message: "si",
+    });
+  assert.equal(ownedTerminalSelectionResult.type, "REJECTED");
+  assert.equal(createdExpenses.length, ownedTerminalSelectionExpenses);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === ownedTerminalDraft.id),
+    false,
+  );
+  assert.equal(
+    categoryDrafts.some((row) => row.id === foreignTerminalDraft.id),
+    true,
+  );
+  assert.equal(ownedTerminalProposal.status, "REJECTED");
+  assert.equal(foreignTerminalProposal.status, "REJECTED");
+  assert.equal(
+    proposals.find((proposal) => proposal.id === foreignTerminalProposal.id)
+      ?.resolved_at,
+    "2026-09-22T11:00:00.000Z",
+  );
+  console.log("PASS terminal reconciliation filters foreign actor and source before ordering");
+
+  const foreignOnlyTerminalContext = {
+    ...contextA,
+    conversationKey: "agent-2p-terminal-foreign-only",
+    source: "WHATSAPP",
+  };
+  const foreignOnlyDraft = makeCausalDraft(
+    foreignOnlyTerminalContext,
+    "82000000-0000-4000-8000-000000000035",
+  );
+  const foreignOnlyProposal = makeCausalExpenseProposal(
+    {
+      ...foreignOnlyTerminalContext,
+      source: "WEB",
+    },
+    "82000000-0000-4000-8000-000000000036",
+    foreignOnlyDraft.id,
+    "REJECTED",
+  );
+  categoryDrafts.push(foreignOnlyDraft);
+  proposals.push(foreignOnlyProposal);
+  const foreignOnlyResult = await conversation.processAgentMessage(
+    foreignOnlyTerminalContext,
+    { message: "si" },
+  );
+  assert.equal(foreignOnlyResult.type, "CLARIFICATION_REQUIRED");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === foreignOnlyDraft.id),
+    true,
+  );
+  assert.equal(foreignOnlyProposal.status, "REJECTED");
+  console.log("PASS foreign-only terminal proposal does not reconcile current draft");
+
+  const latestOwnedTerminalContext = {
+    ...contextA,
+    conversationKey: "agent-2p-terminal-latest-owned",
+    source: "WHATSAPP",
+  };
+  const latestOwnedDraft = makeCausalDraft(
+    latestOwnedTerminalContext,
+    "82000000-0000-4000-8000-000000000037",
+  );
+  const olderOwnedProposal = makeCausalExpenseProposal(
+    latestOwnedTerminalContext,
+    "82000000-0000-4000-8000-000000000038",
+    null,
+    "REJECTED",
+  );
+  olderOwnedProposal.resolved_at = "2026-09-22T12:00:00.000Z";
+  const latestOwnedProposal = makeCausalExpenseProposal(
+    latestOwnedTerminalContext,
+    "82000000-0000-4000-8000-000000000039",
+    latestOwnedDraft.id,
+    "REJECTED",
+  );
+  latestOwnedProposal.resolved_at = "2026-09-22T13:00:00.000Z";
+  categoryDrafts.push(latestOwnedDraft);
+  proposals.push(olderOwnedProposal, latestOwnedProposal);
+  const latestOwnedResult = await conversation.processAgentMessage(
+    latestOwnedTerminalContext,
+    { message: "si" },
+  );
+  assert.equal(latestOwnedResult.type, "REJECTED");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === latestOwnedDraft.id),
+    false,
+  );
+  assert.equal(olderOwnedProposal.status, "REJECTED");
+  assert.equal(latestOwnedProposal.status, "REJECTED");
+  console.log("PASS latest terminal proposal wins among owned context");
+
+  const sameActorSourceContext = {
+    ...contextA,
+    conversationKey: "agent-2p-terminal-source-isolation",
+    source: "WHATSAPP",
+  };
+  const sameActorSourceDraft = makeCausalDraft(
+    sameActorSourceContext,
+    "82000000-0000-4000-8000-000000000040",
+  );
+  const sameActorOwnedProposal = makeCausalExpenseProposal(
+    sameActorSourceContext,
+    "82000000-0000-4000-8000-000000000041",
+    sameActorSourceDraft.id,
+    "REJECTED",
+  );
+  sameActorOwnedProposal.resolved_at = "2026-09-22T14:00:00.000Z";
+  const sameActorForeignSourceProposal = makeCausalExpenseProposal(
+    { ...sameActorSourceContext, source: "WEB" },
+    "82000000-0000-4000-8000-000000000042",
+    null,
+    "REJECTED",
+  );
+  sameActorForeignSourceProposal.resolved_at = "2026-09-22T15:00:00.000Z";
+  categoryDrafts.push(sameActorSourceDraft);
+  proposals.push(sameActorOwnedProposal, sameActorForeignSourceProposal);
+  const sameActorSourceResult = await conversation.processAgentMessage(
+    sameActorSourceContext,
+    { message: "si" },
+  );
+  assert.equal(sameActorSourceResult.type, "REJECTED");
+  assert.equal(
+    categoryDrafts.some((row) => row.id === sameActorSourceDraft.id),
+    false,
+  );
+  assert.equal(sameActorOwnedProposal.status, "REJECTED");
+  assert.equal(sameActorForeignSourceProposal.status, "REJECTED");
+  console.log("PASS terminal reconciliation isolates source for the same actor");
+
   const incomeMismatchConfirmContext = {
     ...contextA,
     conversationKey: "agent-2p-income-independent-confirm",
