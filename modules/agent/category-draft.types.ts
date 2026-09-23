@@ -45,6 +45,7 @@ export interface AgentOperationDraft {
   householdId: string;
   actorMemberId: string;
   conversationKey: string;
+  source: ExpenseSource;
   operationType: null;
   payload: AgentOperationDraftPayload;
   status: "AWAITING_OPERATION";
@@ -57,6 +58,7 @@ export interface AgentDetailsDraft {
   householdId: string;
   actorMemberId: string;
   conversationKey: string;
+  source: ExpenseSource;
   operationType: AgentCategoryDraftOperation;
   payload: AgentOperationDraftPayload;
   status: "AWAITING_DETAILS";
@@ -69,6 +71,7 @@ export interface AgentCategoryDraft {
   householdId: string;
   actorMemberId: string;
   conversationKey: string;
+  source: ExpenseSource;
   operationType: AgentCategoryDraftOperation;
   payload: CategoryDraftExpensePayload | CategoryDraftIncomePayload;
   status: "AWAITING_CATEGORY";

@@ -39,6 +39,7 @@ export async function createCategoryDraft(
     householdId: context.householdId,
     actorMemberId: context.actorMemberId,
     conversationKey: context.conversationKey,
+    source: context.source,
     operationType,
     payload,
   });
@@ -53,6 +54,7 @@ export async function createOperationDraft(
     householdId: context.householdId,
     actorMemberId: context.actorMemberId,
     conversationKey: context.conversationKey,
+    source: context.source,
     operationType: null,
     status: "AWAITING_OPERATION",
     payload,
@@ -69,6 +71,7 @@ export async function createDetailsDraft(
     householdId: context.householdId,
     actorMemberId: context.actorMemberId,
     conversationKey: context.conversationKey,
+    source: context.source,
     operationType,
     status: "AWAITING_DETAILS",
     payload,
@@ -82,6 +85,7 @@ export async function getActiveAgentDraft(
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
+    context.source,
   );
   if (!draft) return null;
   if (!isExpired(draft)) return draft;
@@ -90,6 +94,7 @@ export async function getActiveAgentDraft(
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
+    context.source,
   );
   return null;
 }
@@ -106,6 +111,7 @@ export async function updateAgentDraft(
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
+    context.source,
     operationType,
     status,
     payload,
@@ -122,6 +128,7 @@ export async function deleteAgentDraft(
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
+    context.source,
   );
 }
 
@@ -132,6 +139,7 @@ export async function getActiveCategoryDraft(
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
+    context.source,
   );
   if (!draft) return null;
   if (!isExpired(draft)) return draft;
@@ -140,6 +148,7 @@ export async function getActiveCategoryDraft(
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
+    context.source,
   );
   return null;
 }
@@ -153,6 +162,7 @@ export async function deleteCategoryDraft(
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
+    context.source,
   );
 }
 
@@ -167,6 +177,7 @@ export async function updateCategoryDraft(
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
+    context.source,
     payload,
     expectedUpdatedAt,
   );

@@ -1,5 +1,6 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
 import type { ExpenseCreatePersistenceInput } from "@/modules/expenses/expense.repository";
+import type { ExpenseSource } from "@/modules/expenses/expense.types";
 import type { IncomeCreatePersistenceInput } from "@/modules/incomes/income.repository";
 import type {
   PendingIncomeProposal,
@@ -25,6 +26,8 @@ interface PendingProposalRow {
   id: string;
   household_id: string;
   conversation_key: string;
+  actor_member_id: string | null;
+  source: ExpenseSource | null;
   operation_type: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
   status: "AWAITING_CONFIRMATION" | "COMPLETED" | "REJECTED";
@@ -36,13 +39,25 @@ interface PendingProposalRow {
 }
 
 function mapRow(row: PendingProposalRow): PendingProposal {
+  const actorMemberId = row.actor_member_id ?? row.payload.actorMemberId;
+  const source = row.source ?? row.payload.source;
+  if (!actorMemberId || !source) {
+    throw new PendingProposalRepositoryError(
+      "PERSISTENCE",
+      "Pending proposal ownership is incomplete.",
+    );
+  }
   if (row.operation_type === "CREATE_INCOME") {
     return {
       id: row.id,
       householdId: row.household_id,
       conversationKey: row.conversation_key,
       operationType: row.operation_type,
-      payload: row.payload as PendingIncomeProposalPayload,
+      payload: {
+        ...row.payload,
+        actorMemberId,
+        source,
+      } as PendingIncomeProposalPayload,
       status: row.status,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -56,7 +71,11 @@ function mapRow(row: PendingProposalRow): PendingProposal {
     householdId: row.household_id,
     conversationKey: row.conversation_key,
     operationType: row.operation_type,
-    payload: row.payload as PendingExpenseProposalPayload,
+    payload: {
+      ...row.payload,
+      actorMemberId,
+      source,
+    } as PendingExpenseProposalPayload,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -99,12 +118,14 @@ export async function createPendingProposal(input: {
       id: input.id,
       household_id: input.householdId,
       conversation_key: input.conversationKey,
+      actor_member_id: input.payload.actorMemberId,
+      source: input.payload.source,
       operation_type: input.operationType,
       payload: input.payload,
       status: "AWAITING_CONFIRMATION",
     })
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .single();
 
@@ -129,6 +150,8 @@ export async function updatePendingProposalConditionally(input: {
   id: string;
   householdId: string;
   conversationKey: string;
+  actorMemberId: string;
+  source: ExpenseSource;
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
   expectedUpdatedAt: string;
@@ -139,11 +162,13 @@ export async function updatePendingProposalConditionally(input: {
     .eq("id", input.id)
     .eq("household_id", input.householdId)
     .eq("conversation_key", input.conversationKey)
+    .eq("actor_member_id", input.actorMemberId)
+    .eq("source", input.source)
     .eq("operation_type", input.operationType)
     .eq("status", "AWAITING_CONFIRMATION")
     .eq("updated_at", input.expectedUpdatedAt)
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .maybeSingle();
 
@@ -159,7 +184,7 @@ export async function findPendingProposal(
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .eq("id", id)
     .eq("household_id", householdId)
@@ -182,7 +207,7 @@ export async function findPendingIncomeProposal(
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .eq("id", id)
     .eq("household_id", householdId)
@@ -206,10 +231,12 @@ export async function findPendingProposalForConversation(
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .eq("household_id", householdId)
     .eq("conversation_key", conversationKey)
+    .eq("actor_member_id", actorMemberId)
+    .eq("source", source)
     .eq("status", "AWAITING_CONFIRMATION")
     .maybeSingle();
 
@@ -234,10 +261,12 @@ export async function findLatestTerminalProposalForConversation(
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .eq("household_id", householdId)
-    .eq("conversation_key", conversationKey);
+    .eq("conversation_key", conversationKey)
+    .eq("actor_member_id", actorMemberId)
+    .eq("source", source);
 
   if (error) throw persistenceError("read terminal conversation", error);
 
@@ -517,6 +546,8 @@ export async function consumePendingProposal(
   id: string,
   householdId: string,
   conversationKey: string,
+  actorMemberId: string,
+  source: ExpenseSource,
 ): Promise<PendingExpenseProposal | null> {
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
@@ -524,10 +555,12 @@ export async function consumePendingProposal(
     .eq("id", id)
     .eq("household_id", householdId)
     .eq("conversation_key", conversationKey)
+    .eq("actor_member_id", actorMemberId)
+    .eq("source", source)
     .eq("operation_type", "CREATE_EXPENSE")
     .eq("status", "AWAITING_CONFIRMATION")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .maybeSingle();
 
@@ -541,6 +574,8 @@ export async function consumePendingIncomeProposal(
   id: string,
   householdId: string,
   conversationKey: string,
+  actorMemberId: string,
+  source: ExpenseSource,
 ): Promise<PendingIncomeProposal | null> {
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
@@ -548,10 +583,12 @@ export async function consumePendingIncomeProposal(
     .eq("id", id)
     .eq("household_id", householdId)
     .eq("conversation_key", conversationKey)
+    .eq("actor_member_id", actorMemberId)
+    .eq("source", source)
     .eq("operation_type", "CREATE_INCOME")
     .eq("status", "AWAITING_CONFIRMATION")
     .select(
-      "id,household_id,conversation_key,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
     )
     .maybeSingle();
 
@@ -570,6 +607,8 @@ export async function restorePendingProposal(
       id: proposal.id,
       household_id: proposal.householdId,
       conversation_key: proposal.conversationKey,
+      actor_member_id: proposal.payload.actorMemberId,
+      source: proposal.payload.source,
       operation_type: proposal.operationType,
       payload: proposal.payload,
       status: proposal.status,
@@ -589,6 +628,8 @@ export async function restorePendingIncomeProposal(
       id: proposal.id,
       household_id: proposal.householdId,
       conversation_key: proposal.conversationKey,
+      actor_member_id: proposal.payload.actorMemberId,
+      source: proposal.payload.source,
       operation_type: proposal.operationType,
       payload: proposal.payload,
       status: proposal.status,

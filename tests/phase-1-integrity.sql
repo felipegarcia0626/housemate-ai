@@ -396,6 +396,8 @@ INSERT INTO public.tb_pending_proposals (
   id,
   household_id,
   conversation_key,
+  actor_member_id,
+  source,
   operation_type,
   payload,
   status,
@@ -406,6 +408,8 @@ VALUES (
   '10000000-0000-4000-8000-000000000101',
   '10000000-0000-4000-8000-000000000001',
   'phase-1-test-proposal',
+  '10000000-0000-4000-8000-000000000021',
+  'WEB',
   'CREATE_EXPENSE',
   '{}'::JSONB,
   'AWAITING_CONFIRMATION',
@@ -615,10 +619,13 @@ SELECT pg_temp.expect_sqlstate(
 SELECT pg_temp.expect_sqlstate(
   'only one pending proposal per household conversation',
   $sql$INSERT INTO public.tb_pending_proposals (
-         household_id, conversation_key, operation_type, payload
+         household_id, conversation_key, actor_member_id, source,
+         operation_type, payload
        ) VALUES (
          '10000000-0000-4000-8000-000000000001',
          'phase-1-test-proposal',
+         '10000000-0000-4000-8000-000000000021',
+         'WEB',
          'CREATE_INCOME',
          '{}'::JSONB
        )$sql$,

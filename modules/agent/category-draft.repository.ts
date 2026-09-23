@@ -6,12 +6,14 @@ import type {
   AgentCategoryDraftStatus,
   AgentCategoryDraftPayload,
 } from "./category-draft.types";
+import type { ExpenseSource } from "@/modules/expenses/expense.types";
 
 type DraftRow = {
   id: string;
   household_id: string;
   actor_member_id: string;
   conversation_key: string;
+  source: ExpenseSource;
   operation_type: AgentCategoryDraftOperation | null;
   payload: AgentCategoryDraftPayload;
   status: AgentCategoryDraftStatus;
@@ -27,7 +29,7 @@ export class CategoryDraftRepositoryError extends Error {
 }
 
 const columns =
-  "id,household_id,actor_member_id,conversation_key,operation_type,payload,status,created_at,updated_at";
+  "id,household_id,actor_member_id,conversation_key,source,operation_type,payload,status,created_at,updated_at";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -204,6 +206,7 @@ function isValidDraftRow(value: unknown): value is DraftRow {
     !isString(value.household_id) ||
     !isString(value.actor_member_id) ||
     !isString(value.conversation_key) ||
+    !isSource(value.source) ||
     !isStatus(value.status) ||
     !isString(value.created_at) ||
     !isString(value.updated_at)
@@ -226,6 +229,7 @@ function mapRow(row: DraftRow): AgentDraft {
     householdId: row.household_id,
     actorMemberId: row.actor_member_id,
     conversationKey: row.conversation_key,
+    source: row.source,
     operationType: row.operation_type,
     payload: row.payload,
     status: row.status,
@@ -248,6 +252,7 @@ export async function createCategoryDraft(input: {
   householdId: string;
   actorMemberId: string;
   conversationKey: string;
+  source: ExpenseSource;
   operationType: AgentCategoryDraftOperation;
   payload: AgentCategoryDraftPayload;
 }): Promise<AgentCategoryDraft> {
@@ -264,6 +269,7 @@ export async function createAgentDraft(input: {
   householdId: string;
   actorMemberId: string;
   conversationKey: string;
+  source: ExpenseSource;
   operationType: AgentCategoryDraftOperation | null;
   status: AgentCategoryDraftStatus;
   payload: AgentCategoryDraftPayload;
@@ -275,6 +281,7 @@ export async function createAgentDraft(input: {
       household_id: input.householdId,
       actor_member_id: input.actorMemberId,
       conversation_key: input.conversationKey,
+      source: input.source,
       operation_type: input.operationType,
       payload: input.payload,
       status: input.status,
@@ -290,6 +297,7 @@ export async function findActiveAgentDraft(
   householdId: string,
   actorMemberId: string,
   conversationKey: string,
+  source: ExpenseSource,
 ): Promise<AgentDraft | null> {
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_agent_category_drafts")
@@ -297,6 +305,7 @@ export async function findActiveAgentDraft(
     .eq("household_id", householdId)
     .eq("actor_member_id", actorMemberId)
     .eq("conversation_key", conversationKey)
+    .eq("source", source)
     .maybeSingle();
 
   if (error) handleError(error);
@@ -307,6 +316,7 @@ export async function findCategoryDraft(
   householdId: string,
   actorMemberId: string,
   conversationKey: string,
+  source: ExpenseSource,
 ): Promise<AgentCategoryDraft | null> {
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_agent_category_drafts")
@@ -314,6 +324,7 @@ export async function findCategoryDraft(
     .eq("household_id", householdId)
     .eq("actor_member_id", actorMemberId)
     .eq("conversation_key", conversationKey)
+    .eq("source", source)
     .eq("status", "AWAITING_CATEGORY")
     .maybeSingle();
 
@@ -326,6 +337,7 @@ export async function updateAgentDraft(
   householdId: string,
   actorMemberId: string,
   conversationKey: string,
+  source: ExpenseSource,
   operationType: AgentCategoryDraftOperation | null,
   status: AgentCategoryDraftStatus,
   payload: AgentCategoryDraftPayload,
@@ -338,6 +350,7 @@ export async function updateAgentDraft(
     .eq("household_id", householdId)
     .eq("actor_member_id", actorMemberId)
     .eq("conversation_key", conversationKey);
+  query = query.eq("source", source);
   if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
   const { data, error } = await query.select(columns).single();
 
@@ -350,6 +363,7 @@ export async function updateCategoryDraft(
   householdId: string,
   actorMemberId: string,
   conversationKey: string,
+  source: ExpenseSource,
   payload: AgentCategoryDraftPayload,
   expectedUpdatedAt?: string,
 ): Promise<AgentCategoryDraft> {
@@ -360,6 +374,7 @@ export async function updateCategoryDraft(
     .eq("household_id", householdId)
     .eq("actor_member_id", actorMemberId)
     .eq("conversation_key", conversationKey)
+    .eq("source", source)
     .eq("status", "AWAITING_CATEGORY");
   if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
   const { data, error } = await query.select(columns).single();
@@ -373,6 +388,7 @@ export async function deleteAgentDraft(
   householdId: string,
   actorMemberId: string,
   conversationKey: string,
+  source: ExpenseSource,
 ): Promise<void> {
   const { error } = await getSupabaseAdminClient()
     .from("tb_agent_category_drafts")
@@ -380,7 +396,8 @@ export async function deleteAgentDraft(
     .eq("id", id)
     .eq("household_id", householdId)
     .eq("actor_member_id", actorMemberId)
-    .eq("conversation_key", conversationKey);
+    .eq("conversation_key", conversationKey)
+    .eq("source", source);
 
   if (error) handleError(error);
 }
@@ -390,6 +407,7 @@ export async function deleteCategoryDraft(
   householdId: string,
   actorMemberId: string,
   conversationKey: string,
+  source: ExpenseSource,
 ): Promise<void> {
-  await deleteAgentDraft(id, householdId, actorMemberId, conversationKey);
+  await deleteAgentDraft(id, householdId, actorMemberId, conversationKey, source);
 }

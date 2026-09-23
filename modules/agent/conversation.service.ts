@@ -1003,6 +1003,8 @@ async function applyPendingProposalCorrection(
       id: proposal.id,
       householdId: context.householdId,
       conversationKey: context.conversationKey,
+      actorMemberId: context.actorMemberId,
+      source: context.source,
       operationType: proposal.operationType,
       payload,
       expectedUpdatedAt: proposal.updatedAt,
@@ -1227,6 +1229,8 @@ async function compensatePendingProposalAfterDraftFailure(
         proposalId,
         context.householdId,
         context.conversationKey,
+        context.actorMemberId,
+        context.source,
       );
       return;
     }
@@ -1234,6 +1238,8 @@ async function compensatePendingProposalAfterDraftFailure(
       proposalId,
       context.householdId,
       context.conversationKey,
+      context.actorMemberId,
+      context.source,
     );
   } catch (error) {
     if (error instanceof PendingProposalRepositoryError) {

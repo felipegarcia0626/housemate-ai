@@ -154,8 +154,22 @@ let ambiguousMemberNames = false;
 let normalizedMemberNames = false;
 let duplicateCategoryNames = false;
 
+function contextualRowValue(row, column) {
+  if (row[column] !== undefined) return row[column];
+  if (column === "actor_member_id") return row.payload?.actorMemberId;
+  if (column === "source") return row.payload?.source ?? "WEB";
+  return row[column];
+}
+
+function normalizedCategoryDraftRow(row) {
+  if (row.source !== undefined) return row;
+  return { ...row, source: row.payload?.source ?? "WEB" };
+}
+
 function matches(row, filters) {
-  return filters.every(({ column, value }) => row[column] === value);
+  return filters.every(
+    ({ column, value }) => contextualRowValue(row, column) === value,
+  );
 }
 
 async function captureInfoLogs(callback) {
@@ -232,12 +246,19 @@ class FakeQuery {
         Object.assign(row, this.updatePayload, {
           updated_at: new Date(nextUpdatedAt).toISOString(),
         });
-        return { data: [row], error: null };
+        return { data: [normalizedCategoryDraftRow(row)], error: null };
       }
       if (this.insertPayload !== undefined) {
         const conflict = categoryDrafts.some((row) =>
-          ["household_id", "actor_member_id", "conversation_key"].every(
-            (column) => row[column] === this.insertPayload[column],
+          [
+            "household_id",
+            "actor_member_id",
+            "conversation_key",
+            "source",
+          ].every(
+            (column) =>
+              contextualRowValue(row, column) ===
+              contextualRowValue(this.insertPayload, column),
           ),
         );
         if (conflict) return { data: null, error: { code: "23505" } };
@@ -248,7 +269,7 @@ class FakeQuery {
           updated_at: this.insertPayload.updated_at ?? now,
         };
         categoryDrafts.push(row);
-        return { data: [row], error: null };
+        return { data: [normalizedCategoryDraftRow(row)], error: null };
       }
       const rows = categoryDrafts.filter((row) => matches(row, this.filters));
       if (this.deleteRequested) {
@@ -258,7 +279,7 @@ class FakeQuery {
         }
         categoryDrafts = categoryDrafts.filter((row) => !rows.includes(row));
       }
-      return { data: rows, error: null };
+      return { data: rows.map(normalizedCategoryDraftRow), error: null };
     }
 
     if (this.insertPayload !== undefined) {
@@ -269,6 +290,10 @@ class FakeQuery {
         (row) =>
           row.household_id === this.insertPayload.household_id &&
           row.conversation_key === this.insertPayload.conversation_key &&
+          contextualRowValue(row, "actor_member_id") ===
+            contextualRowValue(this.insertPayload, "actor_member_id") &&
+          contextualRowValue(row, "source") ===
+            contextualRowValue(this.insertPayload, "source") &&
           row.status === "AWAITING_CONFIRMATION",
       );
       if (conflict) return { data: null, error: { code: "23505" } };
@@ -1390,6 +1415,8 @@ async function main() {
       id: conditionalBefore.id,
       householdId: conditionalContext.householdId,
       conversationKey: conditionalContext.conversationKey,
+      actorMemberId: conditionalContext.actorMemberId,
+      source: conditionalContext.source,
       operationType: "CREATE_EXPENSE",
       payload: updatedPayload,
       expectedUpdatedAt: conditionalBefore.updatedAt,
@@ -1430,6 +1457,8 @@ async function main() {
     id: updatedConditional.id,
     householdId: conditionalContext.householdId,
     conversationKey: conditionalContext.conversationKey,
+    actorMemberId: conditionalContext.actorMemberId,
+    source: conditionalContext.source,
     operationType: "CREATE_EXPENSE",
     payload: updatedConditional.payload,
     expectedUpdatedAt: updatedConditional.updatedAt,
@@ -1518,6 +1547,8 @@ async function main() {
       id: conditionalIncomeBefore.id,
       householdId: conditionalIncomeContext.householdId,
       conversationKey: conditionalIncomeContext.conversationKey,
+      actorMemberId: conditionalIncomeContext.actorMemberId,
+      source: conditionalIncomeContext.source,
       operationType: "CREATE_INCOME",
       payload: updatedIncomePayload,
       expectedUpdatedAt: conditionalIncomeBefore.updatedAt,
@@ -7231,6 +7262,7 @@ async function main() {
       household_id: context.householdId,
       actor_member_id: context.actorMemberId,
       conversation_key: context.conversationKey,
+      source: context.source,
       operation_type: operationType,
       status: "AWAITING_DETAILS",
       payload:
