@@ -108,6 +108,12 @@ const conversationModule = path.join(
   "agent",
   "conversation.service.ts",
 );
+const categoryDraftServiceModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "category-draft.service.ts",
+);
 const openaiAdapterModule = path.join(
   root,
   "infrastructure",
@@ -146,6 +152,7 @@ let confirmationFailure = false;
 let confirmationPayloadMutation = null;
 let rejectionFailure = false;
 let categoryDraftDeletionFailure = false;
+let categoryDraftStaleDelete = false;
 let categoryDraftRestorationFailure = false;
 let draftRestoreFailureArmed = false;
 let pendingProposalCreationFailure = false;
@@ -271,14 +278,28 @@ class FakeQuery {
         categoryDrafts.push(row);
         return { data: [normalizedCategoryDraftRow(row)], error: null };
       }
-      const rows = categoryDrafts.filter((row) => matches(row, this.filters));
       if (this.deleteRequested) {
         if (categoryDraftDeletionFailure) {
           draftRestoreFailureArmed = true;
           return { data: null, error: { code: "DRAFT_DELETE_FAILURE" } };
         }
+        if (categoryDraftStaleDelete) {
+          const currentRow = categoryDrafts.find((row) =>
+            matches(
+              row,
+              this.filters.filter(({ column }) => column !== "updated_at"),
+            ),
+          );
+          if (currentRow) {
+            currentRow.updated_at = "2026-08-12T12:03:00.000Z";
+          }
+          categoryDraftStaleDelete = false;
+        }
+        const rows = categoryDrafts.filter((row) => matches(row, this.filters));
         categoryDrafts = categoryDrafts.filter((row) => !rows.includes(row));
+        return { data: rows.map(normalizedCategoryDraftRow), error: null };
       }
+      const rows = categoryDrafts.filter((row) => matches(row, this.filters));
       return { data: rows.map(normalizedCategoryDraftRow), error: null };
     }
 
@@ -795,6 +816,7 @@ async function main() {
   ).ExpenseDomainError;
   const agentService = load(agentServiceModule);
   const pendingProposalRepository = load(pendingProposalRepositoryModule);
+  const categoryDraftService = load(categoryDraftServiceModule);
   const tool = load(toolModule);
   const conversation = load(conversationModule);
   async function selectCategory(context, macro, micro) {
@@ -8113,6 +8135,173 @@ async function main() {
     categoryDrafts.some((row) => row.id === incomeMismatchRejectDraft.id),
   );
   console.log("PASS Income proposal resolution never deletes an unrelated draft");
+
+  const draftCasContext = {
+    ...contextA,
+    conversationKey: "agent-2r-draft-cas",
+  };
+  const draftCasV1 = "2026-08-12T12:00:00.000Z";
+  const draftCasV2 = "2026-08-12T12:01:00.000Z";
+  const draftCasRow = {
+    id: "83000000-0000-4000-8000-000000000001",
+    household_id: draftCasContext.householdId,
+    actor_member_id: draftCasContext.actorMemberId,
+    conversation_key: draftCasContext.conversationKey,
+    source: draftCasContext.source,
+    operation_type: null,
+    status: "AWAITING_OPERATION",
+    payload: {
+      amount: null,
+      date: null,
+      merchant: null,
+      description: "v1",
+      paidBySelf: null,
+      paidByMemberName: null,
+      categoryName: null,
+    },
+    created_at: draftCasV1,
+    updated_at: draftCasV1,
+  };
+  categoryDrafts.push(draftCasRow);
+  draftCasRow.payload.description = "v2";
+  draftCasRow.updated_at = draftCasV2;
+  const staleDeleteResult = await categoryDraftService.deleteAgentDraft(
+    draftCasContext,
+    draftCasRow.id,
+    draftCasV1,
+  );
+  assert.equal(staleDeleteResult, "VERSION_CONFLICT");
+  assert.equal(categoryDrafts.find((row) => row.id === draftCasRow.id)?.updated_at, draftCasV2);
+  const currentDeleteResult = await categoryDraftService.deleteAgentDraft(
+    draftCasContext,
+    draftCasRow.id,
+    draftCasV2,
+  );
+  assert.equal(currentDeleteResult, "DELETED");
+  assert.equal(categoryDrafts.some((row) => row.id === draftCasRow.id), false);
+
+  const draftCasOwned = {
+    ...draftCasRow,
+    id: "83000000-0000-4000-8000-000000000002",
+    updated_at: draftCasV1,
+  };
+  const draftCasForeign = {
+    ...draftCasRow,
+    id: "83000000-0000-4000-8000-000000000003",
+    actor_member_id: memberB,
+    updated_at: draftCasV1,
+  };
+  categoryDrafts.push(draftCasOwned, draftCasForeign);
+  const foreignDraftContext = {
+    ...draftCasContext,
+    actorMemberId: memberB,
+  };
+  const foreignDeleteResult = await categoryDraftService.deleteAgentDraft(
+    foreignDraftContext,
+    draftCasOwned.id,
+    draftCasV1,
+  );
+  assert.equal(foreignDeleteResult, "NOT_FOUND");
+  assert.equal(categoryDrafts.some((row) => row.id === draftCasOwned.id), true);
+  assert.equal(categoryDrafts.some((row) => row.id === draftCasForeign.id), true);
+  console.log("PASS AgentDraft delete uses expected updated_at and context");
+
+  const staleExpirationContext = {
+    ...contextA,
+    conversationKey: "agent-2r-expiration-cas",
+  };
+  const staleExpirationDraft = {
+    ...draftCasRow,
+    id: "83000000-0000-4000-8000-000000000004",
+    household_id: staleExpirationContext.householdId,
+    actor_member_id: staleExpirationContext.actorMemberId,
+    conversation_key: staleExpirationContext.conversationKey,
+    updated_at: "2026-08-12T12:00:00.000Z",
+  };
+  categoryDrafts.push(staleExpirationDraft);
+  categoryDraftStaleDelete = true;
+  const staleExpirationResult = await categoryDraftService.getActiveAgentDraft(
+    staleExpirationContext,
+  );
+  assert.equal(staleExpirationResult, null);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === staleExpirationDraft.id),
+    true,
+  );
+  assert.equal(
+    categoryDrafts.find((row) => row.id === staleExpirationDraft.id)?.updated_at,
+    "2026-08-12T12:03:00.000Z",
+  );
+  console.log("PASS expired AgentDraft cleanup preserves a concurrent update");
+
+  const staleConfirmContext = {
+    ...contextA,
+    conversationKey: "agent-2r-confirm-cleanup-cas",
+  };
+  const staleConfirmDraft = {
+    ...draftCasRow,
+    id: "83000000-0000-4000-8000-000000000005",
+    household_id: staleConfirmContext.householdId,
+    actor_member_id: staleConfirmContext.actorMemberId,
+    conversation_key: staleConfirmContext.conversationKey,
+    status: "AWAITING_DETAILS",
+    operation_type: "CREATE_EXPENSE",
+    payload: {
+      amount: "321",
+      date: "2026-08-12",
+      merchant: "CAS Market",
+      description: "CAS expense",
+      paidBySelf: true,
+      paidByMemberName: null,
+      categoryName: "Food",
+    },
+    updated_at: new Date().toISOString(),
+  };
+  const staleConfirmProposal = makeCausalExpenseProposal(
+    staleConfirmContext,
+    "83000000-0000-4000-8000-000000000006",
+    staleConfirmDraft.id,
+  );
+  categoryDrafts.push(staleConfirmDraft);
+  proposals.push(staleConfirmProposal);
+  const staleConfirmExpenses = createdExpenses.length;
+  categoryDraftStaleDelete = true;
+  const staleConfirmResult = await conversation.processAgentMessage(
+    staleConfirmContext,
+    { message: "si" },
+  );
+  assert.equal(staleConfirmResult.type, "CONFIRMED");
+  assert.equal(staleConfirmProposal.status, "COMPLETED");
+  assert.equal(createdExpenses.length, staleConfirmExpenses + 1);
+  assert.equal(categoryDrafts.some((row) => row.id === staleConfirmDraft.id), true);
+  console.log("PASS stale confirmation cleanup preserves the newer AgentDraft");
+
+  const staleRejectContext = {
+    ...contextA,
+    conversationKey: "agent-2r-reject-cleanup-cas",
+  };
+  const staleRejectDraft = {
+    ...staleConfirmDraft,
+    id: "83000000-0000-4000-8000-000000000007",
+    conversation_key: staleRejectContext.conversationKey,
+    updated_at: new Date().toISOString(),
+  };
+  const staleRejectProposal = makeCausalExpenseProposal(
+    staleRejectContext,
+    "83000000-0000-4000-8000-000000000008",
+    staleRejectDraft.id,
+  );
+  categoryDrafts.push(staleRejectDraft);
+  proposals.push(staleRejectProposal);
+  categoryDraftStaleDelete = true;
+  const staleRejectResult = await conversation.processAgentMessage(
+    staleRejectContext,
+    { message: "no" },
+  );
+  assert.equal(staleRejectResult.type, "REJECTED");
+  assert.equal(staleRejectProposal.status, "REJECTED");
+  assert.equal(categoryDrafts.some((row) => row.id === staleRejectDraft.id), true);
+  console.log("PASS stale rejection cleanup preserves the newer AgentDraft");
 
   assert.equal(regression2I.length, 11);
   console.log(`PASS 2I regression matrix completed (${regression2I.length} cases)`);

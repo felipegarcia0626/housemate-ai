@@ -16,7 +16,6 @@ import {
   createOperationDraft,
   createCategoryDraft,
   deleteAgentDraft,
-  deleteCategoryDraft,
   createDetailsDraft,
   getActiveAgentDraft,
   isCategoryDraftRepositoryError,
@@ -648,7 +647,10 @@ async function completeCategoryDraft(
         throw error;
       }
       try {
-        await deleteCategoryDraft(context, draft.id);
+        await deleteDraftOrThrow(
+          context,
+          updatedCategoryDraft ?? draft,
+        );
       } catch (error) {
         await compensatePendingProposalAfterDraftFailure(
           context,
@@ -698,7 +700,10 @@ async function completeCategoryDraft(
       throw error;
     }
     try {
-      await deleteCategoryDraft(context, draft.id);
+      await deleteDraftOrThrow(
+        context,
+        updatedCategoryDraft ?? draft,
+      );
     } catch (error) {
       await compensatePendingProposalAfterDraftFailure(
         context,
@@ -1206,7 +1211,37 @@ async function deleteDraftOrThrow(
   draft: AgentDraft,
 ): Promise<void> {
   try {
-    await deleteAgentDraft(context, draft.id);
+    const result = await deleteAgentDraft(
+      context,
+      draft.id,
+      draft.updatedAt,
+    );
+    if (result !== "DELETED") {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        result === "VERSION_CONFLICT"
+          ? "The conversation draft changed before cleanup."
+          : "The conversation draft was not found during cleanup.",
+      );
+    }
+  } catch (error) {
+    if (error instanceof AgentDomainError) throw error;
+    if (isCategoryDraftRepositoryError(error)) {
+      throw new AgentDomainError(
+        "PERSISTENCE_ERROR",
+        "The conversation draft could not be completed.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function deleteDraftIfCurrent(
+  context: AgentContext,
+  draft: AgentDraft,
+): Promise<"DELETED" | "VERSION_CONFLICT" | "NOT_FOUND"> {
+  try {
+    return await deleteAgentDraft(context, draft.id, draft.updatedAt);
   } catch (error) {
     if (isCategoryDraftRepositoryError(error)) {
       throw new AgentDomainError(
@@ -1270,10 +1305,10 @@ async function reconcileDraftWithProposal(
   context: AgentContext,
   draft: AgentDraft,
   proposal: PendingProposal,
-): Promise<void> {
-  if (!proposalOwnsDraft(proposal, draft)) return;
+): Promise<boolean> {
+  if (!proposalOwnsDraft(proposal, draft)) return false;
   try {
-    await deleteDraftOrThrow(context, draft);
+    return (await deleteDraftIfCurrent(context, draft)) === "DELETED";
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
     throw new AgentDomainError(
@@ -1527,12 +1562,12 @@ export async function processAgentMessage(
     const activePendingProposal = await getPendingProposalForMessage();
     if (activePendingProposal) {
       if (proposalOwnsDraft(activePendingProposal, activeDraft)) {
-        await reconcileDraftWithProposal(
+        const reconciled = await reconcileDraftWithProposal(
           context,
           activeDraft,
           activePendingProposal,
         );
-        activeDraft = null;
+        if (reconciled) activeDraft = null;
       } else if (looksLikeCorrection(message)) {
         // Preserve an unrelated draft while allowing the pending proposal's
         // explicit correction flow to run.
@@ -1548,12 +1583,12 @@ export async function processAgentMessage(
         latestTerminalProposal &&
         terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
       ) {
-        await reconcileDraftWithProposal(
+        const reconciled = await reconcileDraftWithProposal(
           context,
           activeDraft,
           latestTerminalProposal,
         );
-        activeDraft = null;
+        if (reconciled) activeDraft = null;
       }
     }
   }
@@ -1573,8 +1608,8 @@ export async function processAgentMessage(
       }
       const result = await confirmAgentProposal(context, proposalId);
       if (activeDraft && proposalOwnsDraft(proposalForCleanup, activeDraft)) {
-        await deleteDraftOrThrow(context, activeDraft);
-        activeDraft = null;
+        const cleanupResult = await deleteDraftIfCurrent(context, activeDraft);
+        if (cleanupResult === "DELETED") activeDraft = null;
       }
       if (result.status === "REJECTED") {
         return {
@@ -1591,12 +1626,12 @@ export async function processAgentMessage(
       latestTerminalProposal &&
       terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
     ) {
-      await reconcileDraftWithProposal(
+      const reconciled = await reconcileDraftWithProposal(
         context,
         activeDraft,
         latestTerminalProposal,
       );
-      activeDraft = null;
+      if (reconciled) activeDraft = null;
     }
     if (activeDraft?.status === "AWAITING_CATEGORY") {
       return categoryClarification(
@@ -1646,8 +1681,8 @@ export async function processAgentMessage(
       }
       const result = await rejectAgentProposal(context, proposalId);
       if (activeDraft && proposalOwnsDraft(proposalForCleanup, activeDraft)) {
-        await deleteDraftOrThrow(context, activeDraft);
-        activeDraft = null;
+        const cleanupResult = await deleteDraftIfCurrent(context, activeDraft);
+        if (cleanupResult === "DELETED") activeDraft = null;
       }
       return { type: "REJECTED", ...result };
     }
@@ -1657,12 +1692,12 @@ export async function processAgentMessage(
       latestTerminalProposal &&
       terminalProposalSupersedesDraft(latestTerminalProposal, activeDraft)
     ) {
-      await reconcileDraftWithProposal(
+      const reconciled = await reconcileDraftWithProposal(
         context,
         activeDraft,
         latestTerminalProposal,
       );
-      activeDraft = null;
+      if (reconciled) activeDraft = null;
     }
     if (activeDraft) {
       await deleteDraftOrThrow(context, activeDraft);

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentContext } from "./agent.types";
 import {
   CategoryDraftRepositoryError,
+  type CategoryDraftDeleteResult,
   createAgentDraft as createOperationDraftInRepository,
   createCategoryDraft as createCategoryDraftInRepository,
   deleteAgentDraft as deleteAgentDraftInRepository,
@@ -89,14 +90,23 @@ export async function getActiveAgentDraft(
   );
   if (!draft) return null;
   if (!isExpired(draft)) return draft;
-  await deleteAgentDraftInRepository(
+  const deleteResult = await deleteAgentDraftInRepository(
     draft.id,
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
     context.source,
+    draft.updatedAt,
   );
-  return null;
+  if (deleteResult === "DELETED") return null;
+
+  const currentDraft = await findActiveDraftInRepository(
+    context.householdId,
+    context.actorMemberId,
+    context.conversationKey,
+    context.source,
+  );
+  return currentDraft && !isExpired(currentDraft) ? currentDraft : null;
 }
 
 export async function updateAgentDraft(
@@ -122,13 +132,15 @@ export async function updateAgentDraft(
 export async function deleteAgentDraft(
   context: AgentContext,
   draftId: string,
-): Promise<void> {
-  await deleteAgentDraftInRepository(
+  expectedUpdatedAt: string,
+): Promise<CategoryDraftDeleteResult> {
+  return deleteAgentDraftInRepository(
     draftId,
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
     context.source,
+    expectedUpdatedAt,
   );
 }
 
@@ -143,26 +155,37 @@ export async function getActiveCategoryDraft(
   );
   if (!draft) return null;
   if (!isExpired(draft)) return draft;
-  await deleteCategoryDraftInRepository(
+  const deleteResult = await deleteCategoryDraftInRepository(
     draft.id,
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
     context.source,
+    draft.updatedAt,
   );
-  return null;
+  if (deleteResult === "DELETED") return null;
+
+  const currentDraft = await findDraftInRepository(
+    context.householdId,
+    context.actorMemberId,
+    context.conversationKey,
+    context.source,
+  );
+  return currentDraft && !isExpired(currentDraft) ? currentDraft : null;
 }
 
 export async function deleteCategoryDraft(
   context: AgentContext,
   draftId: string,
-): Promise<void> {
-  await deleteCategoryDraftInRepository(
+  expectedUpdatedAt: string,
+): Promise<CategoryDraftDeleteResult> {
+  return deleteCategoryDraftInRepository(
     draftId,
     context.householdId,
     context.actorMemberId,
     context.conversationKey,
     context.source,
+    expectedUpdatedAt,
   );
 }
 

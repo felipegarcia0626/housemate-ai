@@ -21,9 +21,14 @@ type DraftRow = {
   updated_at: string;
 };
 
+export type CategoryDraftDeleteResult =
+  | "DELETED"
+  | "VERSION_CONFLICT"
+  | "NOT_FOUND";
+
 export class CategoryDraftRepositoryError extends Error {
-  constructor() {
-    super("Unable to access the category draft.");
+  constructor(cause?: unknown) {
+    super("Unable to access the category draft.", { cause });
     this.name = "CategoryDraftRepositoryError";
   }
 }
@@ -389,17 +394,36 @@ export async function deleteAgentDraft(
   actorMemberId: string,
   conversationKey: string,
   source: ExpenseSource,
-): Promise<void> {
-  const { error } = await getSupabaseAdminClient()
+  expectedUpdatedAt: string,
+): Promise<CategoryDraftDeleteResult> {
+  const { data, error } = await getSupabaseAdminClient()
     .from("tb_agent_category_drafts")
     .delete()
     .eq("id", id)
     .eq("household_id", householdId)
     .eq("actor_member_id", actorMemberId)
     .eq("conversation_key", conversationKey)
-    .eq("source", source);
+    .eq("source", source)
+    .eq("updated_at", expectedUpdatedAt)
+    .select("id")
+    .maybeSingle();
 
   if (error) handleError(error);
+  if (data) return "DELETED";
+
+  const { data: currentDraft, error: currentDraftError } =
+    await getSupabaseAdminClient()
+      .from("tb_agent_category_drafts")
+      .select("id")
+      .eq("id", id)
+      .eq("household_id", householdId)
+      .eq("actor_member_id", actorMemberId)
+      .eq("conversation_key", conversationKey)
+      .eq("source", source)
+      .maybeSingle();
+
+  if (currentDraftError) handleError(currentDraftError);
+  return currentDraft ? "VERSION_CONFLICT" : "NOT_FOUND";
 }
 
 export async function deleteCategoryDraft(
@@ -408,6 +432,14 @@ export async function deleteCategoryDraft(
   actorMemberId: string,
   conversationKey: string,
   source: ExpenseSource,
-): Promise<void> {
-  await deleteAgentDraft(id, householdId, actorMemberId, conversationKey, source);
+  expectedUpdatedAt: string,
+): Promise<CategoryDraftDeleteResult> {
+  return deleteAgentDraft(
+    id,
+    householdId,
+    actorMemberId,
+    conversationKey,
+    source,
+    expectedUpdatedAt,
+  );
 }
