@@ -24,7 +24,9 @@ async function findFreePort() {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Could not determine a free port.")));
+        server.close(() =>
+          reject(new Error("Could not determine a free port.")),
+        );
         return;
       }
       server.close((error) => (error ? reject(error) : resolve(address.port)));
@@ -106,7 +108,7 @@ async function createPauseTrigger(controller) {
     AS $trigger$
     BEGIN
       IF OLD.status = 'AWAITING_CONFIRMATION'
-         AND NEW.status = 'COMPLETED' THEN
+         AND NEW.status IN ('COMPLETED', 'REJECTED') THEN
         PERFORM pg_advisory_lock(${advisoryLockKey});
       END IF;
       RETURN NEW;
@@ -157,11 +159,82 @@ async function waitForRowLockWait(controller, pid) {
 }
 
 function proposalIdFor(round, movement) {
-  const suffix = String(100 + round * 2 + (movement === "EXPENSE" ? 1 : 2)).padStart(
-    12,
-    "0",
-  );
+  const suffix = String(
+    100 + round * 2 + (movement === "EXPENSE" ? 1 : 2),
+  ).padStart(12, "0");
   return `30000000-0000-4000-8000-${suffix}`;
+}
+
+function startConfirmQuery(
+  client,
+  {
+    movement,
+    proposalId,
+    conversationKey,
+    updatedAt,
+    merchant,
+    description,
+    round,
+    expenseDescription = `2L3 expense item ${round}`,
+    expenseItemName = `item-${round}`,
+  },
+) {
+  if (movement === "EXPENSE") {
+    return client.query(
+      `SELECT public.fn_confirm_pending_expense_consistent(
+         $1, $2, $3, $4, 'WEB'::public.expense_source, $5,
+         $4, $4, $6, NULL, $7, 100.00, '2026-09-01', $8,
+         'WEB'::public.expense_source,
+         $9::jsonb, $10::jsonb
+       ) AS result`,
+      [
+        proposalId,
+        householdId,
+        conversationKey,
+        memberId,
+        updatedAt,
+        expenseCategoryId,
+        merchant,
+        expenseDescription,
+        JSON.stringify([{ name: expenseItemName, totalAmount: 100 }]),
+        JSON.stringify([
+          { householdMemberId: memberId, amount: 100, percentage: 100 },
+        ]),
+      ],
+    );
+  }
+
+  return client.query(
+    `SELECT public.fn_confirm_pending_income_consistent(
+       $1, $2, $3, $4, 'WEB'::public.expense_source, $5,
+       $4, $4, 200.00, '2026-09-01', $6, $7
+     ) AS result`,
+    [
+      proposalId,
+      householdId,
+      conversationKey,
+      memberId,
+      updatedAt,
+      description,
+      incomeCategoryId,
+    ],
+  );
+}
+
+function startRejectQuery(client, { movement, proposalId, conversationKey }) {
+  return client.query(
+    `SELECT public.fn_reject_pending_proposal(
+       $1, $2, $3, $4, 'WEB'::public.expense_source,
+       $5::public.pending_operation_type
+     ) AS result`,
+    [
+      proposalId,
+      householdId,
+      conversationKey,
+      memberId,
+      movement === "EXPENSE" ? "CREATE_EXPENSE" : "CREATE_INCOME",
+    ],
+  );
 }
 
 async function runConcurrentRound({ controller, postgres, round, movement }) {
@@ -196,89 +269,27 @@ async function runConcurrentRound({ controller, postgres, round, movement }) {
     await c1.query("BEGIN");
     await c2.query("BEGIN");
 
-    if (isExpense) {
-      firstQuery = c1.query(
-        `SELECT public.fn_confirm_pending_expense_consistent(
-           $1, $2, $3, $4, 'WEB'::public.expense_source, $5,
-           $4, $4, $6, NULL, $7, 100.00, '2026-09-01', $8,
-           'WEB'::public.expense_source,
-           $9::jsonb, $10::jsonb
-         ) AS result`,
-        [
-          proposalId,
-          householdId,
-          conversationKey,
-          memberId,
-          updatedAt,
-          expenseCategoryId,
-          merchant,
-          `2L3 expense item ${round}`,
-          JSON.stringify([{ name: `item-${round}`, totalAmount: 100 }]),
-          JSON.stringify([
-            { householdMemberId: memberId, amount: 100, percentage: 100 },
-          ]),
-        ],
-      );
-    } else {
-      firstQuery = c1.query(
-        `SELECT public.fn_confirm_pending_income_consistent(
-           $1, $2, $3, $4, 'WEB'::public.expense_source, $5,
-           $4, $4, 200.00, '2026-09-01', $6, $7
-         ) AS result`,
-        [
-          proposalId,
-          householdId,
-          conversationKey,
-          memberId,
-          updatedAt,
-          description,
-          incomeCategoryId,
-        ],
-      );
-    }
+    firstQuery = startConfirmQuery(c1, {
+      movement,
+      proposalId,
+      conversationKey,
+      updatedAt,
+      merchant,
+      description,
+      round,
+    });
 
     await waitForAdvisoryWait(controller, c1.processID);
 
-    if (isExpense) {
-      secondQuery = c2.query(
-        `SELECT public.fn_confirm_pending_expense_consistent(
-           $1, $2, $3, $4, 'WEB'::public.expense_source,
-           $5, $4, $4, $6, NULL, $7, 100.00, '2026-09-01', $8,
-           'WEB'::public.expense_source,
-           $9::jsonb, $10::jsonb
-         ) AS result`,
-        [
-          proposalId,
-          householdId,
-          conversationKey,
-          memberId,
-          updatedAt,
-          expenseCategoryId,
-          merchant,
-          `2L3 expense item ${round}`,
-          JSON.stringify([{ name: `item-${round}`, totalAmount: 100 }]),
-          JSON.stringify([
-            { householdMemberId: memberId, amount: 100, percentage: 100 },
-          ]),
-        ],
-      );
-    } else {
-      secondQuery = c2.query(
-        `SELECT public.fn_confirm_pending_income_consistent(
-           $1, $2, $3, $4, 'WEB'::public.expense_source,
-           $5, $4, $4, 200.00, '2026-09-01', $6, $7
-         ) AS result`,
-        [
-          proposalId,
-          householdId,
-          conversationKey,
-          memberId,
-          updatedAt,
-          description,
-          incomeCategoryId,
-        ],
-      );
-    }
+    secondQuery = startConfirmQuery(c2, {
+      movement,
+      proposalId,
+      conversationKey,
+      updatedAt,
+      merchant,
+      description,
+      round,
+    });
 
     await waitForRowLockWait(controller, c2.processID);
     await controller.query("SELECT pg_advisory_unlock($1)", [advisoryLockKey]);
@@ -317,14 +328,158 @@ async function runConcurrentRound({ controller, postgres, round, movement }) {
     assert.equal(expenseRows.length, isExpense ? 1 : 0);
     assert.equal(incomeRows.length, isExpense ? 0 : 1);
     assert.equal(
-      (isExpense ? expenseRows[0]?.id : incomeRows[0]?.id),
+      isExpense ? expenseRows[0]?.id : incomeRows[0]?.id,
       referenceId,
     );
     console.log(
       `PASS 2L3 ${movement.toLowerCase()} concurrency round ${round}: one write, one idempotent result`,
     );
   } finally {
-    await controller.query("SELECT pg_advisory_unlock($1)", [advisoryLockKey]).catch(() => {});
+    await controller
+      .query("SELECT pg_advisory_unlock($1)", [advisoryLockKey])
+      .catch(() => {});
+    await Promise.allSettled([firstQuery, secondQuery]);
+    await c1.query("ROLLBACK").catch(() => {});
+    await c2.query("ROLLBACK").catch(() => {});
+    await c1.end().catch(() => {});
+    await c2.end().catch(() => {});
+  }
+}
+
+async function runConfirmRejectRound({
+  controller,
+  postgres,
+  round,
+  movement,
+  firstOperation,
+}) {
+  const isExpense = movement === "EXPENSE";
+  const proposalId = proposalIdFor(
+    1000 + round * 2 + (firstOperation === "CONFIRM" ? 1 : 2),
+    movement,
+  );
+  const conversationKey = `2r2-${movement.toLowerCase()}-${firstOperation.toLowerCase()}-${round}`;
+  const updatedAt = "2000-01-01 00:00:00+00";
+  const merchant = `2R2 ${movement} merchant ${firstOperation} ${round}`;
+  const description = `2R2 ${movement} description ${firstOperation} ${round}`;
+
+  await controller.query(
+    `INSERT INTO public.tb_pending_proposals (
+       id, household_id, conversation_key, operation_type, payload,
+       status, created_at, updated_at
+     ) VALUES ($1, $2, $3, $4, $5::jsonb, 'AWAITING_CONFIRMATION', $6, $6)`,
+    [
+      proposalId,
+      householdId,
+      conversationKey,
+      isExpense ? "CREATE_EXPENSE" : "CREATE_INCOME",
+      JSON.stringify({ actorMemberId: memberId, source: "WEB" }),
+      updatedAt,
+    ],
+  );
+
+  const c1 = await connectClient(postgres);
+  const c2 = await connectClient(postgres);
+  let firstQuery;
+  let secondQuery;
+  try {
+    await controller.query("SELECT pg_advisory_lock($1)", [advisoryLockKey]);
+    await c1.query("BEGIN");
+    await c2.query("BEGIN");
+
+    const firstArgs = {
+      movement,
+      proposalId,
+      conversationKey,
+      updatedAt,
+      merchant,
+      description,
+      round,
+      expenseDescription: description,
+      expenseItemName: `2R2 expense item ${round}`,
+    };
+    const firstIsConfirm = firstOperation === "CONFIRM";
+    firstQuery = firstIsConfirm
+      ? startConfirmQuery(c1, firstArgs)
+      : startRejectQuery(c1, firstArgs);
+
+    await waitForAdvisoryWait(controller, c1.processID);
+
+    secondQuery = firstIsConfirm
+      ? startRejectQuery(c2, firstArgs)
+      : startConfirmQuery(c2, firstArgs);
+
+    await waitForRowLockWait(controller, c2.processID);
+    await controller.query("SELECT pg_advisory_unlock($1)", [advisoryLockKey]);
+
+    const firstResult = (await firstQuery).rows[0].result;
+    await c1.query("COMMIT");
+    const secondResult = (await secondQuery).rows[0].result;
+    await c2.query("COMMIT");
+
+    const { rows: proposalRows } = await controller.query(
+      `SELECT id, household_id, conversation_key, actor_member_id, source,
+              operation_type, status, expense_id, income_id
+         FROM public.tb_pending_proposals
+        WHERE id = $1`,
+      [proposalId],
+    );
+    assert.equal(proposalRows.length, 1);
+    const proposalRow = proposalRows[0];
+    assert.equal(proposalRow.household_id, householdId);
+    assert.equal(proposalRow.conversation_key, conversationKey);
+    assert.equal(proposalRow.actor_member_id, memberId);
+    assert.equal(proposalRow.source, "WEB");
+    assert.equal(
+      proposalRow.operation_type,
+      isExpense ? "CREATE_EXPENSE" : "CREATE_INCOME",
+    );
+    assert.notEqual(proposalRow.status, "AWAITING_CONFIRMATION");
+
+    const { rows: expenseRows } = await controller.query(
+      "SELECT id FROM public.tb_expenses WHERE merchant = $1",
+      [merchant],
+    );
+    const { rows: incomeRows } = await controller.query(
+      "SELECT id FROM public.tb_incomes WHERE description = $1",
+      [description],
+    );
+    assert.equal(expenseRows.length, isExpense && firstIsConfirm ? 1 : 0);
+    assert.equal(incomeRows.length, !isExpense && firstIsConfirm ? 1 : 0);
+    assert.equal(
+      expenseRows.length + incomeRows.length,
+      firstIsConfirm ? 1 : 0,
+    );
+
+    if (firstIsConfirm) {
+      assert.equal(firstResult.status, "CREATED");
+      assert.equal(secondResult.status, "ALREADY_COMPLETED");
+      const referenceId = isExpense
+        ? firstResult.expense_id
+        : firstResult.income_id;
+      assert.ok(referenceId);
+      assert.equal(proposalRow.status, "COMPLETED");
+      assert.equal(proposalRow.expense_id, isExpense ? referenceId : null);
+      assert.equal(proposalRow.income_id, isExpense ? null : referenceId);
+      assert.equal(
+        isExpense ? expenseRows[0]?.id : incomeRows[0]?.id,
+        referenceId,
+      );
+    } else {
+      assert.equal(firstResult.status, "REJECTED");
+      assert.equal(secondResult.status, "REJECTED");
+      assert.equal(proposalRow.status, "REJECTED");
+      assert.equal(proposalRow.expense_id, null);
+      assert.equal(proposalRow.income_id, null);
+    }
+
+    console.log(
+      `PASS 2R2 ${movement.toLowerCase()} ${firstOperation.toLowerCase()}-wins: terminal state and movement invariants`,
+    );
+  } finally {
+    await controller
+      .query("SELECT pg_advisory_unlock($1)", [advisoryLockKey])
+      .catch(() => {});
     await Promise.allSettled([firstQuery, secondQuery]);
     await c1.query("ROLLBACK").catch(() => {});
     await c2.query("ROLLBACK").catch(() => {});
@@ -389,8 +544,41 @@ async function main() {
         movement: "INCOME",
       });
     }
+    for (let round = 1; round <= 1; round += 1) {
+      await runConfirmRejectRound({
+        controller,
+        postgres,
+        round,
+        movement: "EXPENSE",
+        firstOperation: "CONFIRM",
+      });
+      await runConfirmRejectRound({
+        controller,
+        postgres,
+        round,
+        movement: "EXPENSE",
+        firstOperation: "REJECT",
+      });
+      await runConfirmRejectRound({
+        controller,
+        postgres,
+        round,
+        movement: "INCOME",
+        firstOperation: "CONFIRM",
+      });
+      await runConfirmRejectRound({
+        controller,
+        postgres,
+        round,
+        movement: "INCOME",
+        firstOperation: "REJECT",
+      });
+    }
     await dropPauseTrigger(controller);
     console.log("PASS 2L3 concurrency harness completed: 20 rounds");
+    console.log(
+      "PASS 2R2 concurrency harness completed: 4 confirm/reject races",
+    );
   } finally {
     if (controller) await controller.end().catch(() => {});
     await postgres.stop().catch(() => {});
