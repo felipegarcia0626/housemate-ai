@@ -26,6 +26,7 @@ La API no expone directamente operaciones sobre tablas ni permite consultas SQL 
 Los siguientes endpoints del contrato ya están implementados en el repositorio y validados mediante sus harnesses funcionales:
 
 - `GET /api/categories`
+- `GET /api/categories/hierarchical`
 - `POST /api/agent`
 - `GET /api/expenses`
 - `GET /api/expenses/{id}`
@@ -656,6 +657,38 @@ Response:
 }
 ]
 }
+
+## 9.2 Obtener categorías jerárquicas para la UI
+
+GET /api/categories/hierarchical?movementType=EXPENSE
+
+El endpoint jerárquico es una lectura opt-in para consumidores que necesitan
+presentar la relación `MACRO → MICRO`. Requiere exactamente un
+`movementType` válido (`EXPENSE` o `INCOME`) y conserva el catálogo global de
+categorías; no resuelve un hogar.
+
+La respuesta contiene únicamente micros activas con un padre macro válido del
+mismo tipo de movimiento:
+
+```json
+{
+  "data": [
+    {
+      "id": "category-micro",
+      "name": "Supermercado",
+      "movementType": "EXPENSE",
+      "level": "MICRO",
+      "parentId": "category-macro",
+      "isActive": true,
+      "macroId": "category-macro",
+      "macroName": "Alimentación",
+      "path": "Alimentación → Supermercado"
+    }
+  ]
+}
+```
+
+`GET /api/categories` mantiene su contrato plano y no se modifica.
 
 # 10. Sharing Rules
 

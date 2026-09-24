@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import type { HierarchicalCategory } from "@/modules/categories/category.types";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
 type ResourceKey =
@@ -8,6 +9,7 @@ type ResourceKey =
   | "expenses"
   | "incomes"
   | "categories"
+  | "expenseCategories"
   | "members"
   | "sharingRules"
   | "balance";
@@ -161,6 +163,9 @@ export default function HomePage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [incomes, setIncomes] = useState<Income[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<
+    HierarchicalCategory[]
+  >([]);
   const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [rules, setRules] = useState<SharingRule[]>([]);
   const [expenseForm, setExpenseForm] = useState(initialExpense);
@@ -171,6 +176,10 @@ export default function HomePage() {
   const [agentError, setAgentError] = useState("");
   const [editingExpense, setEditingExpense] = useState<string | null>(null);
   const [editExpenseForm, setEditExpenseForm] = useState(initialExpenseEdit);
+  const [expenseMacroId, setExpenseMacroId] = useState("");
+  const [editExpenseMacroId, setEditExpenseMacroId] = useState("");
+  const [editExpenseLegacyCategoryName, setEditExpenseLegacyCategoryName] =
+    useState<string | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -194,6 +203,47 @@ export default function HomePage() {
       ) as Record<string, string>,
     [members],
   );
+
+  const expenseMacros = useMemo(() => {
+    const macros = new Map<string, { id: string; name: string }>();
+    expenseCategories.forEach((category) => {
+      macros.set(category.macroId, {
+        id: category.macroId,
+        name: category.macroName,
+      });
+    });
+    return [...macros.values()].sort((left, right) =>
+      left.name.localeCompare(right.name, "es"),
+    );
+  }, [expenseCategories]);
+
+  const expenseMicros = useMemo(
+    () =>
+      expenseCategories.filter(
+        (category) => category.macroId === expenseMacroId,
+      ),
+    [expenseCategories, expenseMacroId],
+  );
+
+  const editExpenseMicros = useMemo(
+    () =>
+      expenseCategories.filter(
+        (category) => category.macroId === editExpenseMacroId,
+      ),
+    [editExpenseMacroId, expenseCategories],
+  );
+
+  function expenseCategoryLabel(
+    category: Expense["category"],
+  ): string {
+    if (category === null) return "Sin categoría";
+    const hierarchicalCategory = expenseCategories.find(
+      (candidate) => candidate.id === category.id,
+    );
+    return hierarchicalCategory
+      ? `${hierarchicalCategory.macroName} → ${hierarchicalCategory.name}`
+      : category.name;
+  }
 
   const topCategory = useMemo(() => {
     if (!dashboard || dashboard.byCategory.length === 0) return null;
@@ -228,6 +278,7 @@ export default function HomePage() {
         expenseResult,
         incomeResult,
         categoryResult,
+        expenseCategoryResult,
         memberResult,
         ruleResult,
         balanceResult,
@@ -236,6 +287,9 @@ export default function HomePage() {
         api<Expense[]>("/api/expenses"),
         api<Income[]>("/api/incomes"),
         api<Category[]>("/api/categories"),
+        api<HierarchicalCategory[]>(
+          "/api/categories/hierarchical?movementType=EXPENSE",
+        ),
         api<HouseholdMember[]>("/api/household-members"),
         api<SharingRule[]>("/api/sharing-rules"),
         api<Balance>("/api/balance"),
@@ -255,6 +309,9 @@ export default function HomePage() {
       if (categoryResult.status === "fulfilled")
         setCategories(categoryResult.value);
       else failed("categories");
+      if (expenseCategoryResult.status === "fulfilled")
+        setExpenseCategories(expenseCategoryResult.value);
+      else failed("expenseCategories");
       if (memberResult.status === "fulfilled") {
         setMembers(memberResult.value);
         const firstMemberId = memberResult.value[0]?.id ?? "";
@@ -326,6 +383,7 @@ export default function HomePage() {
         }),
       });
       setExpenseForm(initialExpense);
+      setExpenseMacroId("");
       await refresh();
     } catch (cause) {
       setError(
@@ -345,6 +403,17 @@ export default function HomePage() {
     setError("");
     try {
       const expense = await api<ExpenseDetail>(`/api/expenses/${expenseId}`);
+      const hierarchicalCategory = expense.category
+        ? expenseCategories.find(
+            (category) => category.id === expense.category?.id,
+          )
+        : undefined;
+      setEditExpenseMacroId(hierarchicalCategory?.macroId ?? "");
+      setEditExpenseLegacyCategoryName(
+        hierarchicalCategory || !expense.category
+          ? null
+          : expense.category.name,
+      );
       setEditExpenseForm({
         description: expense.description ?? "",
         totalAmount: String(expense.totalAmount),
@@ -353,6 +422,8 @@ export default function HomePage() {
       });
     } catch (cause) {
       setEditingExpense(null);
+      setEditExpenseMacroId("");
+      setEditExpenseLegacyCategoryName(null);
       setError(
         cause instanceof Error
           ? cause.message
@@ -378,6 +449,8 @@ export default function HomePage() {
       });
       setEditingExpense(null);
       setEditExpenseForm(initialExpenseEdit);
+      setEditExpenseMacroId("");
+      setEditExpenseLegacyCategoryName(null);
       await refresh();
     } catch (cause) {
       setError(
@@ -393,6 +466,8 @@ export default function HomePage() {
   function cancelExpenseEdit() {
     setEditingExpense(null);
     setEditExpenseForm(initialExpenseEdit);
+    setEditExpenseMacroId("");
+    setEditExpenseLegacyCategoryName(null);
     setEditLoading(false);
     setError("");
   }
@@ -810,8 +885,8 @@ export default function HomePage() {
               {resourceErrors.sharingRules && (
                 <p className="muted">{resourceErrors.sharingRules}</p>
               )}
-              {resourceErrors.categories && (
-                <p className="muted">{resourceErrors.categories}</p>
+              {resourceErrors.expenseCategories && (
+                <p className="muted">{resourceErrors.expenseCategories}</p>
               )}
               {resourceErrors.members && (
                 <p className="muted">{resourceErrors.members}</p>
@@ -893,8 +968,28 @@ export default function HomePage() {
                 </select>
               </label>
               <label>
-                Categoría
+                Categoría principal
                 <select
+                  aria-label="Categoría principal del gasto"
+                  value={expenseMacroId}
+                  onChange={(e) => {
+                    setExpenseMacroId(e.target.value);
+                    setExpenseForm({ ...expenseForm, categoryId: "" });
+                  }}
+                >
+                  <option value="">Sin categoría</option>
+                  {expenseMacros.map((macro) => (
+                    <option key={macro.id} value={macro.id}>
+                      {macro.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Categoría específica
+                <select
+                  aria-label="Categoría específica del gasto"
+                  disabled={expenseMacroId === ""}
                   value={expenseForm.categoryId}
                   onChange={(e) =>
                     setExpenseForm({
@@ -903,8 +998,12 @@ export default function HomePage() {
                     })
                   }
                 >
-                  <option value="">Sin categoría</option>
-                  {categories.map((category) => (
+                  <option value="">
+                    {expenseMacroId === ""
+                      ? "Selecciona una categoría principal"
+                      : "Sin categoría específica"}
+                  </option>
+                  {expenseMicros.map((category) => (
                     <option key={category.id} value={category.id}>
                       {category.name}
                     </option>
@@ -974,9 +1073,36 @@ export default function HomePage() {
                           />
                         </label>
                         <label>
-                          Categoría
+                          Categoría principal
                           <select
-                            aria-label="Categoría del gasto"
+                            aria-label="Categoría principal del gasto"
+                            value={editExpenseMacroId}
+                            onChange={(e) => {
+                              setEditExpenseMacroId(e.target.value);
+                              setEditExpenseLegacyCategoryName(null);
+                              setEditExpenseForm({
+                                ...editExpenseForm,
+                                categoryId: "",
+                              });
+                            }}
+                          >
+                            <option value="">
+                              {editExpenseLegacyCategoryName
+                                ? `Categoría histórica: ${editExpenseLegacyCategoryName}`
+                                : "Sin categoría"}
+                            </option>
+                            {expenseMacros.map((macro) => (
+                              <option key={macro.id} value={macro.id}>
+                                {macro.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Categoría específica
+                          <select
+                            aria-label="Categoría específica del gasto"
+                            disabled={editExpenseMacroId === ""}
                             value={editExpenseForm.categoryId}
                             onChange={(e) =>
                               setEditExpenseForm({
@@ -985,8 +1111,12 @@ export default function HomePage() {
                               })
                             }
                           >
-                            <option value="">Sin categoría</option>
-                            {categories.map((category) => (
+                            <option value="">
+                              {editExpenseMacroId === ""
+                                ? "Selecciona una categoría principal"
+                                : "Sin categoría específica"}
+                            </option>
+                            {editExpenseMicros.map((category) => (
                               <option key={category.id} value={category.id}>
                                 {category.name}
                               </option>
@@ -1014,7 +1144,14 @@ export default function HomePage() {
                             ))}
                           </select>
                         </label>
-                        <button type="submit" disabled={busy}>
+                        <button
+                          type="submit"
+                          disabled={
+                            busy ||
+                            (editExpenseLegacyCategoryName !== null &&
+                              editExpenseMacroId === "")
+                          }
+                        >
                           Guardar
                         </button>
                         <button
@@ -1032,7 +1169,7 @@ export default function HomePage() {
                         <strong>{expense.merchant ?? "Gasto"}</strong>
                         <p>
                           {expense.expenseDate} · {money(expense.totalAmount)} ·{" "}
-                          {expense.category?.name ?? "Sin categoría"}
+                          {expenseCategoryLabel(expense.category)}
                         </p>
                       </div>
                       <div className="actions">

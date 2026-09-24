@@ -143,6 +143,7 @@ for (const endpoint of [
   "/api/expenses",
   "/api/incomes",
   "/api/categories",
+  "/api/categories/hierarchical?movementType=EXPENSE",
   "/api/household-members",
   "/api/agent",
   "/api/sharing-rules",
@@ -159,6 +160,10 @@ if (page.includes("Promise.all(["))
 for (const marker of [
   "resourceErrors",
   "setCategories(categoryResult.value)",
+  "setExpenseCategories(expenseCategoryResult.value)",
+  'failed("expenseCategories")',
+  "expenseMacros",
+  "expenseMicros",
   'failed("categories")',
   'failed("members")',
   'failed("sharingRules")',
@@ -257,6 +262,13 @@ for (const marker of [
   "<textarea",
   "value={expenseForm.description}",
   "description: e.target.value",
+  "Categoría principal del gasto",
+  "Categoría específica del gasto",
+  "expenseMacros.map((macro)",
+  "expenseMicros.map((category)",
+  "setExpenseMacroId(e.target.value)",
+  "categoryId: \"\"",
+  "expenseMacroId === \"\"",
 ]) {
   if (!creationFormSource.includes(marker))
     throw new Error(`Missing Expense creation description marker: ${marker}`);
@@ -280,6 +292,20 @@ for (const marker of [
 }
 console.log(
   "PASS Expense creation UI initializes, edits, and submits optional description",
+);
+
+for (const marker of [
+  "expenseCategoryLabel(expense.category)",
+  "Categoría histórica:",
+  "editExpenseLegacyCategoryName",
+  "editExpenseMacroId",
+  "editExpenseMicros",
+]) {
+  if (!page.includes(marker))
+    throw new Error(`Missing hierarchical Expense edit/list marker: ${marker}`);
+}
+console.log(
+  "PASS Expense UI renders hierarchical categories and preserves legacy fallback",
 );
 
 if (page.includes("JSON.stringify(agentResult"))

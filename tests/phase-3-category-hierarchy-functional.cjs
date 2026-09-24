@@ -16,6 +16,14 @@ const serviceModule = path.join(
   "categories",
   "category.service.ts",
 );
+const routeModule = path.join(
+  root,
+  "app",
+  "api",
+  "categories",
+  "hierarchical",
+  "route.ts",
+);
 
 const expenseMacro = "43000000-0000-4000-8000-000000000001";
 const expenseOtherMacro = "43000000-0000-4000-8000-000000000002";
@@ -271,6 +279,38 @@ async function main() {
     !incomes.some(({ id }) => id === expenseMicro || id === legacyCategory),
   );
   console.log("PASS hierarchical INCOME query isolates movement type");
+
+  const route = loadTypeScriptModule(routeModule);
+  observedQueries.length = 0;
+  const routeResponse = await route.GET(
+    new Request(
+      "http://localhost/api/categories/hierarchical?movementType=EXPENSE",
+    ),
+  );
+  assert.equal(routeResponse.status, 200);
+  assert.deepEqual(await routeResponse.json(), { data: expenses });
+  assert.ok(
+    observedQueries.every(({ filters }) =>
+      filters.every(
+        ({ operator, column, value }) =>
+          !(operator === "eq" && column === "movement_type") ||
+          value === "EXPENSE",
+      ),
+    ),
+  );
+  console.log("PASS hierarchical category API returns EXPENSE micros");
+
+  const invalidRouteResponse = await route.GET(
+    new Request("http://localhost/api/categories/hierarchical"),
+  );
+  assert.equal(invalidRouteResponse.status, 400);
+  const wrongTypeResponse = await route.GET(
+    new Request(
+      "http://localhost/api/categories/hierarchical?movementType=RECEIPT",
+    ),
+  );
+  assert.equal(wrongTypeResponse.status, 422);
+  console.log("PASS hierarchical category API validates movementType");
 
   failCategoryRead = true;
   await assert.rejects(
