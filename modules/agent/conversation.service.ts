@@ -754,6 +754,60 @@ function logCreateExpenseAmountNormalization(
   }
 }
 
+type CreateExpenseDiagnosticDetails = Record<
+  string,
+  boolean | number | string
+>;
+
+function logCreateExpenseFlow(
+  stage: string,
+  details: CreateExpenseDiagnosticDetails = {},
+): void {
+  try {
+    console.info("[DIAGNOSTIC][CREATE_EXPENSE_FLOW]", {
+      stage,
+      ...details,
+    });
+  } catch {
+    // Diagnostic logging must never alter conversation behavior.
+  }
+}
+
+function createExpenseDiagnosticErrorDetails(
+  error: unknown,
+): CreateExpenseDiagnosticDetails {
+  const details: CreateExpenseDiagnosticDetails = {};
+  if (error instanceof Error) details.errorName = error.name;
+  if (error instanceof AgentDomainError) details.domainCode = error.code;
+  if (typeof error === "object" && error !== null) {
+    const value = error as Record<string, unknown>;
+    if (typeof value.code === "string") details.errorCode = value.code;
+    if (typeof value.status === "number") details.httpStatus = value.status;
+    if (typeof value.statusCode === "number") {
+      details.httpStatus = value.statusCode;
+    }
+  }
+  return details;
+}
+
+async function runCreateExpenseDiagnosticStage<T>(
+  stage: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  logCreateExpenseFlow(`${stage}_start`);
+  try {
+    const result = await operation();
+    logCreateExpenseFlow(`${stage}_complete`);
+    return result;
+  } catch (error) {
+    logCreateExpenseFlow(
+      `${stage}_error`,
+      createExpenseDiagnosticErrorDetails(error),
+    );
+    throw error;
+  }
+}
+
 type IncomeDiagnosticFields = {
   amountPresent?: boolean;
   amountStatus?: "missing" | "normalized" | "invalid";
@@ -2059,38 +2113,55 @@ export async function processAgentMessage(
     });
     return { type: "PROPOSAL_CREATED", ...result };
   }
-  const proposal = await toProposalInput(context, interpretation, {
-    defaultExpenseDate: Boolean(interpretation.categoryName),
-  });
+  const proposal = await runCreateExpenseDiagnosticStage(
+    "proposal_input",
+    () =>
+      toProposalInput(context, interpretation, {
+        defaultExpenseDate: Boolean(interpretation.categoryName),
+      }),
+  );
   if (proposal.missingFields.length > 0) {
     const draftPayload = operationPayloadFromExpenseInterpretation(
       interpretation,
     );
     const draftCreationBlocked = await blockDraftCreationIfProposalActive();
     if (draftCreationBlocked) return draftCreationBlocked;
-    await persistDetailsDraft(context, "CREATE_EXPENSE", draftPayload);
+    await runCreateExpenseDiagnosticStage("details_draft_persistence", () =>
+      persistDetailsDraft(context, "CREATE_EXPENSE", draftPayload),
+    );
     return operationDetailsClarification(
       "CREATE_EXPENSE",
       proposal.missingFields,
     );
   }
-  const categories = await getCategoriesTool(context, "EXPENSE");
+  const categories = await runCreateExpenseDiagnosticStage(
+    "categories_load",
+    () => getCategoriesTool(context, "EXPENSE"),
+  );
   const category = interpretation.categoryName
     ? resolveCategorySelection(interpretation.categoryName, categories)
     : null;
+  logCreateExpenseFlow("category_resolution", {
+    resolved: category !== null,
+  });
   if (!category) {
     const selectedMacroId = interpretation.categoryName
       ? resolveMacroSelection(interpretation.categoryName, categories)
       : null;
-    const draftCreationBlocked = await blockDraftCreationIfProposalActive();
+    const draftCreationBlocked = await runCreateExpenseDiagnosticStage(
+      "pending_proposal_lookup",
+      blockDraftCreationIfProposalActive,
+    );
     if (draftCreationBlocked) return draftCreationBlocked;
-    await persistCategoryDraft(
-      context,
-      {
-        selectedMacroId,
-        expense: toCategoryExpensePayload(proposal.input),
-      },
-      "CREATE_EXPENSE",
+    await runCreateExpenseDiagnosticStage("category_draft_persistence", () =>
+      persistCategoryDraft(
+        context,
+        {
+          selectedMacroId,
+          expense: toCategoryExpensePayload(proposal.input),
+        },
+        "CREATE_EXPENSE",
+      ),
     );
     return categoryClarification(
       context,
@@ -2101,10 +2172,14 @@ export async function processAgentMessage(
       selectedMacroId,
     );
   }
-  const result = await createExpenseTool(context, {
-    ...proposal.input,
-    categoryId: category.id,
-  });
+  const result = await runCreateExpenseDiagnosticStage(
+    "pending_proposal_creation",
+    () =>
+      createExpenseTool(context, {
+        ...proposal.input,
+        categoryId: category.id,
+      }),
+  );
   return {
     type: "PROPOSAL_CREATED",
     ...result,
