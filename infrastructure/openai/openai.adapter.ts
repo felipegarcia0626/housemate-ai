@@ -84,16 +84,6 @@ type IncomeDateFormat =
   | "invalid"
   | "other";
 
-type ExpenseAmountFormat =
-  | "null"
-  | "valid_integer"
-  | "valid_decimal"
-  | "thousands_separator"
-  | "currency_symbol"
-  | "comma_decimal_or_separator"
-  | "other_string"
-  | "non_string";
-
 export class OpenAIAdapterError extends Error {
   readonly code = "INTERPRETATION_ERROR" as const;
 
@@ -262,47 +252,6 @@ function classifyIncomeDateFormat(value: string | null): IncomeDateFormat {
     return "invalid";
   }
   return "other";
-}
-
-function diagnosticValueType(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  return typeof value;
-}
-
-function classifyExpenseAmountFormat(value: unknown): ExpenseAmountFormat {
-  if (value === null || value === undefined) return "null";
-  if (typeof value !== "string") return "non_string";
-  const normalized = value.trim();
-  if (/^\d+$/.test(normalized)) return "valid_integer";
-  if (/^\d+\.\d{1,2}$/.test(normalized)) return "valid_decimal";
-  if (/^\d{1,3}(?:[.,]\d{3})+$/.test(normalized)) {
-    return "thousands_separator";
-  }
-  if (/^(?:[$€£]|(?:cop|usd|eur)\s*)\s*[\d.,]+$/i.test(normalized)) {
-    return "currency_symbol";
-  }
-  if (/,/.test(normalized)) return "comma_decimal_or_separator";
-  return "other_string";
-}
-
-function logCreateExpenseAmountDiagnostic(value: unknown): void {
-  try {
-    if (!isRecord(value) || value.kind !== "CREATE_EXPENSE") return;
-    const amount = value.amount;
-    const totalAmount = value.totalAmount;
-    console.info("[DIAGNOSTIC][CREATE_EXPENSE_AMOUNT]", {
-      stage: "interpreter_parsed",
-      kind: "CREATE_EXPENSE",
-      amountPresent: amount !== null && amount !== undefined,
-      amountType: diagnosticValueType(amount),
-      totalAmountPresent: totalAmount !== null && totalAmount !== undefined,
-      totalAmountType: diagnosticValueType(totalAmount),
-      totalAmountFormat: classifyExpenseAmountFormat(totalAmount),
-    });
-  } catch {
-    // Diagnostic logging must never alter interpretation behavior.
-  }
 }
 
 function logIncomeInterpretationDiagnostic(
@@ -578,8 +527,6 @@ export async function interpretExpenseMessage(
   } catch {
     throw new OpenAIAdapterError();
   }
-
-  logCreateExpenseAmountDiagnostic(parsed);
 
   try {
     const result = parseInterpretation(parsed);
