@@ -11,6 +11,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:sql": "node scripts/run-sql-tests.cjs",
+    "test:e2e:categories": "node tests/phase-7-categories-e2e.cjs",
     "test:sql:concurrency": "node scripts/run-sql-concurrency-test.cjs",
     "test:sql:agent-draft": "node scripts/run-agent-draft-concurrency-test.cjs"
   },
