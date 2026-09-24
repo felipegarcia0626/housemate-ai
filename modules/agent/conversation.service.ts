@@ -733,6 +733,27 @@ function toAmount(value: string | null): number | null {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
+function logCreateExpenseAmountNormalization(
+  value: string | null,
+  normalizedValue: number | null,
+): void {
+  try {
+    console.info("[DIAGNOSTIC][CREATE_EXPENSE_AMOUNT]", {
+      stage: "proposal_input",
+      kind: "CREATE_EXPENSE",
+      totalAmountNormalization:
+        value === null
+          ? "null"
+          : normalizedValue === null
+            ? "invalid_format"
+            : "valid",
+      totalAmountMissing: normalizedValue === null,
+    });
+  } catch {
+    // Diagnostic logging must never alter conversation behavior.
+  }
+}
+
 type IncomeDiagnosticFields = {
   amountPresent?: boolean;
   amountStatus?: "missing" | "normalized" | "invalid";
@@ -1054,6 +1075,7 @@ async function toProposalInput(
   options: { defaultExpenseDate?: boolean } = {},
 ): Promise<ProposalInputResult> {
   const totalAmount = toAmount(interpretation.totalAmount);
+  logCreateExpenseAmountNormalization(interpretation.totalAmount, totalAmount);
   const rawExpenseDate = interpretation.expenseDate?.trim() ?? "";
   const normalizedExpenseDate = normalizeDraftDate(rawExpenseDate);
   const expenseDate =
