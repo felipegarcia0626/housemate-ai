@@ -31,6 +31,7 @@ const expenseMicro = "43000000-0000-4000-8000-000000000011";
 const expenseDuplicateName = "43000000-0000-4000-8000-000000000012";
 const inactiveExpense = "43000000-0000-4000-8000-000000000013";
 const invalidExpense = "43000000-0000-4000-8000-000000000014";
+const inactiveMacro = "43000000-0000-4000-8000-000000000015";
 const incomeMacro = "43000000-0000-4000-8000-000000000021";
 const incomeMicro = "43000000-0000-4000-8000-000000000022";
 const legacyCategory = "43000000-0000-4000-8000-000000000031";
@@ -85,6 +86,14 @@ const categories = [
     is_active: true,
   },
   {
+    id: inactiveMacro,
+    name: "Inactiva",
+    movement_type: "EXPENSE",
+    level: "MACRO",
+    parent_id: null,
+    is_active: false,
+  },
+  {
     id: incomeMacro,
     name: "Ingresos",
     movement_type: "INCOME",
@@ -104,6 +113,7 @@ const categories = [
 ];
 
 let failCategoryRead = false;
+let categoryInsertConflictOnce = false;
 const observedQueries = [];
 
 class FakeQuery {
@@ -128,9 +138,60 @@ class FakeQuery {
     return this;
   }
 
+  insert(payload) {
+    this.insertPayload = payload;
+    return this;
+  }
+
   order(column, options) {
     this.orders.push({ column, ascending: options.ascending });
     return this;
+  }
+
+  resolveRows() {
+    return categories.filter((row) =>
+      this.filters.every(({ operator, column, value, values }) => {
+        if (operator === "eq") return row[column] === value;
+        if (operator === "in") return values.includes(row[column]);
+        return false;
+      }),
+    );
+  }
+
+  maybeSingle() {
+    const rows = this.resolveRows();
+    return Promise.resolve({ data: rows[0] ?? null, error: null });
+  }
+
+  single() {
+    if (this.insertPayload !== undefined) {
+      if (categoryInsertConflictOnce) {
+        categoryInsertConflictOnce = false;
+        categories.push({
+          ...this.insertPayload,
+          updated_at: "2026-09-24T00:00:00Z",
+        });
+        return Promise.resolve({ data: null, error: { code: "23505" } });
+      }
+      const duplicate = categories.some(
+        (row) =>
+          row.id === this.insertPayload.id ||
+          (row.movement_type === this.insertPayload.movement_type &&
+            row.parent_id === this.insertPayload.parent_id &&
+            row.name === this.insertPayload.name),
+      );
+      if (duplicate) {
+        return Promise.resolve({ data: null, error: { code: "23505" } });
+      }
+      const row = {
+        ...this.insertPayload,
+        updated_at: this.insertPayload.updated_at ?? "2026-09-24T00:00:00Z",
+      };
+      categories.push(row);
+      return Promise.resolve({ data: row, error: null });
+    }
+    const rows = this.resolveRows();
+    return Promise.resolve({ data: rows[0] ?? null, error: null });
   }
 
   then(resolve, reject) {
@@ -146,13 +207,7 @@ class FakeQuery {
       );
     }
 
-    const rows = categories.filter((row) =>
-      this.filters.every(({ operator, column, value, values }) => {
-        if (operator === "eq") return row[column] === value;
-        if (operator === "in") return values.includes(row[column]);
-        return false;
-      }),
-    );
+    const rows = this.resolveRows();
     return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
   }
 }
@@ -215,7 +270,10 @@ function createTypeScriptLoader() {
 
 async function main() {
   const loadTypeScriptModule = createTypeScriptLoader();
-  const { listHierarchicalCategories } = loadTypeScriptModule(serviceModule);
+  const {
+    createOrReuseMicroCategory,
+    listHierarchicalCategories,
+  } = loadTypeScriptModule(serviceModule);
 
   const expenses = await listHierarchicalCategories("EXPENSE");
   assert.deepEqual(
@@ -280,6 +338,111 @@ async function main() {
   );
   console.log("PASS hierarchical INCOME query isolates movement type");
 
+  const createdExpense = await createOrReuseMicroCategory({
+    name: " Veterinária ",
+    movementType: "EXPENSE",
+    parentMacroId: expenseMacro,
+  });
+  assert.equal(createdExpense.name, "Veterinária");
+  assert.equal(createdExpense.movementType, "EXPENSE");
+  assert.equal(createdExpense.level, "MICRO");
+  assert.equal(createdExpense.parentId, expenseMacro);
+  assert.equal(createdExpense.macroId, expenseMacro);
+  assert.equal(createdExpense.isActive, true);
+  const reusedExpense = await createOrReuseMicroCategory({
+    name: "VETERINARIA",
+    movementType: "EXPENSE",
+    parentMacroId: expenseMacro,
+  });
+  assert.equal(reusedExpense.id, createdExpense.id);
+  assert.equal(reusedExpense.name, "Veterinária");
+  assert.equal(
+    categories.filter(
+      (row) => row.parent_id === expenseMacro && row.name === "Veterinária",
+    ).length,
+    1,
+  );
+  const createdIncome = await createOrReuseMicroCategory({
+    name: "Bono",
+    movementType: "INCOME",
+    parentMacroId: incomeMacro,
+  });
+  assert.equal(createdIncome.name, "Bono");
+  assert.equal(createdIncome.movementType, "INCOME");
+  assert.equal(createdIncome.level, "MICRO");
+  assert.equal(createdIncome.parentId, incomeMacro);
+  assert.equal(createdIncome.macroId, incomeMacro);
+  console.log(
+    "PASS category creation preserves EXPENSE/INCOME hierarchy and reuses semantic duplicates",
+  );
+
+  await assert.rejects(
+    () =>
+      createOrReuseMicroCategory({
+        name: "   ",
+        movementType: "EXPENSE",
+        parentMacroId: expenseMacro,
+      }),
+    (error) => error?.code === "VALIDATION_ERROR",
+  );
+  await assert.rejects(
+    () =>
+      createOrReuseMicroCategory({
+        name: "Nested",
+        movementType: "EXPENSE",
+        parentMacroId: expenseMicro,
+      }),
+    (error) => error?.code === "VALIDATION_ERROR",
+  );
+  await assert.rejects(
+    () =>
+      createOrReuseMicroCategory({
+        name: "Inactive parent child",
+        movementType: "EXPENSE",
+        parentMacroId: inactiveMacro,
+      }),
+    (error) => error?.code === "VALIDATION_ERROR",
+  );
+  await assert.rejects(
+    () =>
+      createOrReuseMicroCategory({
+        name: "Wrong movement",
+        movementType: "EXPENSE",
+        parentMacroId: incomeMacro,
+      }),
+    (error) => error?.code === "VALIDATION_ERROR",
+  );
+  await assert.rejects(
+    () =>
+      createOrReuseMicroCategory({
+        name: "Inactiva",
+        movementType: "EXPENSE",
+        parentMacroId: expenseMacro,
+      }),
+    (error) => error?.code === "CATEGORY_INACTIVE",
+  );
+  console.log(
+    "PASS category creation rejects invalid parents, empty names and inactive conflicts",
+  );
+
+  categoryInsertConflictOnce = true;
+  const concurrentExpense = await createOrReuseMicroCategory({
+    name: "Terapia",
+    movementType: "EXPENSE",
+    parentMacroId: expenseMacro,
+  });
+  assert.equal(concurrentExpense.name, "Terapia");
+  assert.equal(
+    categories.filter(
+      (row) =>
+        row.parent_id === expenseMacro &&
+        row.movement_type === "EXPENSE" &&
+        row.name === "Terapia",
+    ).length,
+    1,
+  );
+  console.log("PASS category creation recovers from an insert race");
+
   const route = loadTypeScriptModule(routeModule);
   observedQueries.length = 0;
   const routeResponse = await route.GET(
@@ -288,7 +451,8 @@ async function main() {
     ),
   );
   assert.equal(routeResponse.status, 200);
-  assert.deepEqual(await routeResponse.json(), { data: expenses });
+  const currentExpenses = await listHierarchicalCategories("EXPENSE");
+  assert.deepEqual(await routeResponse.json(), { data: currentExpenses });
   assert.ok(
     observedQueries.every(({ filters }) =>
       filters.every(
@@ -307,7 +471,8 @@ async function main() {
     ),
   );
   assert.equal(incomeRouteResponse.status, 200);
-  assert.deepEqual(await incomeRouteResponse.json(), { data: incomes });
+  const currentIncomes = await listHierarchicalCategories("INCOME");
+  assert.deepEqual(await incomeRouteResponse.json(), { data: currentIncomes });
   assert.ok(
     observedQueries.every(({ filters }) =>
       filters.every(

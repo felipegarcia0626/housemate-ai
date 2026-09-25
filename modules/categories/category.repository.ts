@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
 
+import { normalizeCategoryName } from "./category.types";
 import type {
   Category,
   CategoryMovementType,
@@ -26,9 +28,27 @@ interface CategoryParentRow {
 }
 
 export class CategoryRepositoryError extends Error {
-  constructor(cause: unknown) {
+  readonly code:
+    | "PERSISTENCE"
+    | "INVALID_NAME"
+    | "PARENT_NOT_FOUND"
+    | "PARENT_INVALID"
+    | "PARENT_INACTIVE"
+    | "INACTIVE_CONFLICT";
+
+  constructor(
+    cause: unknown,
+    code:
+      | "PERSISTENCE"
+      | "INVALID_NAME"
+      | "PARENT_NOT_FOUND"
+      | "PARENT_INVALID"
+      | "PARENT_INACTIVE"
+      | "INACTIVE_CONFLICT" = "PERSISTENCE",
+  ) {
     super("Unable to access Categories.", { cause });
     this.name = "CategoryRepositoryError";
+    this.code = code;
   }
 }
 
@@ -211,4 +231,151 @@ export async function getAvailableCategoryIds(
       })
       .map((row) => row.id.toLowerCase()),
   );
+}
+
+interface CategoryCreationRow {
+  id: string;
+  name: string;
+  movement_type: CategoryMovementType;
+  level: "MACRO" | "MICRO";
+  parent_id: string | null;
+  is_active: boolean;
+}
+
+function deterministicCategoryId(
+  movementType: CategoryMovementType,
+  parentMacroId: string,
+  normalizedName: string,
+): string {
+  const bytes = createHash("sha256")
+    .update(`${movementType}:${parentMacroId}:${normalizedName}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function toHierarchicalCategory(
+  row: CategoryCreationRow,
+  macroName: string,
+): HierarchicalCategory {
+  return {
+    id: row.id,
+    name: row.name,
+    movementType: row.movement_type,
+    level: "MICRO",
+    parentId: row.parent_id as string,
+    isActive: true,
+    macroId: row.parent_id as string,
+    macroName,
+    path: `${macroName} → ${row.name}`,
+  };
+}
+
+async function findMatchingMicro(
+  movementType: CategoryMovementType,
+  parentMacroId: string,
+  normalizedName: string,
+): Promise<CategoryCreationRow | null> {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_categories")
+    .select("id,name,movement_type,level,parent_id,is_active")
+    .eq("movement_type", movementType)
+    .eq("level", "MICRO")
+    .eq("parent_id", parentMacroId);
+
+  if (error) throw new CategoryRepositoryError(error);
+  const row = ((data ?? []) as CategoryCreationRow[]).find(
+    (candidate) => normalizeCategoryName(candidate.name) === normalizedName,
+  );
+  return row ?? null;
+}
+
+export async function createOrReuseMicroCategory(input: {
+  name: string;
+  movementType: CategoryMovementType;
+  parentMacroId: string;
+}): Promise<HierarchicalCategory> {
+  const name = input.name.trim();
+  const normalizedName = normalizeCategoryName(name);
+  if (!normalizedName) {
+    throw new CategoryRepositoryError(null, "INVALID_NAME");
+  }
+
+  const client = getSupabaseAdminClient();
+  const { data: parentData, error: parentError } = await client
+    .from("tb_categories")
+    .select("id,name,movement_type,level,is_active")
+    .eq("id", input.parentMacroId)
+    .maybeSingle();
+
+  if (parentError) throw new CategoryRepositoryError(parentError);
+  if (!parentData) {
+    throw new CategoryRepositoryError(null, "PARENT_NOT_FOUND");
+  }
+  if (
+    parentData.level !== "MACRO" ||
+    parentData.movement_type !== input.movementType
+  ) {
+    throw new CategoryRepositoryError(null, "PARENT_INVALID");
+  }
+  if (parentData.is_active !== true) {
+    throw new CategoryRepositoryError(null, "PARENT_INACTIVE");
+  }
+
+  const existing = await findMatchingMicro(
+    input.movementType,
+    input.parentMacroId,
+    normalizedName,
+  );
+  if (existing) {
+    if (!existing.is_active) {
+      throw new CategoryRepositoryError(null, "INACTIVE_CONFLICT");
+    }
+    return toHierarchicalCategory(existing, parentData.name);
+  }
+
+  const id = deterministicCategoryId(
+    input.movementType,
+    input.parentMacroId,
+    normalizedName,
+  );
+  const { data, error } = await client
+    .from("tb_categories")
+    .insert({
+      id,
+      movement_type: input.movementType,
+      level: "MICRO",
+      parent_id: input.parentMacroId,
+      name,
+      description: null,
+      is_active: true,
+    })
+    .select("id,name,movement_type,level,parent_id,is_active")
+    .single();
+
+  if (!error && data) {
+    return toHierarchicalCategory(data as CategoryCreationRow, parentData.name);
+  }
+
+  const errorCode =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "";
+  if (errorCode === "23505") {
+    const concurrent = await findMatchingMicro(
+      input.movementType,
+      input.parentMacroId,
+      normalizedName,
+    );
+    if (concurrent) {
+      if (!concurrent.is_active) {
+        throw new CategoryRepositoryError(null, "INACTIVE_CONFLICT");
+      }
+      return toHierarchicalCategory(concurrent, parentData.name);
+    }
+  }
+  throw new CategoryRepositoryError(error);
 }

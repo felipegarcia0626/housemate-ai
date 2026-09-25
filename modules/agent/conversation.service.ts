@@ -11,6 +11,7 @@ import { getIncomesTool } from "./tools/get-incomes.tool";
 import { getBalanceTool } from "./tools/get-balance.tool";
 import { getCategoriesTool } from "./tools/get-categories.tool";
 import { getSharingRulesTool } from "./tools/get-sharing-rules.tool";
+import { createOrReuseMicroCategory } from "@/modules/categories/category.service";
 import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
 import {
   createOperationDraft,
@@ -28,12 +29,14 @@ import type {
   CategoryDraftExpensePayload,
   CategoryDraftIncomePayload,
   AgentOperationDraftPayload,
+  PendingCategoryCreation,
 } from "./category-draft.types";
 import type {
   Category,
   CategoryMovementType,
   HierarchicalCategory,
 } from "@/modules/categories/category.types";
+import { normalizeCategoryName } from "@/modules/categories/category.types";
 import type {
   AgentContext,
   AgentMessageInput,
@@ -45,6 +48,7 @@ import type {
 } from "./agent.types";
 import type { IncomeCreateInput } from "@/modules/incomes/income.types";
 import { AgentDomainError } from "./agent.types";
+import { CategoryDomainError } from "@/modules/categories/category.types";
 import {
   consumePendingIncomeProposal,
   consumePendingProposal,
@@ -64,15 +68,36 @@ type Interpreter = (
 ) => Promise<ExpenseInterpretation | CorrectionInterpretation>;
 
 function isConfirmation(message: string): boolean {
-  return /^(?:si|sí|ok|confirmo|confirmar|acepto|yes)(?:\s|$)/i.test(
-    message.trim(),
-  );
+  const normalized = normalizeOperationMessage(message);
+  return new Set([
+    "si",
+    "si, creala",
+    "si, crearla",
+    "si, confirmar",
+    "si por favor",
+    "ok",
+    "confirmo",
+    "confirmar",
+    "acepto",
+    "yes",
+  ]).has(normalized);
 }
 
 function isRejection(message: string): boolean {
   const normalized = normalizeOperationMessage(message);
-  if (/^no\s+(?:fueron|eran|fue|era)\b/.test(normalized)) return false;
-  return /^(?:no|rechazo|rechazar|cancelar|cancelo)(?:\s|$)/.test(normalized);
+  const explicitRejection = new Set([
+    "no",
+    "no, gracias",
+    "no la crees",
+    "no, no la crees",
+    "rechazo",
+    "rechazar",
+    "cancelar",
+    "cancelo",
+  ]);
+  if (explicitRejection.has(normalized)) return true;
+  if (looksLikeCorrection(message)) return false;
+  return /^(?:no|rechazo|rechazar|cancelar|cancelo)(?:\s|,|$)/.test(normalized);
 }
 
 function looksLikeCorrection(message: string): boolean {
@@ -99,14 +124,6 @@ function clarification(
     message,
     ...(options ? { options: options.map((category) => ({ name: category.name })) } : {}),
   };
-}
-
-function normalizeCategoryName(value: string): string {
-  return value
-    .trim()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("es");
 }
 
 function normalizeOperationMessage(value: string): string {
@@ -217,6 +234,14 @@ function looksLikeMovementRequest(message: string): boolean {
       normalized,
     );
   return hasAmount && (hasExpenseSignal || hasIncomeSignal);
+}
+
+function isExplicitNewCategoryName(message: string): boolean {
+  const normalized = normalizeOperationMessage(message);
+  if (!normalized || looksLikeMovementRequest(message) || /\d/.test(normalized)) {
+    return false;
+  }
+  return /^[a-záéíóúñü]+(?:\s+[a-záéíóúñü]+){1,4}$/i.test(normalized);
 }
 
 function operationClarification(): AgentMessageResult {
@@ -448,7 +473,8 @@ function resolveCategorySelection(
   const matches = categories.filter(
     (category) =>
       category.level === "MICRO" &&
-      normalizeCategoryName(category.name) === normalized,
+      (normalizeCategoryName(category.name) === normalized ||
+        normalizeCategoryName(category.path) === normalized),
   );
   return matches.length === 1 ? matches[0] : null;
 }
@@ -482,7 +508,7 @@ function resolveMacroSelection(
   if (Number.isInteger(numeric) && String(numeric) === message.trim()) {
     return options[numeric - 1]?.id ?? null;
   }
-  const normalized = normalizeCategoryName(message);
+  const normalized = normalizeCategoryName(message.split("→")[0]);
   const matches = options.filter(
     ({ name, isUnique }) =>
       isUnique && normalizeCategoryName(name) === normalized,
@@ -547,6 +573,55 @@ async function categoryClarification(
   );
 }
 
+function categoryCreationName(value: string | null): string | null {
+  if (!value) return null;
+  const parts = value
+    .split("→")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const name = (parts.at(-1) ?? value).trim();
+  return name ? name : null;
+}
+
+function isPendingCategoryCreation(value: unknown): value is PendingCategoryCreation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.name === "string" &&
+    (candidate.movementType === "EXPENSE" ||
+      candidate.movementType === "INCOME") &&
+    (candidate.parentMacroId === null ||
+      typeof candidate.parentMacroId === "string")
+  );
+}
+
+function getPendingCategoryCreation(
+  draft: AgentCategoryDraft,
+): PendingCategoryCreation | null {
+  const payload = draft.payload as
+    | CategoryDraftExpensePayload
+    | CategoryDraftIncomePayload;
+  return isPendingCategoryCreation(payload.pendingCategoryCreation)
+    ? payload.pendingCategoryCreation
+    : null;
+}
+
+function categoryCreationClarification(
+  macroName: string,
+  name: string,
+): AgentMessageResult {
+  return clarification(
+    ["categoryCreation"],
+    `Actualmente no existe la categoría ${macroName} → ${name}. ¿Quieres crearla? Responde "sí" para crearla o "no" para elegir otra categoría.`,
+  );
+}
+
+function categoryCreationFailureClarification(
+  message: string,
+): AgentMessageResult {
+  return clarification(["categoryId"], message);
+}
+
 async function persistCategoryDraft(
   context: AgentContext,
   draft: Parameters<typeof createCategoryDraft>[2],
@@ -600,6 +675,96 @@ async function persistDetailsDraft(
   }
 }
 
+async function confirmPendingCategoryCreation(
+  context: AgentContext,
+  draft: AgentCategoryDraft,
+): Promise<AgentMessageResult> {
+  const pendingCategoryCreation = getPendingCategoryCreation(draft);
+  if (!pendingCategoryCreation?.parentMacroId) {
+    return categoryCreationFailureClarification(
+      "Primero selecciona una categoría principal válida.",
+    );
+  }
+
+  let category: HierarchicalCategory;
+  try {
+    category = await createOrReuseMicroCategory({
+      name: pendingCategoryCreation.name,
+      movementType: pendingCategoryCreation.movementType,
+      parentMacroId: pendingCategoryCreation.parentMacroId,
+    });
+  } catch (error) {
+    if (error instanceof CategoryDomainError) {
+      if (error.code === "CATEGORY_INACTIVE") {
+        return categoryCreationFailureClarification(
+          "Ya existe una categoría inactiva con ese nombre. Elige otra categoría.",
+        );
+      }
+      if (error.code === "VALIDATION_ERROR") {
+        return categoryCreationFailureClarification(
+          "No puedo crear esa categoría bajo la categoría principal seleccionada.",
+        );
+      }
+    }
+    throw error;
+  }
+
+  const payload = draft.payload as
+    | CategoryDraftExpensePayload
+    | CategoryDraftIncomePayload;
+  const nextPayload = {
+    ...payload,
+    selectedMacroId: null,
+    pendingCategoryCreation: null,
+    ...(draft.operationType === "CREATE_EXPENSE"
+      ? {
+          expense: {
+            ...(payload as CategoryDraftExpensePayload).expense,
+            categoryId: category.id,
+          },
+        }
+      : {
+          income: {
+            ...(payload as CategoryDraftIncomePayload).income,
+            categoryId: category.id,
+          },
+        }),
+  } as CategoryDraftExpensePayload | CategoryDraftIncomePayload;
+
+  const updatedDraft = await updateCategoryDraft(
+    context,
+    draft.id,
+    nextPayload,
+    draft.updatedAt,
+  );
+  return completeCategoryDraft(context, updatedDraft, category);
+}
+
+async function rejectPendingCategoryCreation(
+  context: AgentContext,
+  draft: AgentCategoryDraft,
+): Promise<AgentMessageResult> {
+  const payload = draft.payload as
+    | CategoryDraftExpensePayload
+    | CategoryDraftIncomePayload;
+  const nextPayload = {
+    ...payload,
+    pendingCategoryCreation: null,
+  } as CategoryDraftExpensePayload | CategoryDraftIncomePayload;
+  const updatedDraft = await updateCategoryDraft(
+    context,
+    draft.id,
+    nextPayload,
+    draft.updatedAt,
+  );
+  return categoryClarification(
+    context,
+    "Está bien. Elige una categoría existente:",
+    categoryMovementType(updatedDraft.operationType),
+    updatedDraft.payload.selectedMacroId ?? null,
+  );
+}
+
 async function completeCategoryDraft(
   context: AgentContext,
   draft: AgentCategoryDraft,
@@ -619,6 +784,7 @@ async function completeCategoryDraft(
       const nextPayload: CategoryDraftExpensePayload = {
         ...payload,
         selectedMacroId: null,
+        pendingCategoryCreation: null,
         expense: { ...payload.expense, categoryId: category.id },
       };
       let updatedCategoryDraft: AgentCategoryDraft | null = null;
@@ -675,6 +841,7 @@ async function completeCategoryDraft(
     const nextPayload: CategoryDraftIncomePayload = {
       ...payload,
       selectedMacroId: null,
+      pendingCategoryCreation: null,
       income: { ...payload.income, categoryId: category.id },
     };
     let updatedCategoryDraft: AgentCategoryDraft | null = null;
@@ -1434,6 +1601,22 @@ async function completeOperationDraft(
       const selectedMacroId = operationPayload.categoryName
         ? resolveMacroSelection(operationPayload.categoryName, categories)
         : null;
+      const requestedCategoryName = categoryCreationName(
+        operationPayload.categoryName,
+      );
+      const selectedMacro = selectedMacroId
+        ? categories.find((item) => item.macroId === selectedMacroId)
+        : null;
+      const pendingCategoryCreation =
+        requestedCategoryName &&
+        normalizeCategoryName(requestedCategoryName) !==
+          normalizeCategoryName(selectedMacro?.macroName ?? "")
+          ? {
+              name: requestedCategoryName,
+              movementType: "EXPENSE" as const,
+              parentMacroId: selectedMacroId,
+            }
+          : null;
       await updateDraftOrThrow(
         context,
         draft,
@@ -1441,9 +1624,16 @@ async function completeOperationDraft(
         "AWAITING_CATEGORY",
         {
           selectedMacroId,
+          pendingCategoryCreation,
           expense: toCategoryExpensePayload(proposal.input),
         },
       );
+      if (pendingCategoryCreation && selectedMacro) {
+        return categoryCreationClarification(
+          selectedMacro.macroName,
+          pendingCategoryCreation.name,
+        );
+      }
       return categoryClarification(
         context,
         operationPayload.categoryName
@@ -1505,6 +1695,22 @@ async function completeOperationDraft(
     const selectedMacroId = operationPayload.categoryName
       ? resolveMacroSelection(operationPayload.categoryName, categories)
       : null;
+    const requestedCategoryName = categoryCreationName(
+      operationPayload.categoryName,
+    );
+    const selectedMacro = selectedMacroId
+      ? categories.find((item) => item.macroId === selectedMacroId)
+      : null;
+    const pendingCategoryCreation =
+      requestedCategoryName &&
+      normalizeCategoryName(requestedCategoryName) !==
+        normalizeCategoryName(selectedMacro?.macroName ?? "")
+        ? {
+            name: requestedCategoryName,
+            movementType: "INCOME" as const,
+            parentMacroId: selectedMacroId,
+          }
+        : null;
     await updateDraftOrThrow(
       context,
       draft,
@@ -1512,6 +1718,7 @@ async function completeOperationDraft(
       "AWAITING_CATEGORY",
       {
         selectedMacroId,
+        pendingCategoryCreation,
         income: toCategoryIncomePayload(income.input),
       },
     );
@@ -1525,6 +1732,12 @@ async function completeOperationDraft(
       description: income.input.description,
       categoryId: income.input.categoryId,
     });
+    if (pendingCategoryCreation && selectedMacro) {
+      return categoryCreationClarification(
+        selectedMacro.macroName,
+        pendingCategoryCreation.name,
+      );
+    }
     return categoryClarification(
       context,
       operationPayload.categoryName
@@ -1652,6 +1865,12 @@ export async function processAgentMessage(
   }
 
   if (isConfirmation(message)) {
+    if (
+      activeDraft?.status === "AWAITING_CATEGORY" &&
+      getPendingCategoryCreation(activeDraft)?.parentMacroId
+    ) {
+      return confirmPendingCategoryCreation(context, activeDraft);
+    }
     const contextualProposal = await getPendingProposalForMessage();
     const proposalId = input.proposalId ?? contextualProposal?.id ?? null;
     if (proposalId) {
@@ -1725,6 +1944,12 @@ export async function processAgentMessage(
     return clarification(["proposalId"]);
   }
   if (isRejection(message)) {
+    if (
+      activeDraft?.status === "AWAITING_CATEGORY" &&
+      getPendingCategoryCreation(activeDraft)
+    ) {
+      return rejectPendingCategoryCreation(context, activeDraft);
+    }
     const contextualProposal = await getPendingProposalForMessage();
     const proposalId = input.proposalId ?? contextualProposal?.id ?? null;
     if (proposalId) {
@@ -1807,11 +2032,32 @@ export async function processAgentMessage(
     if (!selectedMacroId) {
       const macroId = resolveMacroSelection(message, categories);
       if (macroId) {
+        const pendingCategoryCreation = getPendingCategoryCreation(categoryDraft);
+        const requestedName = pendingCategoryCreation
+          ? categoryCreationName(pendingCategoryCreation.name)
+          : null;
+        const macro = categories.find((category) => category.macroId === macroId);
+        const existingCategory = requestedName
+          ? resolveMicroSelection(requestedName, categories, macroId)
+          : null;
+        const nextPayload = {
+          ...categoryDraft.payload,
+          selectedMacroId: macroId,
+          ...(requestedName && !existingCategory
+            ? {
+                pendingCategoryCreation: {
+                  name: requestedName,
+                  movementType: categoryMovementType(categoryDraft.operationType),
+                  parentMacroId: macroId,
+                },
+              }
+            : { pendingCategoryCreation: null }),
+        };
         try {
           await updateCategoryDraft(
             context,
             categoryDraft.id,
-            { ...categoryDraft.payload, selectedMacroId: macroId },
+            nextPayload,
             categoryDraft.updatedAt,
           );
         } catch (error) {
@@ -1822,6 +2068,9 @@ export async function processAgentMessage(
             );
           }
           throw error;
+        }
+        if (requestedName && macro && !existingCategory) {
+          return categoryCreationClarification(macro.macroName, requestedName);
         }
         return categoryClarification(
           context,
@@ -1858,6 +2107,29 @@ export async function processAgentMessage(
       selectedMacroId,
     );
     if (!category) {
+      const requestedName = categoryCreationName(message);
+      const macro = categories.find(
+        (candidate) => candidate.macroId === selectedMacroId,
+      );
+      const pendingCategoryCreation = getPendingCategoryCreation(categoryDraft);
+      const canReplacePendingCategory =
+        !pendingCategoryCreation || isExplicitNewCategoryName(message);
+      if (requestedName && macro && canReplacePendingCategory) {
+        const updatedDraft = await updateCategoryDraft(
+          context,
+          categoryDraft.id,
+          {
+            ...categoryDraft.payload,
+            pendingCategoryCreation: {
+              name: requestedName,
+              movementType: categoryMovementType(categoryDraft.operationType),
+              parentMacroId: selectedMacroId,
+            },
+          },
+          categoryDraft.updatedAt,
+        );
+        return categoryCreationClarification(macro.macroName, requestedName);
+      }
       try {
         await updateCategoryDraft(
           context,
@@ -2060,12 +2332,29 @@ export async function processAgentMessage(
       const selectedMacroId = interpretation.categoryName
         ? resolveMacroSelection(interpretation.categoryName, categories)
         : null;
+      const requestedCategoryName = categoryCreationName(
+        interpretation.categoryName,
+      );
+      const selectedMacro = selectedMacroId
+        ? categories.find((item) => item.macroId === selectedMacroId)
+        : null;
+      const pendingCategoryCreation =
+        requestedCategoryName &&
+        normalizeCategoryName(requestedCategoryName) !==
+          normalizeCategoryName(selectedMacro?.macroName ?? "")
+          ? {
+              name: requestedCategoryName,
+              movementType: "INCOME" as const,
+              parentMacroId: selectedMacroId,
+            }
+          : null;
       const draftCreationBlocked = await blockDraftCreationIfProposalActive();
       if (draftCreationBlocked) return draftCreationBlocked;
       await persistCategoryDraft(
         context,
         {
           selectedMacroId,
+          pendingCategoryCreation,
           income: toCategoryIncomePayload(incomeInput),
         },
         "CREATE_INCOME",
@@ -2080,6 +2369,12 @@ export async function processAgentMessage(
         description: incomeInput.description,
         categoryId: incomeInput.categoryId,
       });
+      if (pendingCategoryCreation && selectedMacro) {
+        return categoryCreationClarification(
+          selectedMacro.macroName,
+          pendingCategoryCreation.name,
+        );
+      }
       return categoryClarification(
         context,
         interpretation.categoryName
@@ -2122,16 +2417,39 @@ export async function processAgentMessage(
     const selectedMacroId = interpretation.categoryName
       ? resolveMacroSelection(interpretation.categoryName, categories)
       : null;
+    const requestedCategoryName = categoryCreationName(
+      interpretation.categoryName,
+    );
+    const selectedMacro = selectedMacroId
+      ? categories.find((item) => item.macroId === selectedMacroId)
+      : null;
+    const pendingCategoryCreation =
+      requestedCategoryName &&
+      normalizeCategoryName(requestedCategoryName) !==
+        normalizeCategoryName(selectedMacro?.macroName ?? "")
+        ? {
+            name: requestedCategoryName,
+            movementType: "EXPENSE" as const,
+            parentMacroId: selectedMacroId,
+          }
+        : null;
     const draftCreationBlocked = await blockDraftCreationIfProposalActive();
     if (draftCreationBlocked) return draftCreationBlocked;
     await persistCategoryDraft(
       context,
       {
         selectedMacroId,
+        pendingCategoryCreation,
         expense: toCategoryExpensePayload(proposal.input),
       },
       "CREATE_EXPENSE",
     );
+    if (pendingCategoryCreation && selectedMacro) {
+      return categoryCreationClarification(
+        selectedMacro.macroName,
+        pendingCategoryCreation.name,
+      );
+    }
     return categoryClarification(
       context,
       interpretation.categoryName

@@ -160,6 +160,16 @@ let pendingProposalDeletionFailure = false;
 let ambiguousMemberNames = false;
 let normalizedMemberNames = false;
 let duplicateCategoryNames = false;
+let categoryCreationFailureCode = null;
+const createdAgentCategories = [];
+
+function canonicalCategoryName(value) {
+  return value
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es");
+}
 
 function contextualRowValue(row, column) {
   if (row[column] !== undefined) return row[column];
@@ -630,6 +640,7 @@ function expectAgentError(promise, code) {
 
 async function main() {
   let expenseDomainErrorClass;
+  let categoryDomainErrorClass;
   const fakeExpenseService = {
     async prepareExpenseCreation(context, input) {
       return {
@@ -743,17 +754,71 @@ async function main() {
           "Leisure",
         ]);
       }
-      return categories.map(([id, name, macroId, macroName]) => ({
-        id,
+      const rows = [
+        ...categories.map(([id, name, macroId, macroName]) => ({
+          id,
+          name,
+          movementType,
+          level: "MICRO",
+          parentId: macroId,
+          isActive: true,
+          macroId,
+          macroName,
+          path: `${macroName} → ${name}`,
+        })),
+        ...createdAgentCategories
+          .filter((category) => category.movementType === movementType)
+          .map((category) => ({ ...category })),
+      ];
+      return rows.map((category) => ({
+        ...category,
+        movementType,
+      }));
+    },
+    async createOrReuseMicroCategory({ name, movementType, parentMacroId }) {
+      operations.push({
+        type: "category-create",
         name,
         movementType,
+        parentMacroId,
+      });
+      if (categoryCreationFailureCode) {
+        throw new categoryDomainErrorClass(
+          categoryCreationFailureCode,
+          "fake category creation failure",
+        );
+      }
+      const normalizedName = canonicalCategoryName(name);
+      const existing = createdAgentCategories.find(
+        (category) =>
+          category.movementType === movementType &&
+          category.parentId === parentMacroId &&
+          canonicalCategoryName(category.name) === normalizedName,
+      );
+      if (existing) return { ...existing };
+      const macroNames = {
+        Household: "Household",
+        Health: "Health",
+        Home: "Home",
+        Mobility: "Mobility",
+        Pets: "Pets",
+        Leisure: "Leisure",
+      };
+      const macroName = macroNames[parentMacroId];
+      assert.ok(macroName, `unexpected fake category macro: ${parentMacroId}`);
+      const category = {
+        id: `category-created-${createdAgentCategories.length + 1}`,
+        name: name.trim(),
+        movementType,
         level: "MICRO",
-        parentId: macroId,
+        parentId: parentMacroId,
         isActive: true,
-        macroId,
+        macroId: parentMacroId,
         macroName,
-        path: `${macroName} → ${name}`,
-      }));
+        path: `${macroName} → ${name.trim()}`,
+      };
+      createdAgentCategories.push(category);
+      return { ...category };
     },
   };
   const fakeSharingRuleService = {
@@ -814,6 +879,9 @@ async function main() {
   expenseDomainErrorClass = load(
     path.join(root, "modules", "expenses", "expense.types.ts"),
   ).ExpenseDomainError;
+  categoryDomainErrorClass = load(
+    path.join(root, "modules", "categories", "category.types.ts"),
+  ).CategoryDomainError;
   const agentService = load(agentServiceModule);
   const pendingProposalRepository = load(pendingProposalRepositoryModule);
   const categoryDraftService = load(categoryDraftServiceModule);
@@ -2259,6 +2327,463 @@ async function main() {
   assert.equal(createdExpenses.at(-1).input.categoryId, "category-1");
   console.log(
     "PASS category clarification resolves a real category before proposal",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Veterinaria HouseMate",
+    description: "Consulta",
+    totalAmount: "120000",
+    expenseDate: "2026-09-24",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Veterinaria",
+  };
+  const categoryCreationExpenseContext = {
+    ...contextA,
+    conversationKey: "agent-category-creation-expense",
+  };
+  const categoryCreationStartProposals = proposals.length;
+  const categoryCreationStartExpenses = createdExpenses.length;
+  const categoryCreationStartCategories = createdAgentCategories.length;
+  const unknownCategory = await conversation.processAgentMessage(
+    categoryCreationExpenseContext,
+    { message: "Gasté 120000 en veterinaria" },
+  );
+  assert.equal(unknownCategory.type, "CLARIFICATION_REQUIRED");
+  assert.equal(createdAgentCategories.length, categoryCreationStartCategories);
+  assert.equal(proposals.length, categoryCreationStartProposals);
+  assert.equal(createdExpenses.length, categoryCreationStartExpenses);
+  const categoryCreationMacro = await conversation.processAgentMessage(
+    categoryCreationExpenseContext,
+    { message: "Pets" },
+  );
+  assert.equal(categoryCreationMacro.type, "CLARIFICATION_REQUIRED");
+  assert.match(categoryCreationMacro.message, /Pets → Veterinaria/);
+  assert.match(categoryCreationMacro.message, /Responde "sí"/);
+  const pendingCategoryCreationDraft = categoryDrafts.find(
+    (row) =>
+      row.conversation_key === categoryCreationExpenseContext.conversationKey,
+  );
+  assert.equal(
+    pendingCategoryCreationDraft.payload.pendingCategoryCreation.name,
+    "Veterinaria",
+  );
+  assert.equal(
+    pendingCategoryCreationDraft.payload.pendingCategoryCreation.movementType,
+    "EXPENSE",
+  );
+  assert.equal(
+    pendingCategoryCreationDraft.payload.pendingCategoryCreation.parentMacroId,
+    "Pets",
+  );
+  assert.equal(createdAgentCategories.length, categoryCreationStartCategories);
+  const categoryCreationProposal = await conversation.processAgentMessage(
+    categoryCreationExpenseContext,
+    { message: "Sí, créala" },
+  );
+  assert.equal(categoryCreationProposal.type, "PROPOSAL_CREATED");
+  assert.equal(categoryCreationProposal.operationType, "CREATE_EXPENSE");
+  assert.equal(createdAgentCategories.length, categoryCreationStartCategories + 1);
+  assert.equal(proposals.length, categoryCreationStartProposals + 1);
+  assert.equal(createdExpenses.length, categoryCreationStartExpenses);
+  assert.equal(
+    categoryCreationProposal.payload.expense.categoryId,
+    createdAgentCategories.at(-1).id,
+  );
+  assert.equal(
+    createdAgentCategories.at(-1).path,
+    "Pets → Veterinaria",
+  );
+  const categoryCreationConfirmation = await conversation.processAgentMessage(
+    categoryCreationExpenseContext,
+    { message: "sí" },
+  );
+  assert.equal(categoryCreationConfirmation.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, categoryCreationStartExpenses + 1);
+  assert.equal(
+    createdExpenses.at(-1).input.categoryId,
+    createdAgentCategories.at(-1).id,
+  );
+  await conversation.processAgentMessage(categoryCreationExpenseContext, {
+    message: "sí",
+  });
+  assert.equal(createdExpenses.length, categoryCreationStartExpenses + 1);
+  console.log(
+    "PASS Agent creates an EXPENSE microcategory only after category confirmation",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: "800000",
+    incomeDate: "2026-09-24",
+    description: "Bono anual",
+    categoryName: "Bono",
+  };
+  const categoryCreationIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-category-creation-income",
+  };
+  const categoryCreationIncomeStart = createdIncomes.length;
+  const unknownIncomeCategory = await conversation.processAgentMessage(
+    categoryCreationIncomeContext,
+    { message: "Recibí 800000 por bono" },
+  );
+  assert.equal(unknownIncomeCategory.type, "CLARIFICATION_REQUIRED");
+  const incomeCategoryMacro = await conversation.processAgentMessage(
+    categoryCreationIncomeContext,
+    { message: "Household" },
+  );
+  assert.equal(incomeCategoryMacro.type, "CLARIFICATION_REQUIRED");
+  assert.match(incomeCategoryMacro.message, /Household → Bono/);
+  const createdIncomeCategoryProposal = await conversation.processAgentMessage(
+    categoryCreationIncomeContext,
+    { message: "Sí, créala" },
+  );
+  assert.equal(createdIncomeCategoryProposal.type, "PROPOSAL_CREATED");
+  assert.equal(createdIncomeCategoryProposal.operationType, "CREATE_INCOME");
+  assert.equal(
+    createdIncomeCategoryProposal.payload.income.categoryId,
+    "category-created-2",
+  );
+  assert.equal(createdIncomes.length, categoryCreationIncomeStart);
+  const incomeCategoryConfirmation = await conversation.processAgentMessage(
+    categoryCreationIncomeContext,
+    { message: "sí" },
+  );
+  assert.equal(incomeCategoryConfirmation.type, "CONFIRMED");
+  assert.equal(createdIncomes.length, categoryCreationIncomeStart + 1);
+  assert.equal(createdIncomes.at(-1).input.categoryId, "category-created-2");
+  console.log(
+    "PASS Agent creates an INCOME microcategory before financial confirmation",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Veterinaria Retry",
+    description: "Reintento",
+    totalAmount: "30000",
+    expenseDate: "2026-09-24",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Veterinaria",
+  };
+  const categoryCreationRetryContext = {
+    ...contextA,
+    conversationKey: "agent-category-creation-retry",
+  };
+  const categoriesBeforeRetryConfirmation = createdAgentCategories.length;
+  const retryProposal = await conversation.processAgentMessage(
+    categoryCreationRetryContext,
+    { message: "Gasté 30000 en veterinaria" },
+  );
+  assert.equal(retryProposal.type, "PROPOSAL_CREATED");
+  assert.equal(
+    createdAgentCategories.length,
+    categoriesBeforeRetryConfirmation,
+  );
+  assert.equal(retryProposal.payload.expense.categoryId, "category-created-1");
+  await conversation.processAgentMessage(categoryCreationRetryContext, {
+    message: "no",
+  });
+  console.log(
+    "PASS Agent reuses a semantic microcategory on category creation retry",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Tienda de mascotas",
+    description: "Compra",
+    totalAmount: "25000",
+    expenseDate: "2026-09-24",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Peluqueria",
+  };
+  const categoryCreationRejectContext = {
+    ...contextA,
+    conversationKey: "agent-category-creation-reject",
+  };
+  const rejectStartCategories = createdAgentCategories.length;
+  const rejectStartProposals = proposals.length;
+  await conversation.processAgentMessage(categoryCreationRejectContext, {
+    message: "Gasté 25000 en peluqueria",
+  });
+  const rejectMacro = await conversation.processAgentMessage(
+    categoryCreationRejectContext,
+    { message: "Pets" },
+  );
+  assert.match(rejectMacro.message, /Pets → Peluqueria/);
+  const protectedPendingCategory = categoryDrafts.find(
+    (row) =>
+      row.conversation_key === categoryCreationRejectContext.conversationKey,
+  );
+  assert.equal(
+    protectedPendingCategory.payload.pendingCategoryCreation.name,
+    "Peluqueria",
+  );
+  const protectedFinancialMessage = await conversation.processAgentMessage(
+    categoryCreationRejectContext,
+    { message: "Gasté 50000 en Carulla" },
+    async () => {
+      throw new Error("OpenAI must not receive a financial message while category creation is pending");
+    },
+  );
+  assert.equal(protectedFinancialMessage.type, "CLARIFICATION_REQUIRED");
+  assert.equal(
+    protectedPendingCategory.payload.pendingCategoryCreation.name,
+    "Peluqueria",
+  );
+  assert.equal(
+    createdAgentCategories.some((category) => category.name === "Gasté 50000 en Carulla"),
+    false,
+  );
+  const rejectCategory = await conversation.processAgentMessage(
+    categoryCreationRejectContext,
+    { message: "No, no la crees" },
+  );
+  assert.equal(rejectCategory.type, "CLARIFICATION_REQUIRED");
+  assert.match(rejectCategory.message, /categoría existente/);
+  assert.equal(createdAgentCategories.length, rejectStartCategories);
+  assert.equal(proposals.length, rejectStartProposals);
+  assert.equal(protectedPendingCategory.payload.pendingCategoryCreation, null);
+  const fallbackExistingCategory = await conversation.processAgentMessage(
+    categoryCreationRejectContext,
+    { message: "Mascotas" },
+  );
+  assert.equal(fallbackExistingCategory.type, "PROPOSAL_CREATED");
+  await conversation.processAgentMessage(categoryCreationRejectContext, {
+    message: "no",
+  });
+  console.log(
+    "PASS rejecting category creation preserves the draft without inserting",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Mascota",
+    description: null,
+    totalAmount: null,
+    expenseDate: null,
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const expenseDetailsUnknownCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-expense-details-unknown-category",
+  };
+  const expenseDetailsUnknownCategoryStartCategories =
+    createdAgentCategories.length;
+  const expenseDetailsUnknownCategoryStartExpenses = createdExpenses.length;
+  const expenseDetailsUnknownCategory = await conversation.processAgentMessage(
+    expenseDetailsUnknownCategoryContext,
+    { message: "Gasté algo" },
+  );
+  assert.deepEqual(expenseDetailsUnknownCategory.missingFields, [
+    "totalAmount",
+    "expenseDate",
+  ]);
+  const expenseDetailsUnknownCategoryCompleted =
+    await conversation.processAgentMessage(
+      expenseDetailsUnknownCategoryContext,
+      {
+        message:
+          "monto: 18000; fecha: 2026-09-24; descripción: servicio; categoría: Pets → Adiestramiento",
+      },
+      async () => {
+        throw new Error("OpenAI must not receive persisted expense details");
+      },
+    );
+  assert.equal(
+    expenseDetailsUnknownCategoryCompleted.type,
+    "CLARIFICATION_REQUIRED",
+  );
+  assert.match(expenseDetailsUnknownCategoryCompleted.message, /Pets → Adiestramiento/);
+  assert.match(expenseDetailsUnknownCategoryCompleted.message, /Responde "sí"/);
+  const expenseDetailsUnknownCategoryDraft = categoryDrafts.find(
+    (row) =>
+      row.conversation_key ===
+      expenseDetailsUnknownCategoryContext.conversationKey,
+  );
+  assert.equal(expenseDetailsUnknownCategoryDraft.status, "AWAITING_CATEGORY");
+  assert.equal(
+    expenseDetailsUnknownCategoryDraft.payload.pendingCategoryCreation.name,
+    "Adiestramiento",
+  );
+  assert.equal(
+    expenseDetailsUnknownCategoryDraft.payload.pendingCategoryCreation.parentMacroId,
+    "Pets",
+  );
+  assert.equal(
+    createdAgentCategories.length,
+    expenseDetailsUnknownCategoryStartCategories,
+  );
+  assert.equal(
+    createdExpenses.length,
+    expenseDetailsUnknownCategoryStartExpenses,
+  );
+  const expenseDetailsUnknownCategoryProposal =
+    await conversation.processAgentMessage(
+      expenseDetailsUnknownCategoryContext,
+      { message: "Sí, créala" },
+    );
+  assert.equal(expenseDetailsUnknownCategoryProposal.type, "PROPOSAL_CREATED");
+  assert.equal(
+    createdAgentCategories.length,
+    expenseDetailsUnknownCategoryStartCategories + 1,
+  );
+  assert.equal(
+    createdExpenses.length,
+    expenseDetailsUnknownCategoryStartExpenses,
+  );
+  await conversation.processAgentMessage(expenseDetailsUnknownCategoryContext, {
+    message: "sí",
+  });
+  assert.equal(
+    createdExpenses.length,
+    expenseDetailsUnknownCategoryStartExpenses + 1,
+  );
+  console.log(
+    "PASS incomplete Expense preserves pending category creation through confirmation",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_INCOME",
+    amount: null,
+    incomeDate: null,
+    description: null,
+    categoryName: null,
+  };
+  const incomeDetailsUnknownCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-income-details-unknown-category",
+  };
+  const incomeDetailsUnknownCategoryStartCategories =
+    createdAgentCategories.length;
+  const incomeDetailsUnknownCategoryStartIncomes = createdIncomes.length;
+  const incomeDetailsUnknownCategory = await conversation.processAgentMessage(
+    incomeDetailsUnknownCategoryContext,
+    { message: "Recibí algo" },
+  );
+  assert.deepEqual(incomeDetailsUnknownCategory.missingFields, [
+    "amount",
+    "incomeDate",
+    "description",
+  ]);
+  const incomeDetailsUnknownCategoryCompleted =
+    await conversation.processAgentMessage(
+      incomeDetailsUnknownCategoryContext,
+      {
+        message:
+          "monto: 800000; fecha: 2026-09-24; descripción: bono; categoría: Household → Bono nuevo",
+      },
+      async () => {
+        throw new Error("OpenAI must not receive persisted income details");
+      },
+    );
+  assert.equal(
+    incomeDetailsUnknownCategoryCompleted.type,
+    "CLARIFICATION_REQUIRED",
+  );
+  assert.match(
+    incomeDetailsUnknownCategoryCompleted.message,
+    /Household → Bono nuevo/,
+  );
+  const incomeDetailsUnknownCategoryDraft = categoryDrafts.find(
+    (row) =>
+      row.conversation_key ===
+      incomeDetailsUnknownCategoryContext.conversationKey,
+  );
+  assert.equal(incomeDetailsUnknownCategoryDraft.status, "AWAITING_CATEGORY");
+  assert.equal(
+    incomeDetailsUnknownCategoryDraft.payload.pendingCategoryCreation.name,
+    "Bono nuevo",
+  );
+  assert.equal(
+    incomeDetailsUnknownCategoryDraft.payload.pendingCategoryCreation.parentMacroId,
+    "Household",
+  );
+  assert.equal(
+    createdAgentCategories.length,
+    incomeDetailsUnknownCategoryStartCategories,
+  );
+  assert.equal(
+    createdIncomes.length,
+    incomeDetailsUnknownCategoryStartIncomes,
+  );
+  const incomeDetailsUnknownCategoryProposal =
+    await conversation.processAgentMessage(
+      incomeDetailsUnknownCategoryContext,
+      { message: "si, crearla" },
+    );
+  assert.equal(incomeDetailsUnknownCategoryProposal.type, "PROPOSAL_CREATED");
+  assert.equal(
+    createdAgentCategories.length,
+    incomeDetailsUnknownCategoryStartCategories + 1,
+  );
+  assert.equal(
+    createdIncomes.length,
+    incomeDetailsUnknownCategoryStartIncomes,
+  );
+  await conversation.processAgentMessage(incomeDetailsUnknownCategoryContext, {
+    message: "sí",
+  });
+  assert.equal(
+    createdIncomes.length,
+    incomeDetailsUnknownCategoryStartIncomes + 1,
+  );
+  console.log(
+    "PASS incomplete Income preserves pending category creation through confirmation",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Mascota",
+    description: "Servicio",
+    totalAmount: "18000",
+    expenseDate: "2026-09-24",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Inactiva",
+  };
+  const categoryCreationFailureContext = {
+    ...contextA,
+    conversationKey: "agent-category-creation-inactive",
+  };
+  await conversation.processAgentMessage(categoryCreationFailureContext, {
+    message: "Gasté 18000 en inactiva",
+  });
+  await conversation.processAgentMessage(categoryCreationFailureContext, {
+    message: "Pets",
+  });
+  categoryCreationFailureCode = "CATEGORY_INACTIVE";
+  const inactiveCreationResult = await conversation.processAgentMessage(
+    categoryCreationFailureContext,
+    { message: "sí" },
+  );
+  assert.equal(inactiveCreationResult.type, "CLARIFICATION_REQUIRED");
+  assert.match(inactiveCreationResult.message, /inactiva/);
+  categoryCreationFailureCode = null;
+  const alternateCategory = await conversation.processAgentMessage(
+    categoryCreationFailureContext,
+    { message: "Veterinaria alternativa" },
+  );
+  assert.match(alternateCategory.message, /Pets → Veterinaria alternativa/);
+  const alternateProposal = await conversation.processAgentMessage(
+    categoryCreationFailureContext,
+    { message: "sí" },
+  );
+  assert.equal(alternateProposal.type, "PROPOSAL_CREATED");
+  assert.equal(
+    alternateProposal.payload.expense.categoryId,
+    createdAgentCategories.at(-1).id,
+  );
+  await conversation.processAgentMessage(categoryCreationFailureContext, {
+    message: "no",
+  });
+  console.log(
+    "PASS inactive category conflict allows a different microcategory request",
   );
 
   const terminalVsDraftContext = {
@@ -4414,9 +4939,20 @@ async function main() {
     contextA,
     "EXPENSE",
   );
-  assert.equal(expenseCategories.length, 6);
+  assert.equal(expenseCategories.length, 9);
   assert.equal(expenseCategories[0].id, "category-1");
   assert.equal(expenseCategories[0].path, "Household → Food");
+  assert.ok(
+    expenseCategories.some(
+      (category) => category.path === "Pets → Veterinaria",
+    ),
+  );
+  assert.ok(
+    expenseCategories.some(
+      (category) =>
+        category.path === "Pets → Veterinaria alternativa",
+    ),
+  );
   assert.equal(
     operations.at(-1).type,
     "category-hierarchical-read",
@@ -4440,10 +4976,10 @@ async function main() {
     contextA,
     "EXPENSE",
   );
-  assert.equal(duplicateExpenseCategories.length, 7);
+  assert.equal(duplicateExpenseCategories.length, 10);
   assert.notEqual(
-    duplicateExpenseCategories[0].path,
-    duplicateExpenseCategories[6].path,
+    duplicateExpenseCategories.find(({ id }) => id === "category-1").path,
+    duplicateExpenseCategories.find(({ id }) => id === "category-food-duplicate").path,
   );
   duplicateCategoryNames = false;
   console.log("PASS duplicate category names remain distinguishable by path");
@@ -4452,7 +4988,7 @@ async function main() {
     contextA,
     "INCOME",
   );
-  assert.equal(incomeCategories.length, 5);
+  assert.equal(incomeCategories.length, 7);
   assert.equal(incomeCategories[0].id, "category-1");
   assert.equal(incomeCategories[0].path, "Household → Food");
   assert.equal(operations.at(-1).movementType, "INCOME");
@@ -4463,6 +4999,11 @@ async function main() {
   assert.equal(
     incomeCategories.some((category) => category.name === "Transporte"),
     false,
+  );
+  assert.ok(
+    incomeCategories.some(
+      (category) => category.id === "category-created-2" && category.path === "Household → Bono",
+    ),
   );
   console.log("PASS typed income categories do not mix expense categories");
 

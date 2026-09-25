@@ -247,6 +247,14 @@ Obtiene las categorías disponibles.
 
 El agente deberá utilizar esta herramienta cuando necesite clasificar un gasto y no tenga suficiente información contextual.
 
+Cuando una MICRO solicitada no exista pero sí exista una MACRO activa del tipo
+de movimiento correspondiente, el Agent podrá conservar una solicitud de
+creación en el `AgentCategoryDraft`. La creación se ejecutará únicamente
+después de una confirmación explícita y mediante el servicio backend de
+categorías; el LLM no ejecutará SQL ni se reutilizará `PendingProposal` para
+esta mutación global. La confirmación de la categoría y la confirmación del
+Expense o Income serán acciones independientes.
+
 ## 6.5 Reglas de reparto
 
 get_sharing_rules
@@ -813,12 +821,17 @@ La confirmación o rechazo se vinculará además al `PendingProposal.id` present
 
 Cuando un `CREATE_EXPENSE` o `CREATE_INCOME` conversacional no incluya
 categoría, el Agent consulta `getCategoriesTool()` y persiste un
-`AgentCategoryDraft` con estado `AWAITING_CATEGORY`. El draft se recupera por
-hogar, actor y `conversationKey`; una selección válida se resuelve contra el
-catálogo real y recién entonces se crea la `PendingProposal`. Una selección
-inválida vuelve a mostrar las opciones disponibles y una cancelación elimina el
-draft. Este estado es específico del Agent, no amplía `PendingProposal` ni
-introduce memoria en proceso.
+`AgentCategoryDraft` con estado `AWAITING_CATEGORY`. Si falta una MICRO pero
+existe una MACRO activa compatible, el draft conserva `pendingCategoryCreation`
+con el nombre solicitado, el `movement_type` y el `parent_macro_id`; una
+confirmación positiva crea o reutiliza esa MICRO y limpia el bloque antes de
+continuar. La `PendingProposal` financiera solo se crea después de esa
+confirmación y requiere una segunda confirmación para persistir el movimiento.
+El draft se recupera por hogar, actor, `conversationKey` y source; una
+selección válida se resuelve contra el catálogo real y una cancelación de la
+creación vuelve a mostrar las categorías existentes sin insertar. Este estado
+específico del Agent no amplía `PendingProposal` ni introduce memoria en
+proceso.
 
 # 22. Ejemplo completo: gasto simple
 

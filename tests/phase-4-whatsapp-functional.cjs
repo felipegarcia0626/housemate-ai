@@ -486,6 +486,66 @@ async function main() {
           message: "Operación cancelada.",
         };
       }
+      if (agentMode === "category-create") {
+        if (operationStep === 0) {
+          assert.equal(input.message, "Gasté 120000 en veterinaria");
+          operationStep = 1;
+          return {
+            type: "CLARIFICATION_REQUIRED",
+            missingFields: ["categoryCreation"],
+            message:
+              'Actualmente no existe la categoría Mascota → Veterinaria. ¿Quieres crearla? Responde "sí" para crearla o "no" para elegir otra categoría.',
+          };
+        }
+        if (operationStep === 1) {
+          assert.equal(input.message, "Sí, créala");
+          operationStep = 2;
+          return {
+            type: "PROPOSAL_CREATED",
+            proposalId,
+            status: "AWAITING_CONFIRMATION",
+            operationType: "CREATE_EXPENSE",
+            payload: {
+              expense: {
+                totalAmount: 120000,
+                expenseDate: "2026-09-24",
+                description: "Consulta",
+                categoryId: "category-veterinaria",
+                categoryPath: "Mascota → Veterinaria",
+                merchant: "Veterinaria",
+                paidByMemberId: memberId,
+              },
+            },
+          };
+        }
+        assert.equal(input.message, "sí");
+        operationStep = 3;
+        return {
+          type: "CONFIRMED",
+          proposalId,
+          status: "CONFIRMED",
+          expenseId: "expense-veterinaria-1",
+          expense: {},
+        };
+      }
+      if (agentMode === "category-create-reject") {
+        if (operationStep === 0) {
+          assert.equal(input.message, "Gasté 120000 en veterinaria");
+          operationStep = 1;
+          return {
+            type: "CLARIFICATION_REQUIRED",
+            missingFields: ["categoryCreation"],
+            message:
+              'Actualmente no existe la categoría Mascota → Veterinaria. ¿Quieres crearla? Responde "sí" para crearla o "no" para elegir otra categoría.',
+          };
+        }
+        assert.equal(input.message, "No, no la crees");
+        return {
+          type: "CLARIFICATION_REQUIRED",
+          missingFields: ["categoryId"],
+          message: "Está bien. Elige una categoría existente:",
+        };
+      }
       return {
         type: "PROPOSAL_CREATED",
         proposalId,
@@ -744,11 +804,12 @@ async function main() {
     "PASS confirmation resolves PendingProposal.id from controlled conversation",
   );
 
+  const agentCallsBeforeIgnoredEvents = agentCalls.length;
   const unsupported = await route.POST(
     signedRequest(rawBody({ object: "whatsapp_business_account", entry: [] })),
   );
   assert.deepEqual(await unsupported.json(), { ok: true, ignored: true });
-  assert.equal(agentCalls.length, 9);
+  assert.equal(agentCalls.length, agentCallsBeforeIgnoredEvents);
   console.log("PASS unsupported event is ignored safely");
 
   const invalidJson = await route.POST(signedRequest("not-json"));
@@ -761,7 +822,7 @@ async function main() {
     ),
   );
   assert.equal(unknown.status, 500);
-  assert.equal(agentCalls.length, 9);
+  assert.equal(agentCalls.length, agentCallsBeforeIgnoredEvents);
   console.log("PASS unknown sender cannot select a household or actor");
 
   agentMode = "error";
@@ -860,6 +921,52 @@ async function main() {
     assert.equal(response.status, 200);
   }
   console.log("PASS WhatsApp operation cancellation preserves safe flow");
+
+  agentMode = "category-create";
+  operationStep = 0;
+  const categoryCreationEvents = [
+    ["event-category-create-start", "Gasté 120000 en veterinaria"],
+    ["event-category-create-confirm", "Sí, créala"],
+    ["event-category-financial-confirm", "sí"],
+  ];
+  const categoryCreationMessages = [];
+  for (const [eventId, text] of categoryCreationEvents) {
+    const response = await route.POST(
+      signedRequest(rawBody(incomingPayload(eventId, text))),
+    );
+    assert.equal(response.status, 200);
+    categoryCreationMessages.push(
+      JSON.parse(sentMessages.at(-1).init.body).text.body,
+    );
+  }
+  assert.match(categoryCreationMessages[0], /Mascota → Veterinaria/);
+  assert.match(categoryCreationMessages[0], /Responde "sí"/);
+  assert.match(categoryCreationMessages[1], /Mascota → Veterinaria/);
+  assert.match(categoryCreationMessages[1], /Responde "sí" para confirmar/);
+  assert.equal(categoryCreationMessages[2], "Operación confirmada.");
+  console.log(
+    "PASS WhatsApp category creation presents separate category and financial confirmations",
+  );
+
+  agentMode = "category-create-reject";
+  operationStep = 0;
+  const categoryRejectStart = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-category-create-reject-start", "Gasté 120000 en veterinaria")),
+    ),
+  );
+  assert.equal(categoryRejectStart.status, 200);
+  const categoryReject = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-category-create-reject", "No, no la crees")),
+    ),
+  );
+  assert.equal(categoryReject.status, 200);
+  assert.equal(
+    JSON.parse(sentMessages.at(-1).init.body).text.body,
+    "Está bien. Elige una categoría existente:",
+  );
+  console.log("PASS WhatsApp category creation rejection preserves selection flow");
 
   for (const source of [
     fs.readFileSync(routeModule, "utf8"),

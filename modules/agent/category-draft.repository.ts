@@ -60,6 +60,18 @@ function isSource(value: unknown): boolean {
   return value === "WEB" || value === "WHATSAPP" || value === "RECEIPT";
 }
 
+function isPendingCategoryCreation(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    Object.keys(value).every((key) =>
+      new Set(["name", "movementType", "parentMacroId"]).has(key),
+    ) &&
+    isString(value.name) &&
+    (value.movementType === "EXPENSE" || value.movementType === "INCOME") &&
+    (value.parentMacroId === null || isString(value.parentMacroId))
+  );
+}
+
 function isOperation(value: unknown): value is AgentCategoryDraftOperation {
   return value === "CREATE_EXPENSE" || value === "CREATE_INCOME";
 }
@@ -188,6 +200,7 @@ function isCategoryPayload(value: unknown, operationType: AgentCategoryDraftOper
     "actorMemberId",
     "source",
     "selectedMacroId",
+    "pendingCategoryCreation",
     "expense",
     "income",
   ]);
@@ -195,7 +208,10 @@ function isCategoryPayload(value: unknown, operationType: AgentCategoryDraftOper
   if (
     ("actorMemberId" in value && !isString(value.actorMemberId)) ||
     ("source" in value && !isSource(value.source)) ||
-    ("selectedMacroId" in value && !isNullableString(value.selectedMacroId))
+    ("selectedMacroId" in value && !isNullableString(value.selectedMacroId)) ||
+    ("pendingCategoryCreation" in value &&
+      value.pendingCategoryCreation !== null &&
+      !isPendingCategoryCreation(value.pendingCategoryCreation))
   ) {
     return false;
   }

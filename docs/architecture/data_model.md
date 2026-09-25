@@ -389,7 +389,11 @@ Category
 ├── created_at
 └── updated_at
 
-Las categorías constituirán un catálogo preconfigurado mediante seed/configuración y consultable desde la aplicación. El MVP no requiere CRUD de categorías.
+Las categorías constituyen un catálogo preconfigurado mediante seed/configuración
+y consultable desde la aplicación. El Agent puede agregar únicamente una nueva
+MICRO bajo una MACRO existente y activa después de una confirmación explícita;
+no se permite crear MACROS, modificar categorías existentes ni crear un tercer
+nivel. La categoría continúa siendo global, no pertenece a un household.
 
 `Category` utiliza un catálogo canónico con separación semántica por
 `movement_type` (`EXPENSE` o `INCOME`) y exactamente dos niveles:
@@ -664,11 +668,14 @@ La confirmación conserva además la versión `updated_at` observada al preparar
 
 ## 15.2 AgentCategoryDraft
 
-`AgentCategoryDraft` conserva únicamente una operación incompleta de
-`CREATE_EXPENSE` o `CREATE_INCOME` mientras falta seleccionar una categoría del
-catálogo canónico. Durante la transición, las filas legacy sin clasificación
-siguen siendo válidas. No es una `PendingProposal` y nunca representa una
-operación lista para confirmación.
+`AgentCategoryDraft` conserva una operación incompleta de `CREATE_EXPENSE` o
+`CREATE_INCOME` mientras falta seleccionar una categoría del catálogo canónico.
+También puede conservar una solicitud pendiente de creación de MICRO bajo una
+MACRO existente, siempre que todavía no se haya confirmado. Durante la
+transición, las filas legacy sin clasificación siguen siendo válidas. No es una
+`PendingProposal` financiera; la creación de categoría requiere una
+confirmación independiente y, después, la operación financiera sigue su propio
+flujo de propuesta y confirmación.
 
 ```text
 AgentCategoryDraft
@@ -679,6 +686,7 @@ AgentCategoryDraft
 ├── operation_type
 ├── payload
 ├── status = AWAITING_CATEGORY
+├── pending_category_creation? (name, movement_type, parent_macro_id)
 ├── created_at
 └── updated_at
 ```

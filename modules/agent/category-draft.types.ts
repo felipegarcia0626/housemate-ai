@@ -1,6 +1,7 @@
 import type { ExpenseSource } from "@/modules/expenses/expense.types";
 import type { IncomeCreateInput } from "@/modules/incomes/income.types";
 import type { ExpenseProposalInput } from "./agent.types";
+import type { CategoryMovementType } from "@/modules/categories/category.types";
 
 export type AgentCategoryDraftOperation = "CREATE_EXPENSE" | "CREATE_INCOME";
 
@@ -8,6 +9,12 @@ export type AgentCategoryDraftStatus =
   | "AWAITING_OPERATION"
   | "AWAITING_DETAILS"
   | "AWAITING_CATEGORY";
+
+export interface PendingCategoryCreation {
+  name: string;
+  movementType: CategoryMovementType;
+  parentMacroId: string | null;
+}
 
 export interface AgentOperationDraftPayload {
   amount: string | null;
@@ -23,6 +30,7 @@ export interface CategoryDraftExpensePayload {
   actorMemberId?: string;
   source?: ExpenseSource;
   selectedMacroId?: string | null;
+  pendingCategoryCreation?: PendingCategoryCreation | null;
   expense: Omit<ExpenseProposalInput, "splits"> & {
     splits?: ExpenseProposalInput["splits"];
   };
@@ -32,6 +40,7 @@ export interface CategoryDraftIncomePayload {
   actorMemberId?: string;
   source?: ExpenseSource;
   selectedMacroId?: string | null;
+  pendingCategoryCreation?: PendingCategoryCreation | null;
   income: Omit<IncomeCreateInput, "memberId"> & { memberId?: string };
 }
 

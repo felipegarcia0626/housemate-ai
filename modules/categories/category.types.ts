@@ -7,6 +7,14 @@ export type CategoryMovementType = "EXPENSE" | "INCOME";
 
 export type CategoryLevel = "MACRO" | "MICRO";
 
+export function normalizeCategoryName(value: string): string {
+  return value
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es");
+}
+
 export interface HierarchicalCategory {
   id: string;
   name: string;
@@ -19,7 +27,10 @@ export interface HierarchicalCategory {
   path: string;
 }
 
-export type CategoryDomainErrorCode = "PERSISTENCE_ERROR";
+export type CategoryDomainErrorCode =
+  | "PERSISTENCE_ERROR"
+  | "VALIDATION_ERROR"
+  | "CATEGORY_INACTIVE";
 
 export class CategoryDomainError extends Error {
   readonly code: CategoryDomainErrorCode;

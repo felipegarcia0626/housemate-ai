@@ -59,17 +59,28 @@ BEGIN
     RAISE EXCEPTION 'FAIL service_role lacks Category SELECT';
   END IF;
 
-  IF has_table_privilege(
-    'service_role', 'public.tb_categories', 'INSERT, UPDATE, DELETE'
-  ) THEN
-    RAISE EXCEPTION 'FAIL service_role has unexpected Category write access';
+  IF NOT has_table_privilege('service_role', 'public.tb_categories', 'INSERT') THEN
+    RAISE EXCEPTION 'FAIL service_role lacks Category INSERT';
   END IF;
 
-  RAISE NOTICE 'PASS service_role has Category SELECT without INSERT, UPDATE or DELETE';
+  IF has_table_privilege(
+    'service_role', 'public.tb_categories', 'UPDATE, DELETE'
+  ) THEN
+    RAISE EXCEPTION 'FAIL service_role has unexpected Category UPDATE or DELETE access';
+  END IF;
+
+  RAISE NOTICE 'PASS service_role has Category SELECT and INSERT without UPDATE or DELETE';
 END;
 $$;
 
 SET LOCAL ROLE service_role;
+
+INSERT INTO public.tb_categories (id, name, description)
+VALUES (
+  '30000000-0000-4000-8000-000000000033',
+  'Phase 2 Category Insert',
+  'Temporary insert fixture'
+);
 
 DO $$
 DECLARE
@@ -80,11 +91,12 @@ BEGIN
   FROM public.tb_categories
   WHERE (id, name) IN (
     ('30000000-0000-4000-8000-000000000031'::UUID, 'Phase 2 Category Read Alpha'),
-    ('30000000-0000-4000-8000-000000000032'::UUID, 'Phase 2 Category Read Beta')
+    ('30000000-0000-4000-8000-000000000032'::UUID, 'Phase 2 Category Read Beta'),
+    ('30000000-0000-4000-8000-000000000033'::UUID, 'Phase 2 Category Insert')
   );
 
-  IF fixture_count <> 2 THEN
-    RAISE EXCEPTION 'FAIL Category read did not return both id/name fixtures';
+  IF fixture_count <> 3 THEN
+    RAISE EXCEPTION 'FAIL Category read did not return all id/name fixtures';
   END IF;
 
   SELECT COUNT(*) INTO seed_count
