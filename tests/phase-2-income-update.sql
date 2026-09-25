@@ -66,18 +66,117 @@ VALUES (
   '2000-01-01 00:00:00+00'
 );
 
+INSERT INTO public.tb_categories (
+  id, name, description, movement_type, level, parent_id, is_active, created_at
+)
+VALUES (
+  '28000000-0000-4000-8000-000000000051',
+  'Income Update Macro',
+  'Temporary macro category for Income update tests',
+  'INCOME',
+  'MACRO',
+  NULL,
+  TRUE,
+  '2000-01-01 00:00:00+00'
+);
+
+INSERT INTO public.tb_categories (
+  id, name, description, movement_type, level, parent_id, is_active, created_at
+)
+VALUES
+  (
+    '28000000-0000-4000-8000-000000000052',
+    'Income Update Micro A',
+    'Initial micro category for Income update tests',
+    'INCOME',
+    'MICRO',
+    '28000000-0000-4000-8000-000000000051',
+    TRUE,
+    '2000-01-01 00:00:00+00'
+  ),
+  (
+    '28000000-0000-4000-8000-000000000053',
+    'Income Update Micro B',
+    'Replacement micro category for Income update tests',
+    'INCOME',
+    'MICRO',
+    '28000000-0000-4000-8000-000000000051',
+    TRUE,
+    '2000-01-01 00:00:00+00'
+  );
+
 INSERT INTO public.tb_incomes (
   id, household_id, created_by, member_id, amount, income_date,
   description, category_id, created_at, updated_at
 )
 VALUES
-  ('28000000-0000-4000-8000-000000000041', '28000000-0000-4000-8000-000000000001', '28000000-0000-4000-8000-000000000021', '28000000-0000-4000-8000-000000000021', 100.00, '2026-08-01', 'Original Income', '28000000-0000-4000-8000-000000000031', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00'),
+  ('28000000-0000-4000-8000-000000000041', '28000000-0000-4000-8000-000000000001', '28000000-0000-4000-8000-000000000021', '28000000-0000-4000-8000-000000000021', 100.00, '2026-08-01', 'Original Income', '28000000-0000-4000-8000-000000000052', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00'),
   ('28000000-0000-4000-8000-000000000042', '28000000-0000-4000-8000-000000000001', '28000000-0000-4000-8000-000000000021', '28000000-0000-4000-8000-000000000021', 10.00, '2026-08-02', 'Partial Income', NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00'),
   ('28000000-0000-4000-8000-000000000043', '28000000-0000-4000-8000-000000000002', '28000000-0000-4000-8000-000000000023', '28000000-0000-4000-8000-000000000023', 999.99, '2026-08-03', 'Other Household Income', NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 
 CREATE TEMP TABLE income_update_baseline ON COMMIT DROP AS
 SELECT * FROM public.tb_incomes
 WHERE id = '28000000-0000-4000-8000-000000000041';
+
+CREATE TEMP TABLE income_category_update_baseline ON COMMIT DROP AS
+SELECT * FROM public.tb_incomes
+WHERE id = '28000000-0000-4000-8000-000000000041';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.tb_categories AS micro_a
+    JOIN public.tb_categories AS macro
+      ON macro.id = micro_a.parent_id
+     AND macro.movement_type = micro_a.movement_type
+    JOIN public.tb_categories AS micro_b
+      ON micro_b.parent_id = macro.id
+     AND micro_b.movement_type = macro.movement_type
+    WHERE micro_a.id = '28000000-0000-4000-8000-000000000052'
+      AND micro_b.id = '28000000-0000-4000-8000-000000000053'
+      AND macro.level = 'MACRO'
+      AND micro_a.level = 'MICRO'
+      AND micro_b.level = 'MICRO'
+      AND macro.movement_type = 'INCOME'
+      AND micro_a.is_active
+      AND micro_b.is_active
+  ) THEN
+    RAISE EXCEPTION 'FAIL Income Micro A and Micro B do not share a valid INCOME hierarchy';
+  END IF;
+END;
+$$;
+
+UPDATE public.tb_incomes
+SET category_id = '28000000-0000-4000-8000-000000000053'
+WHERE id = '28000000-0000-4000-8000-000000000041'
+  AND household_id = '28000000-0000-4000-8000-000000000001';
+
+DO $$
+DECLARE
+  baseline income_category_update_baseline%ROWTYPE;
+  current_income public.tb_incomes%ROWTYPE;
+BEGIN
+  SELECT * INTO baseline FROM income_category_update_baseline;
+  SELECT * INTO current_income FROM public.tb_incomes
+  WHERE id = '28000000-0000-4000-8000-000000000041';
+
+  IF baseline.category_id IS DISTINCT FROM '28000000-0000-4000-8000-000000000052'
+     OR current_income.category_id IS DISTINCT FROM '28000000-0000-4000-8000-000000000053'
+     OR current_income.id IS DISTINCT FROM baseline.id
+     OR current_income.household_id IS DISTINCT FROM baseline.household_id
+     OR current_income.created_by IS DISTINCT FROM baseline.created_by
+     OR current_income.member_id IS DISTINCT FROM baseline.member_id
+     OR current_income.amount IS DISTINCT FROM baseline.amount
+     OR current_income.income_date IS DISTINCT FROM baseline.income_date
+     OR current_income.description IS DISTINCT FROM baseline.description
+     OR current_income.created_at IS DISTINCT FROM baseline.created_at THEN
+    RAISE EXCEPTION 'FAIL valid Income Micro A to Micro B update changed unexpected fields';
+  END IF;
+
+  RAISE NOTICE 'PASS valid Income Micro A to Micro B update preserved other fields';
+END;
+$$;
 
 UPDATE public.tb_incomes
 SET member_id = '28000000-0000-4000-8000-000000000022',

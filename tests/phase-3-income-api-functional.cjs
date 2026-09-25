@@ -29,6 +29,7 @@ const memberB = "42000000-0000-4000-8000-000000000012";
 const missingMember = "42000000-0000-4000-8000-000000000013";
 const categoryA = "42000000-0000-4000-8000-000000000021";
 const incomeMacroCategory = "42000000-0000-4000-8000-000000000023";
+const incomeCategoryB = "42000000-0000-4000-8000-000000000030";
 const expenseCategory = "42000000-0000-4000-8000-000000000024";
 const inactiveIncomeCategory = "42000000-0000-4000-8000-000000000025";
 const legacyCategory = "42000000-0000-4000-8000-000000000026";
@@ -96,6 +97,13 @@ const baselineIncomes = [
 const categories = [
   {
     id: categoryA,
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: incomeMacroCategory,
+    is_active: true,
+  },
+  {
+    id: incomeCategoryB,
     movement_type: "INCOME",
     level: "MICRO",
     parent_id: incomeMacroCategory,
@@ -730,6 +738,53 @@ async function main() {
       "PASS Income DELETE validates isolation, errors and route boundaries",
     );
     const originalIncome = structuredClone(incomes[2]);
+    const categoryAFixture = categories.find(({ id }) => id === categoryA);
+    const categoryBFixture = categories.find(({ id }) => id === incomeCategoryB);
+    const incomeMacroFixture = categories.find(
+      ({ id }) => id === incomeMacroCategory,
+    );
+    assert.equal(categoryAFixture.movement_type, "INCOME");
+    assert.equal(categoryBFixture.movement_type, "INCOME");
+    assert.equal(categoryAFixture.level, "MICRO");
+    assert.equal(categoryBFixture.level, "MICRO");
+    assert.equal(categoryAFixture.parent_id, incomeMacroCategory);
+    assert.equal(categoryBFixture.parent_id, incomeMacroCategory);
+    assert.equal(incomeMacroFixture.movement_type, "INCOME");
+    assert.equal(incomeMacroFixture.level, "MACRO");
+    assert.notEqual(categoryA, incomeCategoryB);
+
+    const categoryUpdated = await updateRoute.PATCH(
+      patchRequest(incomeFirst, { categoryId: incomeCategoryB }),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(categoryUpdated.status, 200);
+    const categoryUpdatedBody = await readJson(categoryUpdated);
+    assert.deepEqual(categoryUpdatedBody.data, {
+      id: incomeFirst,
+      createdBy: originalIncome.created_by,
+      memberId: originalIncome.member_id,
+      amount: Number(originalIncome.amount),
+      incomeDate: originalIncome.income_date,
+      description: originalIncome.description,
+      categoryId: incomeCategoryB,
+    });
+    assert.equal(
+      incomes.find(({ id }) => id === incomeFirst).category_id,
+      incomeCategoryB,
+    );
+    const categoryUpdateOperation = [...observedOperations]
+      .reverse()
+      .find(
+        ({ type, table }) => type === "update" && table === "tb_incomes",
+      );
+    assert.deepEqual(categoryUpdateOperation.payload, {
+      category_id: incomeCategoryB,
+    });
+    Object.assign(incomes[2], originalIncome);
+    console.log(
+      "PASS Income PATCH changes a valid Micro INCOME category without changing other fields",
+    );
+
     const updated = await updateRoute.PATCH(
       patchRequest(incomeFirst, {
         amount: 77.77,
