@@ -388,6 +388,18 @@ async function main() {
             type: "PROPOSAL_CREATED",
             proposalId,
             status: "AWAITING_CONFIRMATION",
+            operationType: "CREATE_EXPENSE",
+            payload: {
+              expense: {
+                totalAmount: 50000,
+                expenseDate: "2026-08-16",
+                description: "Mercado de la semana",
+                categoryId: "category-food",
+                categoryPath: "Alimentación → Mercado",
+                merchant: "Éxito",
+                paidByMemberId: secondMemberId,
+              },
+            },
           };
         }
         assert.equal(input.message, "Sí");
@@ -434,6 +446,17 @@ async function main() {
             type: "PROPOSAL_CREATED",
             proposalId,
             status: "AWAITING_CONFIRMATION",
+            operationType: "CREATE_INCOME",
+            payload: {
+              income: {
+                amount: 50000,
+                incomeDate: "2026-08-16",
+                description: "Trabajo",
+                categoryId: "category-salary",
+                categoryPath: "Salario → Sueldo mensual",
+                memberId,
+              },
+            },
           };
         }
         assert.equal(input.message, "Sí");
@@ -467,6 +490,18 @@ async function main() {
         type: "PROPOSAL_CREATED",
         proposalId,
         status: "AWAITING_CONFIRMATION",
+        operationType: "CREATE_EXPENSE",
+        payload: {
+          expense: {
+            totalAmount: 100,
+            expenseDate: "2026-08-16",
+            description: null,
+            categoryId: "category-food",
+            categoryPath: "Alimentación → Mercado",
+            merchant: null,
+            paidByMemberId: memberId,
+          },
+        },
       };
     },
   };
@@ -559,7 +594,13 @@ async function main() {
   );
   assert.equal(agentCalls[0].input.message, "Pagué 100");
   assert.equal(sentMessages.length, 1);
-  assert.ok(sentMessages[0].init.body.includes("Propuesta creada"));
+  const firstProposalText = JSON.parse(sentMessages[0].init.body).text.body;
+  assert.match(firstProposalText, /Voy a guardar este gasto/);
+  assert.match(firstProposalText, /100/);
+  assert.match(firstProposalText, /16\/08\/2026/);
+  assert.match(firstProposalText, /Alimentación → Mercado/);
+  assert.doesNotMatch(firstProposalText, /Descripción:/);
+  assert.doesNotMatch(firstProposalText, /42000000-/);
   assert.equal(operations.filter(({ type }) => type === "insert").length, 1);
   console.log(
     "PASS text message resolves controlled context and delegates to Agent",
@@ -780,11 +821,16 @@ async function main() {
     ["event-income-operation-category", "Salario"],
     ["event-income-operation-confirm", "Sí"],
   ];
+  let incomeOperationProposalText = "";
   for (const [eventId, text] of incomeOperationEvents) {
     const response = await route.POST(
       signedRequest(rawBody(incomingPayload(eventId, text))),
     );
     assert.equal(response.status, 200);
+    if (text === "Salario")
+      incomeOperationProposalText = JSON.parse(
+        sentMessages.at(-1).init.body,
+      ).text.body;
   }
   const incomeOperationCalls = agentCalls.slice(-5);
   assert.deepEqual(
@@ -792,6 +838,11 @@ async function main() {
     incomeOperationEvents.map(([, text]) => text),
   );
   assert.equal(operationStep, 4);
+  assert.match(incomeOperationProposalText, /Voy a guardar este ingreso/);
+  assert.match(incomeOperationProposalText, /50[.,]000/);
+  assert.match(incomeOperationProposalText, /16\/08\/2026/);
+  assert.match(incomeOperationProposalText, /Trabajo/);
+  assert.match(incomeOperationProposalText, /Salario → Sueldo mensual/);
   console.log(
     "PASS WhatsApp income operation continuation reaches confirmation",
   );

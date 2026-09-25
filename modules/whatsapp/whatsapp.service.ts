@@ -165,7 +165,11 @@ async function loadProposalPresentationLabels(
   result: AgentResult,
 ): Promise<ProposalPresentationLabels> {
   const labels = emptyProposalPresentationLabels();
-  if (result.type !== "PROPOSAL_UPDATED" || !result.payload) return labels;
+  if (
+    (result.type !== "PROPOSAL_UPDATED" && result.type !== "PROPOSAL_CREATED") ||
+    !result.payload
+  )
+    return labels;
 
   const payload = result.payload;
   if (typeof payload !== "object") return labels;
@@ -182,7 +186,7 @@ async function loadProposalPresentationLabels(
         ? payload.income.memberId
         : null;
   const [categories, members] = await Promise.all([
-    categoryId
+    result.type === "PROPOSAL_UPDATED" && categoryId
       ? getCategoriesTool(context).catch(() => [])
       : Promise.resolve([]),
     memberId
@@ -200,13 +204,57 @@ async function loadProposalPresentationLabels(
   return labels;
 }
 
+function renderCreatedProposal(
+  result: Extract<AgentResult, { type: "PROPOSAL_CREATED" }>,
+  labels: ProposalPresentationLabels,
+): string {
+  const isExpense = result.operationType === "CREATE_EXPENSE";
+  const payload = result.payload;
+  const lines = [
+    `Voy a guardar este ${isExpense ? "gasto" : "ingreso"}:`,
+  ];
+
+  if (isExpense && "expense" in payload && payload.expense) {
+    const expense = payload.expense;
+    lines.push(`💰 Monto: ${formatWhatsAppMoney(expense.totalAmount)}`);
+    lines.push(`📅 Fecha: ${formatWhatsAppDate(expense.expenseDate)}`);
+    if (expense.description?.trim())
+      lines.push(`📝 Descripción: ${expense.description.trim()}`);
+    if (expense.merchant?.trim())
+      lines.push(`🏪 Comercio: ${expense.merchant.trim()}`);
+    const payerName = expense.paidByMemberId
+      ? labels.members.get(expense.paidByMemberId)
+      : undefined;
+    if (payerName) lines.push(`👤 Pagado por: ${payerName}`);
+    if (expense.categoryPath)
+      lines.push(`📂 Categoría: ${expense.categoryPath}`);
+  } else if (!isExpense && "income" in payload && payload.income) {
+    const income = payload.income;
+    lines.push(`💰 Monto: ${formatWhatsAppMoney(income.amount)}`);
+    lines.push(`📅 Fecha: ${formatWhatsAppDate(income.incomeDate)}`);
+    if (income.description?.trim())
+      lines.push(`📝 Descripción: ${income.description.trim()}`);
+    if (income.categoryPath)
+      lines.push(`📂 Categoría: ${income.categoryPath}`);
+    const memberName = income.memberId
+      ? labels.members.get(income.memberId)
+      : undefined;
+    if (memberName) lines.push(`👤 Integrante: ${memberName}`);
+  } else {
+    return 'Propuesta creada. Responde "sí" para confirmar o "no" para rechazar.';
+  }
+
+  lines.push('Responde "sí" para confirmar o "no" para rechazar.');
+  return lines.join("\n");
+}
+
 function renderAgentResult(
   result: AgentResult,
   labels = emptyProposalPresentationLabels(),
 ): string {
   switch (result.type) {
     case "PROPOSAL_CREATED":
-      return 'Propuesta creada. Responde "sí" para confirmar o "no" para rechazar.';
+      return renderCreatedProposal(result, labels);
     case "PROPOSAL_UPDATED":
       return renderUpdatedProposal(result, labels);
     case "CONFIRMED":
@@ -303,7 +351,7 @@ export async function processWhatsAppTextMessage(
   }
 
   let labels = emptyProposalPresentationLabels();
-  if (result.type === "PROPOSAL_UPDATED") {
+  if (result.type === "PROPOSAL_UPDATED" || result.type === "PROPOSAL_CREATED") {
     try {
       labels = await loadProposalPresentationLabels(context, result);
     } catch {

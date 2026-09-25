@@ -4583,6 +4583,18 @@ async function main() {
     { message: "Recibí un salario de 3000000" },
   );
   assert.equal(directIncomeProposal.type, "PROPOSAL_CREATED");
+  assert.equal(directIncomeProposal.operationType, "CREATE_INCOME");
+  assert.deepEqual(directIncomeProposal.payload.income, {
+    amount: 3000000,
+    incomeDate: "2026-08-16",
+    description: "Salario",
+    categoryId: "category-1",
+    categoryPath: "Household → Food",
+    memberId: contextA.actorMemberId,
+  });
+  assert.equal("householdId" in directIncomeProposal, false);
+  assert.equal("conversationKey" in directIncomeProposal, false);
+  assert.equal("draftId" in directIncomeProposal.payload.income, false);
   assert.equal(proposals.length, beforeDirectIncomeProposalCount + 1);
   assert.equal(createdIncomes.length, beforeDirectIncomeCreatedCount);
   const directIncomeStored = proposals.find(
@@ -6717,6 +6729,24 @@ async function main() {
     { message: "Gasté 45000 ayer en un restaurante" },
   );
   assert.equal(completeExpense2IProposal.type, "PROPOSAL_CREATED");
+  assert.equal(completeExpense2IProposal.operationType, "CREATE_EXPENSE");
+  assert.equal(
+    completeExpense2IProposal.payload.expense.totalAmount,
+    45000,
+  );
+  assert.equal(
+    completeExpense2IProposal.payload.expense.expenseDate,
+    "2026-09-02",
+  );
+  assert.equal(
+    completeExpense2IProposal.payload.expense.categoryPath,
+    "Household → Food",
+  );
+  assert.equal(
+    completeExpense2IProposal.payload.expense.paidByMemberId,
+    contextA.actorMemberId,
+  );
+  assert.equal("householdId" in completeExpense2IProposal, false);
   const completeExpense2IStored = proposals.find(
     (row) => row.id === completeExpense2IProposal.proposalId,
   );

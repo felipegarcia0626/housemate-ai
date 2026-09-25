@@ -38,8 +38,12 @@ import type {
   AgentContext,
   AgentMessageInput,
   AgentMessageResult,
+  AgentProposalMessageResult,
   ExpenseProposalInput,
+  ExpenseProposalResult,
+  IncomeProposalResult,
 } from "./agent.types";
+import type { IncomeCreateInput } from "@/modules/incomes/income.types";
 import { AgentDomainError } from "./agent.types";
 import {
   consumePendingIncomeProposal,
@@ -439,7 +443,7 @@ function parseDraftDetails(
 function resolveCategorySelection(
   message: string,
   categories: HierarchicalCategory[],
-): Category | null {
+): HierarchicalCategory | null {
   const normalized = normalizeCategoryName(message);
   const matches = categories.filter(
     (category) =>
@@ -630,14 +634,15 @@ async function completeCategoryDraft(
           draft.updatedAt,
         );
       }
+      const expenseInput: ExpenseProposalInput = {
+        ...nextPayload.expense,
+        splits: nextPayload.expense.splits ?? [
+          { householdMemberId: context.actorMemberId, percentage: 100 },
+        ],
+      };
       let result: Awaited<ReturnType<typeof createExpenseTool>>;
       try {
-        result = await createExpenseTool(context, {
-          ...nextPayload.expense,
-          splits: nextPayload.expense.splits ?? [
-            { householdMemberId: context.actorMemberId, percentage: 100 },
-          ],
-        }, draft.id);
+        result = await createExpenseTool(context, expenseInput, draft.id);
       } catch (error) {
         await restoreCategoryDraftAfterFailure(
           context,
@@ -664,7 +669,7 @@ async function completeCategoryDraft(
         );
         throw error;
       }
-      return { type: "PROPOSAL_CREATED", ...result };
+      return createdExpenseResult(result, expenseInput, category);
     }
     const payload = draft.payload as CategoryDraftIncomePayload;
     const nextPayload: CategoryDraftIncomePayload = {
@@ -685,12 +690,13 @@ async function completeCategoryDraft(
         draft.updatedAt,
       );
     }
+    const incomeInput: IncomeCreateInput = {
+      ...nextPayload.income,
+      memberId: context.actorMemberId,
+    };
     let result: Awaited<ReturnType<typeof createIncomeTool>>;
     try {
-      result = await createIncomeTool(context, {
-        ...nextPayload.income,
-        memberId: context.actorMemberId,
-      }, draft.id);
+      result = await createIncomeTool(context, incomeInput, draft.id);
     } catch (error) {
       await restoreCategoryDraftAfterFailure(
         context,
@@ -717,7 +723,7 @@ async function completeCategoryDraft(
       );
       throw error;
     }
-    return { type: "PROPOSAL_CREATED", ...result };
+    return createdIncomeResult(result, incomeInput, category);
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
     throw new AgentDomainError(
@@ -1126,6 +1132,51 @@ async function toProposalInput(
   };
 }
 
+function createdExpenseResult(
+  result: ExpenseProposalResult,
+  input: ExpenseProposalInput,
+  category: HierarchicalCategory,
+): AgentProposalMessageResult {
+  return {
+    type: "PROPOSAL_CREATED",
+    ...result,
+    operationType: "CREATE_EXPENSE",
+    payload: {
+      expense: {
+        totalAmount: input.totalAmount,
+        expenseDate: input.expenseDate,
+        description: input.description ?? null,
+        categoryId: input.categoryId ?? null,
+        categoryPath: category.path,
+        merchant: input.merchant ?? null,
+        paidByMemberId: input.paidByMemberId,
+      },
+    },
+  };
+}
+
+function createdIncomeResult(
+  result: IncomeProposalResult,
+  input: IncomeCreateInput,
+  category: HierarchicalCategory,
+): AgentProposalMessageResult {
+  return {
+    type: "PROPOSAL_CREATED",
+    ...result,
+    operationType: "CREATE_INCOME",
+    payload: {
+      income: {
+        amount: input.amount,
+        incomeDate: input.incomeDate,
+        description: input.description ?? null,
+        categoryId: input.categoryId ?? null,
+        categoryPath: category.path,
+        memberId: input.memberId,
+      },
+    },
+  };
+}
+
 function toIncomeInput(
   context: AgentContext,
   payload: AgentOperationDraftPayload,
@@ -1416,7 +1467,11 @@ async function completeOperationDraft(
       );
       throw error;
     }
-    return { type: "PROPOSAL_CREATED", ...result };
+    return createdExpenseResult(
+      result,
+      { ...proposal.input, categoryId: category.id },
+      category,
+    );
   }
 
   const income = toIncomeInput(context, operationPayload);
@@ -1493,7 +1548,10 @@ async function completeOperationDraft(
     );
     throw error;
   }
-  return { type: "PROPOSAL_CREATED", ...result };
+  return createdIncomeResult(result, {
+    ...income.input,
+    categoryId: category.id,
+  }, category);
 }
 
 export async function processAgentMessage(
@@ -2035,7 +2093,11 @@ export async function processAgentMessage(
       ...incomeInput,
       categoryId: category.id,
     });
-    return { type: "PROPOSAL_CREATED", ...result };
+    return createdIncomeResult(
+      result,
+      { ...incomeInput, categoryId: category.id },
+      category,
+    );
   }
   const proposal = await toProposalInput(context, interpretation, {
     defaultExpenseDate: Boolean(interpretation.categoryName),
@@ -2086,5 +2148,17 @@ export async function processAgentMessage(
   return {
     type: "PROPOSAL_CREATED",
     ...result,
+    operationType: "CREATE_EXPENSE",
+    payload: {
+      expense: {
+        totalAmount: proposal.input.totalAmount,
+        expenseDate: proposal.input.expenseDate,
+        description: proposal.input.description ?? null,
+        categoryId: category.id,
+        categoryPath: category.path,
+        merchant: proposal.input.merchant ?? null,
+        paidByMemberId: proposal.input.paidByMemberId,
+      },
+    },
   };
 }

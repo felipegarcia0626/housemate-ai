@@ -73,6 +73,7 @@ type AgentResult = {
       expenseDate?: string;
       paidByMemberId?: string;
       categoryId?: string | null;
+      categoryPath?: string | null;
     };
     income?: {
       memberId?: string;
@@ -80,6 +81,7 @@ type AgentResult = {
       incomeDate?: string;
       description?: string;
       categoryId?: string | null;
+      categoryPath?: string | null;
     };
   };
 };
@@ -767,7 +769,66 @@ export default function HomePage() {
     return lines.join("\n");
   }
 
+  function presentCreatedProposal(result: AgentResult): string {
+    const isExpense = result.operationType === "CREATE_EXPENSE";
+    if (
+      result.operationType !== "CREATE_EXPENSE" &&
+      result.operationType !== "CREATE_INCOME"
+    )
+      return describeAgentResult(result);
+    const proposal = isExpense
+      ? result.payload?.expense
+      : result.payload?.income;
+    if (!proposal) return describeAgentResult(result);
+
+    const lines = [
+      `Voy a guardar este ${isExpense ? "gasto" : "ingreso"}:`,
+    ];
+    if (isExpense) {
+      const expense = proposal as NonNullable<AgentResult["payload"]>["expense"];
+      if (typeof expense?.totalAmount === "number")
+        lines.push(`💰 Monto: ${money(expense.totalAmount)}`);
+      if (expense?.expenseDate?.trim())
+        lines.push(`📅 Fecha: ${humanDate(expense.expenseDate)}`);
+      if (expense?.description?.trim())
+        lines.push(`📝 Descripción: ${expense.description.trim()}`);
+      if (expense?.merchant?.trim())
+        lines.push(`🏪 Comercio: ${expense.merchant.trim()}`);
+      const payerName = expense?.paidByMemberId
+        ? memberNames[expense.paidByMemberId]
+        : undefined;
+      if (payerName) lines.push(`👤 Pagado por: ${payerName}`);
+      const categoryName = expense?.categoryPath ??
+        (expense?.categoryId
+          ? expenseCategories.find((category) => category.id === expense.categoryId)
+              ?.path
+          : undefined);
+      if (categoryName) lines.push(`📂 Categoría: ${categoryName}`);
+    } else {
+      const income = proposal as NonNullable<AgentResult["payload"]>["income"];
+      if (typeof income?.amount === "number")
+        lines.push(`💰 Monto: ${money(income.amount)}`);
+      if (income?.incomeDate?.trim())
+        lines.push(`📅 Fecha: ${humanDate(income.incomeDate)}`);
+      if (income?.description?.trim())
+        lines.push(`📝 Descripción: ${income.description.trim()}`);
+      const categoryName = income?.categoryPath ??
+        (income?.categoryId
+          ? incomeCategoryLabel(income.categoryId)
+          : undefined);
+      if (categoryName) lines.push(`📂 Categoría: ${categoryName}`);
+      const memberName = income?.memberId
+        ? memberNames[income.memberId]
+        : undefined;
+      if (memberName) lines.push(`👤 Integrante: ${memberName}`);
+    }
+    lines.push('Escribe “Sí, confirmar” para continuar o “No” para rechazar.');
+    return lines.join("\n");
+  }
+
   function presentAgentResult(result: AgentResult): string {
+    if (result.type === "PROPOSAL_CREATED")
+      return presentCreatedProposal(result);
     if (result.type === "PROPOSAL_UPDATED")
       return presentUpdatedProposal(result);
     if (result.type !== "READ_RESULT") return describeAgentResult(result);

@@ -85,6 +85,29 @@ export interface ExpenseProposalResult {
   status: "AWAITING_CONFIRMATION";
 }
 
+export interface AgentExpenseProposalPresentation {
+  totalAmount: number;
+  expenseDate: string;
+  description?: string | null;
+  categoryId?: string | null;
+  categoryPath?: string | null;
+  merchant?: string | null;
+  paidByMemberId: string;
+}
+
+export interface AgentIncomeProposalPresentation {
+  amount: number;
+  incomeDate: string;
+  description?: string | null;
+  categoryId?: string | null;
+  categoryPath?: string | null;
+  memberId: string;
+}
+
+export type AgentProposalPresentationPayload =
+  | { expense: AgentExpenseProposalPresentation }
+  | { income: AgentIncomeProposalPresentation };
+
 export interface ExpenseConfirmationResult {
   proposalId: string;
   status: "CONFIRMED";
@@ -147,6 +170,8 @@ export interface AgentClarificationResult {
 
 export interface AgentProposalMessageResult extends ExpenseProposalResult {
   type: "PROPOSAL_CREATED";
+  operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
+  payload: AgentProposalPresentationPayload;
 }
 
 export interface AgentProposalUpdatedMessageResult {

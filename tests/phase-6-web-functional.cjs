@@ -184,7 +184,9 @@ for (const marker of [
   '"GET_BALANCE"',
   '"GET_CATEGORIES"',
   '"GET_SHARING_RULES"',
+  '"PROPOSAL_CREATED"',
   '"PROPOSAL_UPDATED"',
+  "presentCreatedProposal",
   "presentUpdatedProposal",
   "operationType",
   "payload?.expense",
@@ -239,6 +241,42 @@ if (updatedProposalSource.includes("JSON.stringify"))
   throw new Error("Web corrected proposal must not render technical JSON");
 console.log(
   "PASS Web PROPOSAL_UPDATED renders corrected fields without technical identifiers",
+);
+
+const createdProposalStart = page.indexOf("function presentCreatedProposal");
+const createdProposalEnd = page.indexOf(
+  "function presentAgentResult",
+  createdProposalStart,
+);
+if (createdProposalStart < 0 || createdProposalEnd < createdProposalStart)
+  throw new Error("Missing Web PROPOSAL_CREATED presentation");
+const createdProposalSource = page.slice(
+  createdProposalStart,
+  createdProposalEnd,
+);
+for (const marker of [
+  "expense.totalAmount",
+  "expense.expenseDate",
+  "expense.description",
+  "expense.merchant",
+  "expense.paidByMemberId",
+  "expense?.categoryPath",
+  "income.amount",
+  "income.incomeDate",
+  "income.description",
+  "income.memberId",
+  "income?.categoryPath",
+  "Escribe",
+]) {
+  if (!createdProposalSource.includes(marker))
+    throw new Error(`Missing Web created proposal field: ${marker}`);
+}
+if (createdProposalSource.includes("proposalId"))
+  throw new Error("Web created proposal must not render proposal IDs");
+if (createdProposalSource.includes("JSON.stringify"))
+  throw new Error("Web created proposal must not render technical JSON");
+console.log(
+  "PASS Web PROPOSAL_CREATED renders functional proposal fields without technical identifiers",
 );
 
 if (!page.includes("Total:"))
