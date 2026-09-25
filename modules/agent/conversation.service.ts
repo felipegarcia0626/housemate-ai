@@ -236,12 +236,29 @@ function looksLikeMovementRequest(message: string): boolean {
   return hasAmount && (hasExpenseSignal || hasIncomeSignal);
 }
 
-function isExplicitNewCategoryName(message: string): boolean {
-  const normalized = normalizeOperationMessage(message);
-  if (!normalized || looksLikeMovementRequest(message) || /\d/.test(normalized)) {
+function isExplicitNewCategoryName(
+  message: string,
+  expectedMacroName: string,
+): boolean {
+  const parts = message
+    .split("→")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length !== 2) return false;
+  if (
+    normalizeCategoryName(parts[0]) !== normalizeCategoryName(expectedMacroName)
+  ) {
     return false;
   }
-  return /^[a-záéíóúñü]+(?:\s+[a-záéíóúñü]+){1,4}$/i.test(normalized);
+  const normalizedName = normalizeOperationMessage(parts[1]);
+  if (
+    !normalizedName ||
+    looksLikeMovementRequest(parts[1]) ||
+    /\d/.test(normalizedName)
+  ) {
+    return false;
+  }
+  return /^[a-záéíóúñü]+(?:\s+[a-záéíóúñü]+){0,4}$/i.test(normalizedName);
 }
 
 function operationClarification(): AgentMessageResult {
@@ -2113,7 +2130,9 @@ export async function processAgentMessage(
       );
       const pendingCategoryCreation = getPendingCategoryCreation(categoryDraft);
       const canReplacePendingCategory =
-        !pendingCategoryCreation || isExplicitNewCategoryName(message);
+        !pendingCategoryCreation ||
+        (macro !== undefined &&
+          isExplicitNewCategoryName(message, macro.macroName));
       if (requestedName && macro && canReplacePendingCategory) {
         const updatedDraft = await updateCategoryDraft(
           context,

@@ -2522,6 +2522,25 @@ async function main() {
     protectedPendingCategory.payload.pendingCategoryCreation.name,
     "Peluqueria",
   );
+  for (const arbitraryMessage of [
+    "hola mundo",
+    "por favor ayuda",
+    "quiero crearla",
+  ]) {
+    const arbitraryResult = await conversation.processAgentMessage(
+      categoryCreationRejectContext,
+      { message: arbitraryMessage },
+    );
+    assert.equal(arbitraryResult.type, "CLARIFICATION_REQUIRED");
+    const currentPendingCategory = categoryDrafts.find(
+      (row) =>
+        row.conversation_key === categoryCreationRejectContext.conversationKey,
+    );
+    assert.equal(
+      currentPendingCategory.payload.pendingCategoryCreation.name,
+      "Peluqueria",
+    );
+  }
   const protectedFinancialMessage = await conversation.processAgentMessage(
     categoryCreationRejectContext,
     { message: "Gasté 50000 en Carulla" },
@@ -2767,9 +2786,9 @@ async function main() {
   categoryCreationFailureCode = null;
   const alternateCategory = await conversation.processAgentMessage(
     categoryCreationFailureContext,
-    { message: "Veterinaria alternativa" },
+    { message: "Pets → Gasolina" },
   );
-  assert.match(alternateCategory.message, /Pets → Veterinaria alternativa/);
+  assert.match(alternateCategory.message, /Pets → Gasolina/);
   const alternateProposal = await conversation.processAgentMessage(
     categoryCreationFailureContext,
     { message: "sí" },
@@ -4950,7 +4969,7 @@ async function main() {
   assert.ok(
     expenseCategories.some(
       (category) =>
-        category.path === "Pets → Veterinaria alternativa",
+        category.path === "Pets → Gasolina",
     ),
   );
   assert.equal(
