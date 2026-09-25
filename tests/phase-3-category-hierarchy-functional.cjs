@@ -300,6 +300,25 @@ async function main() {
   );
   console.log("PASS hierarchical category API returns EXPENSE micros");
 
+  observedQueries.length = 0;
+  const incomeRouteResponse = await route.GET(
+    new Request(
+      "http://localhost/api/categories/hierarchical?movementType=INCOME",
+    ),
+  );
+  assert.equal(incomeRouteResponse.status, 200);
+  assert.deepEqual(await incomeRouteResponse.json(), { data: incomes });
+  assert.ok(
+    observedQueries.every(({ filters }) =>
+      filters.every(
+        ({ operator, column, value }) =>
+          !(operator === "eq" && column === "movement_type") ||
+          value === "INCOME",
+      ),
+    ),
+  );
+  console.log("PASS hierarchical category API returns INCOME micros");
+
   const invalidRouteResponse = await route.GET(
     new Request("http://localhost/api/categories/hierarchical"),
   );

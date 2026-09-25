@@ -10,6 +10,7 @@ type ResourceKey =
   | "incomes"
   | "categories"
   | "expenseCategories"
+  | "incomeCategories"
   | "members"
   | "sharingRules"
   | "balance";
@@ -111,6 +112,13 @@ const initialExpenseEdit = {
   categoryId: "",
   paidByMemberId: "",
 };
+const initialIncomeEdit = {
+  memberId: "",
+  amount: "",
+  incomeDate: "",
+  description: "",
+  categoryId: "",
+};
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -166,6 +174,9 @@ export default function HomePage() {
   const [expenseCategories, setExpenseCategories] = useState<
     HierarchicalCategory[]
   >([]);
+  const [incomeCategories, setIncomeCategories] = useState<
+    HierarchicalCategory[]
+  >([]);
   const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [rules, setRules] = useState<SharingRule[]>([]);
   const [expenseForm, setExpenseForm] = useState(initialExpense);
@@ -179,6 +190,12 @@ export default function HomePage() {
   const [expenseMacroId, setExpenseMacroId] = useState("");
   const [editExpenseMacroId, setEditExpenseMacroId] = useState("");
   const [editExpenseLegacyCategoryName, setEditExpenseLegacyCategoryName] =
+    useState<string | null>(null);
+  const [incomeMacroId, setIncomeMacroId] = useState("");
+  const [editingIncome, setEditingIncome] = useState<string | null>(null);
+  const [editIncomeForm, setEditIncomeForm] = useState(initialIncomeEdit);
+  const [editIncomeMacroId, setEditIncomeMacroId] = useState("");
+  const [editIncomeLegacyCategoryName, setEditIncomeLegacyCategoryName] =
     useState<string | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -233,6 +250,35 @@ export default function HomePage() {
     [editExpenseMacroId, expenseCategories],
   );
 
+  const incomeMacros = useMemo(() => {
+    const macros = new Map<string, { id: string; name: string }>();
+    incomeCategories.forEach((category) => {
+      macros.set(category.macroId, {
+        id: category.macroId,
+        name: category.macroName,
+      });
+    });
+    return [...macros.values()].sort((left, right) =>
+      left.name.localeCompare(right.name, "es"),
+    );
+  }, [incomeCategories]);
+
+  const incomeMicros = useMemo(
+    () =>
+      incomeCategories.filter(
+        (category) => category.macroId === incomeMacroId,
+      ),
+    [incomeCategories, incomeMacroId],
+  );
+
+  const editIncomeMicros = useMemo(
+    () =>
+      incomeCategories.filter(
+        (category) => category.macroId === editIncomeMacroId,
+      ),
+    [editIncomeMacroId, incomeCategories],
+  );
+
   function expenseCategoryLabel(
     category: Expense["category"],
   ): string {
@@ -243,6 +289,17 @@ export default function HomePage() {
     return hierarchicalCategory
       ? `${hierarchicalCategory.macroName} → ${hierarchicalCategory.name}`
       : category.name;
+  }
+
+  function incomeCategoryLabel(categoryId: string | null): string {
+    if (!categoryId) return "Sin categoría";
+    const hierarchicalCategory = incomeCategories.find(
+      (category) => category.id === categoryId,
+    );
+    if (hierarchicalCategory)
+      return `${hierarchicalCategory.macroName} → ${hierarchicalCategory.name}`;
+    return categories.find((category) => category.id === categoryId)?.name ??
+      "Sin categoría";
   }
 
   const topCategory = useMemo(() => {
@@ -279,6 +336,7 @@ export default function HomePage() {
         incomeResult,
         categoryResult,
         expenseCategoryResult,
+        incomeCategoryResult,
         memberResult,
         ruleResult,
         balanceResult,
@@ -289,6 +347,9 @@ export default function HomePage() {
         api<Category[]>("/api/categories"),
         api<HierarchicalCategory[]>(
           "/api/categories/hierarchical?movementType=EXPENSE",
+        ),
+        api<HierarchicalCategory[]>(
+          "/api/categories/hierarchical?movementType=INCOME",
         ),
         api<HouseholdMember[]>("/api/household-members"),
         api<SharingRule[]>("/api/sharing-rules"),
@@ -312,6 +373,9 @@ export default function HomePage() {
       if (expenseCategoryResult.status === "fulfilled")
         setExpenseCategories(expenseCategoryResult.value);
       else failed("expenseCategories");
+      if (incomeCategoryResult.status === "fulfilled")
+        setIncomeCategories(incomeCategoryResult.value);
+      else failed("incomeCategories");
       if (memberResult.status === "fulfilled") {
         setMembers(memberResult.value);
         const firstMemberId = memberResult.value[0]?.id ?? "";
@@ -492,6 +556,10 @@ export default function HomePage() {
 
   async function submitIncome(event: FormEvent) {
     event.preventDefault();
+    if (incomeMacroId !== "" && incomeForm.categoryId === "") {
+      setError("Selecciona una categoría específica para continuar.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -506,6 +574,7 @@ export default function HomePage() {
         }),
       });
       setIncomeForm(initialIncome);
+      setIncomeMacroId("");
       await refresh();
     } catch (cause) {
       setError(
@@ -516,6 +585,75 @@ export default function HomePage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function startIncomeEdit(income: Income) {
+    setEditingIncome(income.id);
+    setError("");
+    const hierarchicalCategory = income.categoryId
+      ? incomeCategories.find((category) => category.id === income.categoryId)
+      : undefined;
+    const legacyCategory = income.categoryId
+      ? categories.find((category) => category.id === income.categoryId)
+      : undefined;
+    setEditIncomeMacroId(hierarchicalCategory?.macroId ?? "");
+    setEditIncomeLegacyCategoryName(
+      hierarchicalCategory || !income.categoryId
+        ? null
+        : legacyCategory?.name ?? "Categoría histórica",
+    );
+    setEditIncomeForm({
+      memberId: income.memberId,
+      amount: String(income.amount),
+      incomeDate: income.incomeDate,
+      description: income.description,
+      categoryId: income.categoryId ?? "",
+    });
+  }
+
+  async function saveIncome(incomeId: string) {
+    if (
+      (editIncomeLegacyCategoryName !== null && editIncomeMacroId === "") ||
+      (editIncomeMacroId !== "" && editIncomeForm.categoryId === "")
+    ) {
+      setError("Selecciona una categoría específica válida antes de guardar.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api<Income>(`/api/incomes/${incomeId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          memberId: editIncomeForm.memberId,
+          amount: Number(editIncomeForm.amount),
+          incomeDate: editIncomeForm.incomeDate,
+          description: editIncomeForm.description,
+          categoryId: editIncomeForm.categoryId || null,
+        }),
+      });
+      setEditingIncome(null);
+      setEditIncomeForm(initialIncomeEdit);
+      setEditIncomeMacroId("");
+      setEditIncomeLegacyCategoryName(null);
+      await refresh();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "No fue posible actualizar el ingreso.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancelIncomeEdit() {
+    setEditingIncome(null);
+    setEditIncomeForm(initialIncomeEdit);
+    setEditIncomeMacroId("");
+    setEditIncomeLegacyCategoryName(null);
+    setError("");
   }
 
   async function removeIncome(incomeId: string) {
@@ -1208,6 +1346,9 @@ export default function HomePage() {
               {resourceErrors.categories && (
                 <p className="muted">{resourceErrors.categories}</p>
               )}
+              {resourceErrors.incomeCategories && (
+                <p className="muted">{resourceErrors.incomeCategories}</p>
+              )}
               {resourceErrors.members && (
                 <p className="muted">{resourceErrors.members}</p>
               )}
@@ -1253,15 +1394,39 @@ export default function HomePage() {
                 />
               </label>
               <label>
-                Categoría
+                Categoría principal
                 <select
+                  aria-label="Categoría principal del ingreso"
+                  value={incomeMacroId}
+                  onChange={(e) => {
+                    setIncomeMacroId(e.target.value);
+                    setIncomeForm({ ...incomeForm, categoryId: "" });
+                  }}
+                >
+                  <option value="">Sin categoría</option>
+                  {incomeMacros.map((macro) => (
+                    <option key={macro.id} value={macro.id}>
+                      {macro.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Categoría específica
+                <select
+                  aria-label="Categoría específica del ingreso"
+                  disabled={incomeMacroId === ""}
                   value={incomeForm.categoryId}
                   onChange={(e) =>
                     setIncomeForm({ ...incomeForm, categoryId: e.target.value })
                   }
                 >
-                  <option value="">Sin categoría</option>
-                  {categories.map((category) => (
+                  <option value="">
+                    {incomeMacroId === ""
+                      ? "Selecciona una categoría principal"
+                      : "Sin categoría específica"}
+                  </option>
+                  {incomeMicros.map((category) => (
                     <option key={category.id} value={category.id}>
                       {category.name}
                     </option>
@@ -1292,20 +1457,176 @@ export default function HomePage() {
               )}
               {incomes.map((income) => (
                 <div className="list-item" key={income.id}>
-                  <div>
-                    <strong>{income.description}</strong>
-                    <p>
-                      {income.incomeDate} · {money(income.amount)} ·{" "}
-                      {memberLabel(income.memberId)}
-                    </p>
-                  </div>
-                  <button
-                    className="danger"
-                    onClick={() => void removeIncome(income.id)}
-                    disabled={busy}
-                  >
-                    Eliminar
-                  </button>
+                  {editingIncome === income.id ? (
+                    <form
+                      className="form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void saveIncome(income.id);
+                      }}
+                    >
+                      <label>
+                        Integrante
+                        <select
+                          required
+                          value={editIncomeForm.memberId}
+                          onChange={(e) =>
+                            setEditIncomeForm({
+                              ...editIncomeForm,
+                              memberId: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">Seleccionar</option>
+                          {memberIds.map((id) => (
+                            <option key={id} value={id}>
+                              {memberLabel(id)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Monto
+                        <input
+                          required
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={editIncomeForm.amount}
+                          onChange={(e) =>
+                            setEditIncomeForm({
+                              ...editIncomeForm,
+                              amount: e.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Fecha
+                        <input
+                          required
+                          type="date"
+                          value={editIncomeForm.incomeDate}
+                          onChange={(e) =>
+                            setEditIncomeForm({
+                              ...editIncomeForm,
+                              incomeDate: e.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Categoría principal
+                        <select
+                          aria-label="Categoría principal del ingreso"
+                          value={editIncomeMacroId}
+                          onChange={(e) => {
+                            setEditIncomeMacroId(e.target.value);
+                            setEditIncomeLegacyCategoryName(null);
+                            setEditIncomeForm({
+                              ...editIncomeForm,
+                              categoryId: "",
+                            });
+                          }}
+                        >
+                          <option value="">
+                            {editIncomeLegacyCategoryName
+                              ? `Categoría histórica: ${editIncomeLegacyCategoryName}`
+                              : "Sin categoría"}
+                          </option>
+                          {incomeMacros.map((macro) => (
+                            <option key={macro.id} value={macro.id}>
+                              {macro.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Categoría específica
+                        <select
+                          aria-label="Categoría específica del ingreso"
+                          disabled={editIncomeMacroId === ""}
+                          value={editIncomeForm.categoryId}
+                          onChange={(e) =>
+                            setEditIncomeForm({
+                              ...editIncomeForm,
+                              categoryId: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">
+                            {editIncomeMacroId === ""
+                              ? "Selecciona una categoría principal"
+                              : "Sin categoría específica"}
+                          </option>
+                          {editIncomeMicros.map((category) => (
+                            <option key={category.id} value={category.id}>
+                              {category.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Descripción
+                        <textarea
+                          required
+                          value={editIncomeForm.description}
+                          onChange={(e) =>
+                            setEditIncomeForm({
+                              ...editIncomeForm,
+                              description: e.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <div className="actions">
+                        <button
+                          type="submit"
+                          disabled={
+                            busy ||
+                            (editIncomeLegacyCategoryName !== null &&
+                              editIncomeMacroId === "") ||
+                            (editIncomeMacroId !== "" &&
+                              editIncomeForm.categoryId === "")
+                          }
+                        >
+                          Guardar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelIncomeEdit}
+                          disabled={busy}
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <div>
+                        <strong>{income.description}</strong>
+                        <p>
+                          {income.incomeDate} · {money(income.amount)} ·{" "}
+                          {memberLabel(income.memberId)} · {incomeCategoryLabel(income.categoryId)}
+                        </p>
+                      </div>
+                      <div className="actions">
+                        <button
+                          onClick={() => startIncomeEdit(income)}
+                          disabled={busy}
+                        >
+                          Editar
+                        </button>
+                        <button
+                          className="danger"
+                          onClick={() => void removeIncome(income.id)}
+                          disabled={busy}
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ))}
             </article>

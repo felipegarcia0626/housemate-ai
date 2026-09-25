@@ -144,6 +144,7 @@ for (const endpoint of [
   "/api/incomes",
   "/api/categories",
   "/api/categories/hierarchical?movementType=EXPENSE",
+  "/api/categories/hierarchical?movementType=INCOME",
   "/api/household-members",
   "/api/agent",
   "/api/sharing-rules",
@@ -161,9 +162,14 @@ for (const marker of [
   "resourceErrors",
   "setCategories(categoryResult.value)",
   "setExpenseCategories(expenseCategoryResult.value)",
+  "setIncomeCategories(incomeCategoryResult.value)",
   'failed("expenseCategories")',
+  'failed("incomeCategories")',
   "expenseMacros",
   "expenseMicros",
+  "incomeMacros",
+  "incomeMicros",
+  "incomeCategoryLabel",
   'failed("categories")',
   'failed("members")',
   'failed("sharingRules")',
@@ -294,6 +300,57 @@ console.log(
   "PASS Expense creation UI initializes, edits, and submits optional description",
 );
 
+const incomeCreationFormStart = page.indexOf(
+  '<form className="panel form" onSubmit={submitIncome}>',
+);
+const incomeCreationFormEnd = page.indexOf("</form>", incomeCreationFormStart);
+if (
+  incomeCreationFormStart < 0 ||
+  incomeCreationFormEnd < incomeCreationFormStart
+)
+  throw new Error("Missing Income creation form");
+const incomeCreationFormSource = page.slice(
+  incomeCreationFormStart,
+  incomeCreationFormEnd,
+);
+for (const marker of [
+  "Categoría principal del ingreso",
+  "Categoría específica del ingreso",
+  "incomeMacros.map((macro)",
+  "incomeMicros.map((category)",
+  "setIncomeMacroId(e.target.value)",
+  'categoryId: ""',
+  'incomeMacroId === ""',
+]) {
+  if (!incomeCreationFormSource.includes(marker))
+    throw new Error(`Missing Income creation hierarchy marker: ${marker}`);
+}
+if (incomeCreationFormSource.includes("categories.map((category)"))
+  throw new Error("Income creation must not use the flat category list");
+
+const submitIncomeStart = page.indexOf("async function submitIncome");
+const submitIncomeEnd = page.indexOf(
+  "function startIncomeEdit",
+  submitIncomeStart,
+);
+if (submitIncomeStart < 0 || submitIncomeEnd < submitIncomeStart)
+  throw new Error("Missing Income creation submit handler");
+const submitIncomeSource = page.slice(submitIncomeStart, submitIncomeEnd);
+for (const marker of [
+  'method: "POST"',
+  '"/api/incomes"',
+  "body: JSON.stringify({",
+  "categoryId: incomeForm.categoryId || null",
+]) {
+  if (!submitIncomeSource.includes(marker))
+    throw new Error(`Missing Income creation payload marker: ${marker}`);
+}
+if (submitIncomeSource.includes("categoryId: incomeMacroId"))
+  throw new Error("Income creation must not submit a macro category ID");
+console.log(
+  "PASS Income creation UI loads typed hierarchy and submits only the selected micro",
+);
+
 for (const marker of [
   "expenseCategoryLabel(expense.category)",
   "Categoría histórica:",
@@ -387,6 +444,65 @@ if (!(patchCall >= 0 && patchCall < refreshCall && refreshCall < saveCatch))
   );
 console.log(
   "PASS Expense Update UI hydrates detail and sends the contractual fields",
+);
+
+for (const marker of [
+  "incomeCategoryLabel(income.categoryId)",
+  "startIncomeEdit(income)",
+  "editingIncome === income.id",
+  "saveIncome(income.id)",
+  "editIncomeMacroId",
+  "editIncomeMicros",
+  "editIncomeLegacyCategoryName",
+  "Categoría histórica:",
+]) {
+  if (!page.includes(marker))
+    throw new Error(`Missing hierarchical Income edit/list marker: ${marker}`);
+}
+
+const incomeEditStart = page.indexOf("function startIncomeEdit");
+const incomeSaveStart = page.indexOf("async function saveIncome");
+const incomeCancelStart = page.indexOf(
+  "function cancelIncomeEdit",
+  incomeSaveStart,
+);
+if (
+  incomeEditStart < 0 ||
+  incomeSaveStart < incomeEditStart ||
+  incomeCancelStart < incomeSaveStart
+)
+  throw new Error("Missing Income Update UI handlers");
+const incomeEditSource = page.slice(incomeEditStart, incomeSaveStart);
+for (const marker of [
+  "income.memberId",
+  "income.amount",
+  "income.incomeDate",
+  "income.description",
+  "income.categoryId",
+  "setEditIncomeMacroId",
+  "setEditIncomeLegacyCategoryName",
+]) {
+  if (!incomeEditSource.includes(marker))
+    throw new Error(`Missing Income edit hydration marker: ${marker}`);
+}
+const incomeSaveSource = page.slice(incomeSaveStart, incomeCancelStart);
+for (const marker of [
+  'method: "PATCH"',
+  "`/api/incomes/${incomeId}`",
+  "memberId: editIncomeForm.memberId",
+  "amount: Number(editIncomeForm.amount)",
+  "incomeDate: editIncomeForm.incomeDate",
+  "description: editIncomeForm.description",
+  "categoryId: editIncomeForm.categoryId || null",
+  "await refresh()",
+]) {
+  if (!incomeSaveSource.includes(marker))
+    throw new Error(`Missing Income Update payload marker: ${marker}`);
+}
+if (incomeSaveSource.includes("categoryId: editIncomeMacroId"))
+  throw new Error("Income Update must not submit a macro category ID");
+console.log(
+  "PASS Income UI renders hierarchical labels, hydrates edits, and sends contractual PATCH fields",
 );
 
 for (const forbidden of [
