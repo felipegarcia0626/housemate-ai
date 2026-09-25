@@ -33,6 +33,9 @@ const incomeCategoryB = "42000000-0000-4000-8000-000000000030";
 const expenseCategory = "42000000-0000-4000-8000-000000000024";
 const inactiveIncomeCategory = "42000000-0000-4000-8000-000000000025";
 const legacyCategory = "42000000-0000-4000-8000-000000000026";
+const inactiveIncomeMacroCategory = "42000000-0000-4000-8000-000000000035";
+const activeUnderInactiveIncomeMacro =
+  "42000000-0000-4000-8000-000000000036";
 const missingCategory = "42000000-0000-4000-8000-000000000022";
 const invalidHierarchyIncomeCategory = "42000000-0000-4000-8000-000000000028";
 const incomeFirst = "42000000-0000-4000-8000-000000000031";
@@ -129,6 +132,20 @@ const categories = [
     level: "MICRO",
     parent_id: incomeMacroCategory,
     is_active: false,
+  },
+  {
+    id: inactiveIncomeMacroCategory,
+    movement_type: "INCOME",
+    level: "MACRO",
+    parent_id: null,
+    is_active: false,
+  },
+  {
+    id: activeUnderInactiveIncomeMacro,
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: inactiveIncomeMacroCategory,
+    is_active: true,
   },
   {
     id: invalidHierarchyIncomeCategory,
@@ -594,6 +611,7 @@ async function main() {
       expenseCategory,
       incomeMacroCategory,
       inactiveIncomeCategory,
+      activeUnderInactiveIncomeMacro,
       legacyCategory,
       missingCategory,
       invalidHierarchyIncomeCategory,

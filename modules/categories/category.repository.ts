@@ -25,6 +25,7 @@ interface CategoryParentRow {
   id: string;
   movement_type: string | null;
   level: string | null;
+  is_active: boolean;
 }
 
 export class CategoryRepositoryError extends Error {
@@ -76,6 +77,7 @@ interface CategoryMacroRow {
   name: string;
   movement_type: string | null;
   level: string | null;
+  is_active: boolean;
 }
 
 function compareText(left: string, right: string): number {
@@ -116,7 +118,7 @@ export async function listHierarchicalCategories(
 
   const { data: parentData, error: parentError } = await getSupabaseAdminClient()
     .from("tb_categories")
-    .select("id,name,movement_type,level")
+    .select("id,name,movement_type,level,is_active")
     .in("id", parentIds)
     .eq("movement_type", movementType)
     .eq("level", "MACRO");
@@ -143,7 +145,9 @@ export async function listHierarchicalCategories(
 
       const parent = parents.get(row.parent_id.toLowerCase());
       return (
-        parent?.movement_type === movementType && parent.level === "MACRO"
+        parent?.movement_type === movementType &&
+        parent.level === "MACRO" &&
+        parent.is_active === true
       );
     })
     .map((row) => {
@@ -200,7 +204,7 @@ export async function getAvailableCategoryIds(
   if (parentIds.length > 0) {
     const { data: parentData, error: parentError } = await getSupabaseAdminClient()
       .from("tb_categories")
-      .select("id,movement_type,level")
+      .select("id,movement_type,level,is_active")
       .in("id", parentIds);
 
     if (parentError) {
@@ -226,7 +230,9 @@ export async function getAvailableCategoryIds(
 
         const parent = parents.get(row.parent_id.toLowerCase());
         return (
-          parent?.movement_type === movementType && parent.level === "MACRO"
+          parent?.movement_type === movementType &&
+          parent.level === "MACRO" &&
+          parent.is_active === true
         );
       })
       .map((row) => row.id.toLowerCase()),

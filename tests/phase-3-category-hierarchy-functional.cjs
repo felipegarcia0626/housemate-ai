@@ -24,6 +24,12 @@ const routeModule = path.join(
   "hierarchical",
   "route.ts",
 );
+const repositoryModule = path.join(
+  root,
+  "modules",
+  "categories",
+  "category.repository.ts",
+);
 
 const expenseMacro = "43000000-0000-4000-8000-000000000001";
 const expenseOtherMacro = "43000000-0000-4000-8000-000000000002";
@@ -32,8 +38,11 @@ const expenseDuplicateName = "43000000-0000-4000-8000-000000000012";
 const inactiveExpense = "43000000-0000-4000-8000-000000000013";
 const invalidExpense = "43000000-0000-4000-8000-000000000014";
 const inactiveMacro = "43000000-0000-4000-8000-000000000015";
+const inactiveMacroChild = "43000000-0000-4000-8000-000000000016";
 const incomeMacro = "43000000-0000-4000-8000-000000000021";
 const incomeMicro = "43000000-0000-4000-8000-000000000022";
+const inactiveIncomeMacro = "43000000-0000-4000-8000-000000000023";
+const inactiveIncomeMacroChild = "43000000-0000-4000-8000-000000000024";
 const legacyCategory = "43000000-0000-4000-8000-000000000031";
 
 const categories = [
@@ -94,6 +103,14 @@ const categories = [
     is_active: false,
   },
   {
+    id: inactiveMacroChild,
+    name: "Hija de macro inactiva",
+    movement_type: "EXPENSE",
+    level: "MICRO",
+    parent_id: inactiveMacro,
+    is_active: true,
+  },
+  {
     id: incomeMacro,
     name: "Ingresos",
     movement_type: "INCOME",
@@ -107,6 +124,22 @@ const categories = [
     movement_type: "INCOME",
     level: "MICRO",
     parent_id: incomeMacro,
+    is_active: true,
+  },
+  {
+    id: inactiveIncomeMacro,
+    name: "Ingreso inactivo",
+    movement_type: "INCOME",
+    level: "MACRO",
+    parent_id: null,
+    is_active: false,
+  },
+  {
+    id: inactiveIncomeMacroChild,
+    name: "Hija de ingreso inactivo",
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: inactiveIncomeMacro,
     is_active: true,
   },
   { id: legacyCategory, name: "Legacy" },
@@ -274,6 +307,7 @@ async function main() {
     createOrReuseMicroCategory,
     listHierarchicalCategories,
   } = loadTypeScriptModule(serviceModule);
+  const { getAvailableCategoryIds } = loadTypeScriptModule(repositoryModule);
 
   const expenses = await listHierarchicalCategories("EXPENSE");
   assert.deepEqual(
@@ -301,6 +335,7 @@ async function main() {
         expenseMacro,
         expenseOtherMacro,
         inactiveExpense,
+        inactiveMacroChild,
         invalidExpense,
         incomeMicro,
         legacyCategory,
@@ -317,6 +352,11 @@ async function main() {
       ),
     ),
   );
+  const availableExpenseIds = await getAvailableCategoryIds(
+    [expenseMicro, inactiveMacroChild, inactiveExpense],
+    "EXPENSE",
+  );
+  assert.deepEqual([...availableExpenseIds].sort(), [expenseMicro].sort());
   console.log("PASS hierarchical EXPENSE query filters and resolves paths");
 
   const incomes = await listHierarchicalCategories("INCOME");
@@ -336,6 +376,11 @@ async function main() {
   assert.ok(
     !incomes.some(({ id }) => id === expenseMicro || id === legacyCategory),
   );
+  const availableIncomeIds = await getAvailableCategoryIds(
+    [incomeMicro, inactiveIncomeMacroChild],
+    "INCOME",
+  );
+  assert.deepEqual([...availableIncomeIds].sort(), [incomeMicro].sort());
   console.log("PASS hierarchical INCOME query isolates movement type");
 
   const createdExpense = await createOrReuseMicroCategory({
