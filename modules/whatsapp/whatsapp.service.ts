@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   extractWhatsAppTextMessage,
   sendWhatsAppText,
@@ -38,6 +39,45 @@ function persistenceError(): WhatsAppDomainError {
     "PERSISTENCE_ERROR",
     "WhatsApp event could not be processed.",
   );
+}
+
+function safeDiagnosticCode(error: unknown): string | null {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("code" in error) ||
+    typeof (error as { code?: unknown }).code !== "string"
+  ) {
+    return null;
+  }
+
+  const code = (error as { code: string }).code;
+  return /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : null;
+}
+
+function safeDiagnosticErrorType(error: unknown): string {
+  const type =
+    error instanceof Error && error.constructor.name
+      ? error.constructor.name
+      : typeof error;
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(type) ? type : "UnknownError";
+}
+
+function logAgentProcessingDiagnostic(
+  error: unknown,
+  eventId: string,
+): void {
+  const diagnostic: Record<string, string> = {
+    stage: "agent_processing",
+    errorType: safeDiagnosticErrorType(error),
+    eventCorrelationId: createHash("sha256")
+      .update(eventId, "utf8")
+      .digest("hex")
+      .slice(0, 16),
+  };
+  const code = safeDiagnosticCode(error);
+  if (code) diagnostic.errorCode = code;
+  console.info("[whatsapp-agent-diagnostic]", diagnostic);
 }
 
 function isConfirmationOrRejection(text: string): boolean {
@@ -343,7 +383,12 @@ export async function processWhatsAppTextMessage(
       message: message.text,
       proposalId,
     });
-  } catch {
+  } catch (error) {
+    try {
+      logAgentProcessingDiagnostic(error, message.eventId);
+    } catch {
+      // Diagnostic logging must never replace the original Agent failure.
+    }
     throw new WhatsAppDomainError(
       "AGENT_ERROR",
       "The Agent could not process the message.",
