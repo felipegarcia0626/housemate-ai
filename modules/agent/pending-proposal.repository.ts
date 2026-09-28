@@ -9,16 +9,30 @@ import type {
   PendingExpenseProposal,
   PendingExpenseProposalPayload,
 } from "./agent.types";
+import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 
 type RepositoryErrorKind = "CONFLICT" | "PERSISTENCE";
 
 export class PendingProposalRepositoryError extends Error {
   readonly kind: RepositoryErrorKind;
+  readonly persistenceDiagnostic: PersistenceDiagnosticContext;
 
-  constructor(kind: RepositoryErrorKind, message: string) {
-    super(message);
+  constructor(
+    kind: RepositoryErrorKind,
+    message: string,
+    cause: unknown,
+    operation: string,
+    tableOrRpc: string,
+  ) {
+    super(message, { cause });
     this.name = "PendingProposalRepositoryError";
     this.kind = kind;
+    this.persistenceDiagnostic = {
+      repository: "pending_proposal_repository",
+      operation,
+      database: "supabase",
+      tableOrRpc,
+    };
   }
 }
 
@@ -45,6 +59,9 @@ function mapRow(row: PendingProposalRow): PendingProposal {
     throw new PendingProposalRepositoryError(
       "PERSISTENCE",
       "Pending proposal ownership is incomplete.",
+      null,
+      "map_pending_proposal",
+      "tb_pending_proposals",
     );
   }
   if (row.operation_type === "CREATE_INCOME") {
@@ -97,12 +114,31 @@ function persistenceError(
     return new PendingProposalRepositoryError(
       "CONFLICT",
       `Pending proposal conflict during ${operation}.`,
+      error,
+      operation,
+      pendingProposalTableOrRpc(operation),
     );
   }
   return new PendingProposalRepositoryError(
     "PERSISTENCE",
     `Pending proposal persistence failed during ${operation}.`,
+    error,
+    operation,
+    pendingProposalTableOrRpc(operation),
   );
+}
+
+function pendingProposalTableOrRpc(operation: string): string {
+  if (operation === "confirm expense") {
+    return "fn_confirm_pending_expense_consistent";
+  }
+  if (operation === "confirm income") {
+    return "fn_confirm_pending_income_consistent";
+  }
+  if (operation === "reject proposal") {
+    return "fn_reject_pending_proposal";
+  }
+  return "tb_pending_proposals";
 }
 
 export async function createPendingProposal(input: {

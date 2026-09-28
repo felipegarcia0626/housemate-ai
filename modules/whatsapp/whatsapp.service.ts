@@ -6,6 +6,7 @@ import {
 } from "@/infrastructure/whatsapp/whatsapp.adapter";
 import { processAgentMessage } from "@/modules/agent/conversation.service";
 import { findActiveProposalId } from "@/modules/agent/agent.service";
+import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 import { getCategoriesTool } from "@/modules/agent/tools/get-categories.tool";
 import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
 import type { AgentReadResult } from "@/modules/agent/agent.types";
@@ -63,6 +64,105 @@ function safeDiagnosticErrorType(error: unknown): string {
   return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(type) ? type : "UnknownError";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isPersistenceDiagnosticContext(
+  value: unknown,
+): value is PersistenceDiagnosticContext {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.repository === "string" &&
+    /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.repository) &&
+    typeof value.operation === "string" &&
+    /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.operation) &&
+    value.database === "supabase" &&
+    typeof value.tableOrRpc === "string" &&
+    /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(value.tableOrRpc)
+  );
+}
+
+function findPersistenceDiagnostic(
+  error: unknown,
+): PersistenceDiagnosticContext | null {
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && isRecord(current); depth += 1) {
+    if (visited.has(current)) return null;
+    visited.add(current);
+    if (isPersistenceDiagnosticContext(current.persistenceDiagnostic)) {
+      return current.persistenceDiagnostic;
+    }
+    current = current.cause;
+  }
+  return null;
+}
+
+function findPersistenceCause(error: unknown): Record<string, unknown> | null {
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  let fallback: Record<string, unknown> | null = null;
+  for (let depth = 0; depth < 5 && isRecord(current); depth += 1) {
+    if (visited.has(current)) return fallback;
+    visited.add(current);
+    if (
+      fallback === null &&
+      (typeof current.details === "string" || typeof current.hint === "string")
+    ) {
+      fallback = current;
+    }
+    const code = current.code;
+    if (
+      typeof code === "string" &&
+      (/^\d{5}$/.test(code) ||
+        (/^[A-Z][A-Z0-9_]{0,63}$/.test(code) &&
+          !["PERSISTENCE", "PERSISTENCE_ERROR", "CONFLICT"].includes(code)))
+    ) {
+      return current;
+    }
+    current = current.cause;
+  }
+  return fallback;
+}
+
+function classifyDiagnosticText(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) return "not_present";
+  const normalized = value.toLowerCase();
+  if (/duplicate|unique|already exists/.test(normalized)) return "duplicate_key";
+  if (/foreign key|referential|violates.*constraint.*foreign/.test(normalized)) {
+    return "foreign_key";
+  }
+  if (/not-null|not null|missing required/.test(normalized)) return "not_null";
+  if (/check constraint|check violation|violates.*check/.test(normalized)) {
+    return "check_violation";
+  }
+  if (/permission|not authorized|row-level security|rls/.test(normalized)) {
+    return "permission_denied";
+  }
+  if (/undefined table|relation .* does not exist/.test(normalized)) {
+    return "undefined_table";
+  }
+  if (/undefined column|column .* does not exist/.test(normalized)) {
+    return "undefined_column";
+  }
+  if (/serialization|could not serialize/.test(normalized)) {
+    return "serialization_failure";
+  }
+  if (/deadlock/.test(normalized)) return "deadlock";
+  if (/stale|version conflict|updated_at/.test(normalized)) return "stale_cas";
+  return "unknown_persistence_error";
+}
+
+function safePersistenceErrorCode(error: Record<string, unknown> | null): string {
+  if (!error || typeof error.code !== "string") {
+    return "unknown_persistence_error";
+  }
+  return /^\d{5}$/.test(error.code) || /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)
+    ? error.code
+    : "unknown_persistence_error";
+}
+
 function logAgentProcessingDiagnostic(
   error: unknown,
   eventId: string,
@@ -76,7 +176,21 @@ function logAgentProcessingDiagnostic(
       .slice(0, 16),
   };
   const code = safeDiagnosticCode(error);
-  if (code) diagnostic.errorCode = code;
+  const persistence = findPersistenceDiagnostic(error);
+  if (persistence) {
+    const persistenceCause = findPersistenceCause(error);
+    diagnostic.errorCode = safePersistenceErrorCode(persistenceCause);
+    diagnostic.errorDetailsCode = classifyDiagnosticText(
+      persistenceCause?.details,
+    );
+    diagnostic.errorHintCode = classifyDiagnosticText(persistenceCause?.hint);
+    diagnostic.repository = persistence.repository;
+    diagnostic.operation = persistence.operation;
+    diagnostic.database = persistence.database;
+    diagnostic.tableOrRpc = persistence.tableOrRpc;
+  } else if (code) {
+    diagnostic.errorCode = code;
+  }
   console.info("[whatsapp-agent-diagnostic]", diagnostic);
 }
 

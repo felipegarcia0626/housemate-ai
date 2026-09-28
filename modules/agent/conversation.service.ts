@@ -651,6 +651,7 @@ async function persistCategoryDraft(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The category clarification could not be persisted.",
+        error,
       );
     }
     throw error;
@@ -668,6 +669,7 @@ async function persistOperationDraft(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The operation clarification could not be persisted.",
+        error,
       );
     }
     throw error;
@@ -686,6 +688,7 @@ async function persistDetailsDraft(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The conversation details could not be persisted.",
+        error,
       );
     }
     throw error;
@@ -913,6 +916,7 @@ async function completeCategoryDraft(
     throw new AgentDomainError(
       "PERSISTENCE_ERROR",
       "The category clarification could not be completed.",
+      error,
     );
   }
 }
@@ -1209,6 +1213,7 @@ async function applyPendingProposalCorrection(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The pending proposal could not be updated.",
+        error,
       );
     }
     throw error;
@@ -1435,6 +1440,7 @@ async function updateDraftOrThrow(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The conversation draft could not be updated.",
+        error,
       );
     }
     throw error;
@@ -1465,6 +1471,7 @@ async function deleteDraftOrThrow(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The conversation draft could not be completed.",
+        error,
       );
     }
     throw error;
@@ -1482,6 +1489,7 @@ async function deleteDraftIfCurrent(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The conversation draft could not be completed.",
+        error,
       );
     }
     throw error;
@@ -1516,6 +1524,7 @@ async function compensatePendingProposalAfterDraftFailure(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The pending proposal could not be rolled back after draft cleanup failed.",
+        error,
       );
     }
     throw error;
@@ -1571,6 +1580,7 @@ async function restoreCategoryDraftAfterFailure(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The category draft could not be restored after proposal failure.",
+        error,
       );
     }
     throw error;
@@ -1798,6 +1808,7 @@ export async function processAgentMessage(
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The conversation draft could not be loaded.",
+        error,
       );
     }
     throw error;
@@ -1821,6 +1832,7 @@ export async function processAgentMessage(
         throw new AgentDomainError(
           "PERSISTENCE_ERROR",
           "The pending proposal could not be loaded.",
+          error,
         );
       }
       throw error;
@@ -2082,6 +2094,7 @@ export async function processAgentMessage(
             throw new AgentDomainError(
               "PERSISTENCE_ERROR",
               "The category clarification could not be updated.",
+              error,
             );
           }
           throw error;
@@ -2108,6 +2121,7 @@ export async function processAgentMessage(
           throw new AgentDomainError(
             "PERSISTENCE_ERROR",
             "The category clarification could not be updated.",
+            error,
           );
         }
         throw error;
@@ -2161,6 +2175,7 @@ export async function processAgentMessage(
           throw new AgentDomainError(
             "PERSISTENCE_ERROR",
             "The category clarification could not be updated.",
+            error,
           );
         }
         throw error;

@@ -149,8 +149,8 @@ export type AgentDomainErrorCode =
 export class AgentDomainError extends Error {
   readonly code: AgentDomainErrorCode;
 
-  constructor(code: AgentDomainErrorCode, message: string) {
-    super(message);
+  constructor(code: AgentDomainErrorCode, message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
     this.name = "AgentDomainError";
     this.code = code;
   }

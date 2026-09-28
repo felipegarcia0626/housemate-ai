@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 
 import { normalizeCategoryName } from "./category.types";
 import type {
@@ -36,6 +37,7 @@ export class CategoryRepositoryError extends Error {
     | "PARENT_INVALID"
     | "PARENT_INACTIVE"
     | "INACTIVE_CONFLICT";
+  readonly persistenceDiagnostic: PersistenceDiagnosticContext;
 
   constructor(
     cause: unknown,
@@ -46,10 +48,17 @@ export class CategoryRepositoryError extends Error {
       | "PARENT_INVALID"
       | "PARENT_INACTIVE"
       | "INACTIVE_CONFLICT" = "PERSISTENCE",
+    operation = "unknown",
   ) {
     super("Unable to access Categories.", { cause });
     this.name = "CategoryRepositoryError";
     this.code = code;
+    this.persistenceDiagnostic = {
+      repository: "category_repository",
+      operation,
+      database: "supabase",
+      tableOrRpc: "tb_categories",
+    };
   }
 }
 
@@ -59,7 +68,7 @@ export async function listCategories(): Promise<Category[]> {
     .select("id,name");
 
   if (error) {
-    throw new CategoryRepositoryError(error);
+    throw new CategoryRepositoryError(error, "PERSISTENCE", "list_categories");
   }
 
   return ((data ?? []) as CategoryRow[]).map((row) => ({
@@ -100,7 +109,11 @@ export async function listHierarchicalCategories(
     .order("id", { ascending: true });
 
   if (error) {
-    throw new CategoryRepositoryError(error);
+    throw new CategoryRepositoryError(
+      error,
+      "PERSISTENCE",
+      "list_hierarchical_categories",
+    );
   }
 
   const rows = (data ?? []) as HierarchicalCategoryRow[];
@@ -124,7 +137,11 @@ export async function listHierarchicalCategories(
     .eq("level", "MACRO");
 
   if (parentError) {
-    throw new CategoryRepositoryError(parentError);
+    throw new CategoryRepositoryError(
+      parentError,
+      "PERSISTENCE",
+      "list_hierarchical_categories_parent",
+    );
   }
 
   const parents = new Map<string, CategoryMacroRow>();
@@ -188,7 +205,11 @@ export async function getAvailableCategoryIds(
     .in("id", uniqueIds);
 
   if (error) {
-    throw new CategoryRepositoryError(error);
+    throw new CategoryRepositoryError(
+      error,
+      "PERSISTENCE",
+      "get_available_category_ids",
+    );
   }
 
   const rows = (data ?? []) as CategoryValidationRow[];
@@ -208,7 +229,11 @@ export async function getAvailableCategoryIds(
       .in("id", parentIds);
 
     if (parentError) {
-      throw new CategoryRepositoryError(parentError);
+      throw new CategoryRepositoryError(
+        parentError,
+        "PERSISTENCE",
+        "get_available_category_ids_parent",
+      );
     }
 
     for (const parent of (parentData ?? []) as CategoryParentRow[]) {
@@ -292,7 +317,13 @@ async function findMatchingMicro(
     .eq("level", "MICRO")
     .eq("parent_id", parentMacroId);
 
-  if (error) throw new CategoryRepositoryError(error);
+  if (error) {
+    throw new CategoryRepositoryError(
+      error,
+      "PERSISTENCE",
+      "find_matching_micro",
+    );
+  }
   const row = ((data ?? []) as CategoryCreationRow[]).find(
     (candidate) => normalizeCategoryName(candidate.name) === normalizedName,
   );
@@ -317,7 +348,13 @@ export async function createOrReuseMicroCategory(input: {
     .eq("id", input.parentMacroId)
     .maybeSingle();
 
-  if (parentError) throw new CategoryRepositoryError(parentError);
+  if (parentError) {
+    throw new CategoryRepositoryError(
+      parentError,
+      "PERSISTENCE",
+      "validate_parent_macro",
+    );
+  }
   if (!parentData) {
     throw new CategoryRepositoryError(null, "PARENT_NOT_FOUND");
   }
@@ -383,5 +420,9 @@ export async function createOrReuseMicroCategory(input: {
       return toHierarchicalCategory(concurrent, parentData.name);
     }
   }
-  throw new CategoryRepositoryError(error);
+  throw new CategoryRepositoryError(
+    error,
+    "PERSISTENCE",
+    "insert_micro_category",
+  );
 }

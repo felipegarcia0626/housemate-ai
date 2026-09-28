@@ -35,8 +35,8 @@ export type CategoryDomainErrorCode =
 export class CategoryDomainError extends Error {
   readonly code: CategoryDomainErrorCode;
 
-  constructor(code: CategoryDomainErrorCode, message: string) {
-    super(message);
+  constructor(code: CategoryDomainErrorCode, message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
     this.name = "CategoryDomainError";
     this.code = code;
   }

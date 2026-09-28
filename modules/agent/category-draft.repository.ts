@@ -7,6 +7,7 @@ import type {
   AgentCategoryDraftPayload,
 } from "./category-draft.types";
 import type { ExpenseSource } from "@/modules/expenses/expense.types";
+import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 
 type DraftRow = {
   id: string;
@@ -27,9 +28,17 @@ export type CategoryDraftDeleteResult =
   | "NOT_FOUND";
 
 export class CategoryDraftRepositoryError extends Error {
-  constructor(cause?: unknown) {
+  readonly persistenceDiagnostic: PersistenceDiagnosticContext;
+
+  constructor(cause: unknown, operation: string) {
     super("Unable to access the category draft.", { cause });
     this.name = "CategoryDraftRepositoryError";
+    this.persistenceDiagnostic = {
+      repository: "category_draft_repository",
+      operation,
+      database: "supabase",
+      tableOrRpc: "tb_agent_category_drafts",
+    };
   }
 }
 
@@ -260,12 +269,12 @@ function mapRow(row: DraftRow): AgentDraft {
 }
 
 function parseDraftRow(value: unknown): AgentDraft {
-  if (!isValidDraftRow(value)) handleError(value);
+  if (!isValidDraftRow(value)) handleError(value, "parse_draft_row");
   return mapRow(value);
 }
 
-function handleError(error: unknown): never {
-  throw new CategoryDraftRepositoryError();
+function handleError(error: unknown, operation: string): never {
+  throw new CategoryDraftRepositoryError(error, operation);
 }
 
 export async function createCategoryDraft(input: {
@@ -310,7 +319,7 @@ export async function createAgentDraft(input: {
     .select(columns)
     .single();
 
-  if (error || !data) handleError(error);
+  if (error || !data) handleError(error, "create_agent_draft");
   return parseDraftRow(data);
 }
 
@@ -329,7 +338,7 @@ export async function findActiveAgentDraft(
     .eq("source", source)
     .maybeSingle();
 
-  if (error) handleError(error);
+  if (error) handleError(error, "find_active_agent_draft");
   return data ? parseDraftRow(data) : null;
 }
 
@@ -349,7 +358,7 @@ export async function findCategoryDraft(
     .eq("status", "AWAITING_CATEGORY")
     .maybeSingle();
 
-  if (error) handleError(error);
+  if (error) handleError(error, "find_category_draft");
   return data ? (parseDraftRow(data) as AgentCategoryDraft) : null;
 }
 
@@ -375,7 +384,7 @@ export async function updateAgentDraft(
   if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
   const { data, error } = await query.select(columns).single();
 
-  if (error || !data) handleError(error);
+  if (error || !data) handleError(error, "update_agent_draft");
   return parseDraftRow(data);
 }
 
@@ -400,7 +409,7 @@ export async function updateCategoryDraft(
   if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
   const { data, error } = await query.select(columns).single();
 
-  if (error || !data) handleError(error);
+  if (error || !data) handleError(error, "update_category_draft");
   return parseDraftRow(data) as AgentCategoryDraft;
 }
 
@@ -424,7 +433,7 @@ export async function deleteAgentDraft(
     .select("id")
     .maybeSingle();
 
-  if (error) handleError(error);
+  if (error) handleError(error, "delete_agent_draft");
   if (data) return "DELETED";
 
   const { data: currentDraft, error: currentDraftError } =
@@ -438,7 +447,7 @@ export async function deleteAgentDraft(
       .eq("source", source)
       .maybeSingle();
 
-  if (currentDraftError) handleError(currentDraftError);
+  if (currentDraftError) handleError(currentDraftError, "find_agent_draft_after_delete");
   return currentDraft ? "VERSION_CONFLICT" : "NOT_FOUND";
 }
 

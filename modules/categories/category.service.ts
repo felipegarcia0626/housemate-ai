@@ -19,12 +19,14 @@ export async function listCategories(): Promise<Category[]> {
       throw new CategoryDomainError(
         "PERSISTENCE_ERROR",
         "Categories could not be loaded.",
+        error,
       );
     }
 
     throw new CategoryDomainError(
       "PERSISTENCE_ERROR",
       "Categories could not be loaded.",
+      error,
     );
   }
 }
@@ -39,12 +41,14 @@ export async function listHierarchicalCategories(
       throw new CategoryDomainError(
         "PERSISTENCE_ERROR",
         "Categories could not be loaded.",
+        error,
       );
     }
 
     throw new CategoryDomainError(
       "PERSISTENCE_ERROR",
       "Categories could not be loaded.",
+      error,
     );
   }
 }
@@ -61,6 +65,7 @@ export async function createOrReuseMicroCategory(input: {
       throw new CategoryDomainError(
         "PERSISTENCE_ERROR",
         "Categories could not be created.",
+        error,
       );
     }
 
@@ -68,35 +73,41 @@ export async function createOrReuseMicroCategory(input: {
       throw new CategoryDomainError(
         "VALIDATION_ERROR",
         "The category name is invalid.",
+        error,
       );
     }
     if (error.code === "PARENT_NOT_FOUND") {
       throw new CategoryDomainError(
         "VALIDATION_ERROR",
         "The category parent does not exist.",
+        error,
       );
     }
     if (error.code === "PARENT_INVALID") {
       throw new CategoryDomainError(
         "VALIDATION_ERROR",
         "The category parent is not a valid macro for this movement.",
+        error,
       );
     }
     if (error.code === "PARENT_INACTIVE") {
       throw new CategoryDomainError(
         "VALIDATION_ERROR",
         "The category parent is inactive.",
+        error,
       );
     }
     if (error.code === "INACTIVE_CONFLICT") {
       throw new CategoryDomainError(
         "CATEGORY_INACTIVE",
         "An inactive category with this name already exists.",
+        error,
       );
     }
     throw new CategoryDomainError(
       "PERSISTENCE_ERROR",
       "Categories could not be created.",
+      error,
     );
   }
 }
