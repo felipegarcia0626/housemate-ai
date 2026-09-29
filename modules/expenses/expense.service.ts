@@ -7,6 +7,7 @@ import {
   getHouseholdMemberIds,
   isHouseholdMemberInHousehold,
   listConfirmedExpenses,
+  listConfirmedExpensesCollection,
   ExpenseRepositoryError,
   type ExpenseCreatePersistenceInput,
   updateExpense as updateExpenseInRepository,
@@ -21,6 +22,7 @@ import {
   type ExpenseCreateSplitInput,
   type ExpenseDeleteResult,
   type ExpenseListItem,
+  type ExpenseListResult,
   type ExpenseReadFilters,
   type ExpenseServiceContext,
   type ExpenseUpdateInput,
@@ -472,4 +474,24 @@ export async function listExpenses(
   }
 
   return listConfirmedExpenses(context.householdId, filters);
+}
+
+export async function listExpensesCollection(
+  context: ExpenseServiceContext,
+  filters: ExpenseReadFilters = {},
+): Promise<ExpenseListResult> {
+  validateContext(context);
+  validateExpenseReadFilters(filters);
+
+  if (
+    filters.memberId !== undefined &&
+    !(await isHouseholdMemberInHousehold(context.householdId, filters.memberId))
+  ) {
+    throw new ExpenseDomainError(
+      "HOUSEHOLD_MISMATCH",
+      "The selected member does not belong to the current household.",
+    );
+  }
+
+  return listConfirmedExpensesCollection(context.householdId, filters);
 }

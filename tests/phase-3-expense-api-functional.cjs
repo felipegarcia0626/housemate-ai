@@ -42,8 +42,8 @@ const expensePending = "41000000-0000-4000-8000-000000000035";
 
 const households = [{ id: householdA }, { id: householdB }];
 const members = [
-  { id: memberA, household_id: householdA },
-  { id: memberB, household_id: householdB },
+  { id: memberA, household_id: householdA, display_name: "Member A" },
+  { id: memberB, household_id: householdB, display_name: "Member B" },
 ];
 const categories = [
   {
@@ -203,6 +203,13 @@ const baselineExpenses = [
 
 let expenses = [...baselineExpenses];
 let failedTable;
+let aggregateError;
+let aggregateValueOverride;
+let aggregateDataOverride;
+let aggregateNull = false;
+let fallbackMaxRows;
+let fallbackIncompleteFrom;
+let fallbackErrorFrom;
 let rpcError;
 let forceHydrationFailure = false;
 let nextCreatedExpense = 60;
@@ -214,9 +221,31 @@ class FakeQuery {
     this.filters = [];
   }
 
-  select(columns) {
+  select(columns, options) {
     this.columns = columns;
+    this.selectOptions = options;
     observedOperations.push({ type: "select", table: this.table, columns });
+    return this;
+  }
+
+  or(value) {
+    this.orFilter = value;
+    observedOperations.push({
+      type: "or",
+      table: this.table,
+      value,
+    });
+    return this;
+  }
+
+  range(from, to) {
+    this.rangeValues = { from, to };
+    observedOperations.push({
+      type: "range",
+      table: this.table,
+      from,
+      to,
+    });
     return this;
   }
 
@@ -256,6 +285,18 @@ class FakeQuery {
     return this;
   }
 
+  ilike(column, value) {
+    this.filters.push({ operator: "ilike", column, value });
+    observedOperations.push({
+      type: "filter",
+      table: this.table,
+      operator: "ilike",
+      column,
+      value,
+    });
+    return this;
+  }
+
   in(column, values) {
     this.filters.push({ operator: "in", column, value: values });
     observedOperations.push({
@@ -269,7 +310,7 @@ class FakeQuery {
   }
 
   order(column, options) {
-    this.ordering = { column, ...options };
+    this.orderings = [...(this.orderings ?? []), { column, ...options }];
     observedOperations.push({
       type: "order",
       table: this.table,
@@ -320,6 +361,14 @@ class FakeQuery {
         const current = row[column];
         if (operator === "eq") return current === value;
         if (operator === "in") return value.includes(current);
+        if (operator === "ilike") {
+          if (typeof current !== "string") return false;
+          const normalizedPattern = String(value)
+            .replace(/^%|%$/g, "")
+            .replace(/\\([\\%_*])/g, "$1")
+            .toLowerCase();
+          return current.toLowerCase().includes(normalizedPattern);
+        }
         const comparableCurrent =
           column === "expense_date" ? String(current) : Number(current);
         const comparableValue =
@@ -330,17 +379,85 @@ class FakeQuery {
       }),
     );
 
-    if (this.ordering) {
-      const direction = this.ordering.ascending ? 1 : -1;
-      rows = [...rows].sort(
-        (left, right) =>
-          String(left[this.ordering.column]).localeCompare(
-            String(right[this.ordering.column]),
-          ) * direction,
+    if (this.orFilter) {
+      const term = decodeSearchTerm(this.orFilter);
+      const normalized = term.toLowerCase();
+      const categoryIdsMatch = /category_id\.in\.\(([^)]*)\)/.exec(
+        this.orFilter,
+      );
+      const categoryIds = categoryIdsMatch
+        ? categoryIdsMatch[1].split(",").filter(Boolean)
+        : [];
+      rows = rows.filter((row) =>
+        [row.merchant, row.description].some(
+          (value) =>
+            typeof value === "string" && value.toLowerCase().includes(normalized),
+        ) || categoryIds.includes(row.category_id),
       );
     }
 
-    return { data: rows, error: null };
+    if (this.orderings) {
+      rows = [...rows].sort((left, right) => {
+        for (const ordering of this.orderings) {
+          const direction = ordering.ascending ? 1 : -1;
+          const leftValue = left[ordering.column];
+          const rightValue = right[ordering.column];
+          const result =
+            ordering.column === "total_amount" ||
+            typeof leftValue === "number" ||
+            typeof rightValue === "number"
+              ? Number(leftValue) - Number(rightValue)
+              : String(leftValue ?? "").localeCompare(String(rightValue ?? ""));
+          if (result !== 0) return result * direction;
+        }
+        return 0;
+      });
+    }
+
+    const count = this.selectOptions?.count === "exact" ? rows.length : null;
+    if (this.columns.includes(".sum()")) {
+      if (aggregateError) {
+        return { data: null, error: aggregateError };
+      }
+      if (aggregateNull) {
+        return { data: [{ sum: null }], error: null, count };
+      }
+      if (aggregateValueOverride !== undefined) {
+        return {
+          data: [{ sum: aggregateValueOverride }],
+          error: null,
+          count,
+        };
+      }
+      if (aggregateDataOverride !== undefined) {
+        return { data: aggregateDataOverride, error: null, count };
+      }
+      const sum = rows.reduce((total, row) => total + Number(row.total_amount), 0);
+      return { data: [{ sum }], error: null, count };
+    }
+
+    let pagedRows = this.rangeValues
+      ? rows.slice(this.rangeValues.from, this.rangeValues.to + 1)
+      : rows;
+    if (this.columns === "total_amount") {
+      const from = this.rangeValues?.from ?? 0;
+      if (fallbackErrorFrom === from) {
+        return {
+          data: null,
+          error: {
+            code: "42501",
+            message: "fallback block failed",
+          },
+        };
+      }
+      if (fallbackMaxRows !== undefined) {
+        pagedRows = pagedRows.slice(0, fallbackMaxRows);
+      }
+      if (this.rangeValues && fallbackIncompleteFrom === from) {
+        pagedRows = pagedRows.slice(0, Math.max(0, pagedRows.length - 1));
+      }
+    }
+    return { data: pagedRows, error: null, count };
   }
 
   maybeSingle() {
@@ -548,6 +665,30 @@ function hasOperation(expected) {
   );
 }
 
+function decodeSearchTerm(orFilter) {
+  const marker = 'merchant.ilike."';
+  const start = orFilter.indexOf(marker) + marker.length;
+  let encoded = "";
+  for (let index = start; index < orFilter.length; index += 1) {
+    const character = orFilter[index];
+    if (character === "\\") {
+      encoded += character;
+      if (index + 1 < orFilter.length) {
+        encoded += orFilter[index + 1];
+        index += 1;
+      }
+      continue;
+    }
+    if (character === '"') break;
+    encoded += character;
+  }
+
+  const pattern = encoded.replace(/\\\\/g, "\\").replace(/\\"/g, '"');
+  return pattern
+    .replace(/^%|%$/g, "")
+    .replace(/\\([\\%_*])/g, "$1");
+}
+
 async function main() {
   const previousHouseholdId = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
   const previousMemberId = process.env.HOUSEMATE_MVP_MEMBER_ID;
@@ -572,18 +713,45 @@ async function main() {
         {
           id: expenseNewer,
           merchant: "Market",
+          description: "Market expense",
           totalAmount: 100.5,
           expenseDate: "2026-08-10",
-          category: { id: categoryA, name: "Food" },
+          category: {
+            id: categoryA,
+            name: "Food",
+            parentId: expenseMacroCategory,
+            parentName: "Food macro",
+          },
+          paidBy: { memberId: memberA, name: "Member A" },
+          distributions: [
+            {
+              memberId: memberA,
+              memberName: "Member A",
+              percentage: 100,
+              amount: 100.5,
+            },
+          ],
         },
         {
           id: expenseOlder,
           merchant: "Cafe",
+          description: "Cafe expense",
           totalAmount: 50,
           expenseDate: "2026-08-05",
           category: null,
+          paidBy: { memberId: memberA, name: "Member A" },
+          distributions: [
+            {
+              memberId: memberA,
+              memberName: "Member A",
+              percentage: 100,
+              amount: 50,
+            },
+          ],
         },
       ],
+      pagination: { page: 1, pageSize: 25, total: 2, totalPages: 1 },
+      summary: { totalCount: 2, totalAmount: 150.5 },
     });
     assert.equal(typeof successBody.data[0].totalAmount, "number");
     assert.doesNotThrow(() => JSON.stringify(successBody));
@@ -607,14 +775,15 @@ async function main() {
       hasOperation({
         type: "select",
         table: "tb_expenses",
-        columns: "id,category_id,merchant,total_amount,expense_date",
+        columns:
+          "id,category_id,merchant,paid_by,description,total_amount,expense_date,created_at",
       }),
     );
     assert.equal(
       observedOperations.filter(
         ({ type, table }) => type === "from" && table === "tb_expenses",
       ).length,
-      1,
+      2,
     );
     console.log(
       "PASS GET without filters preserves domain order and exact public fields",
@@ -650,7 +819,10 @@ async function main() {
       `&memberId=${memberA}&merchant=Market&minAmount=100&maxAmount=101`;
     const combined = await route.GET(request(combinedQuery));
     assert.equal(combined.status, 200);
-    assert.equal((await readJson(combined)).data.length, 1);
+    const combinedBody = await readJson(combined);
+    assert.equal(combinedBody.data.length, 1);
+    assert.equal(combinedBody.summary.totalCount, 1);
+    assert.equal(combinedBody.summary.totalAmount, 100.5);
     for (const column of [
       "expense_date",
       "category_id",
@@ -662,10 +834,438 @@ async function main() {
     }
     console.log("PASS all seven filters can be combined");
 
+    const paginationFixtures = Array.from({ length: 27 }, (_, index) => ({
+      id: `41000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`,
+      household_id: householdA,
+      category_id: null,
+      merchant: `Pagination ${index}`,
+      total_amount:
+        index < 2 ? "75.00" : index < 4 ? "76.00" : String(200 + index),
+      expense_date: "2026-08-20",
+      status: "CONFIRMED",
+      created_by: memberA,
+      paid_by: memberA,
+      currency: "COP",
+      description: `Pagination description ${index}`,
+      source: "WEB",
+      created_at: `2026-08-20T12:${String(index < 4 ? (index < 2 ? index : 2) : index).padStart(2, "0")}:00.000Z`,
+      updated_at: "2026-08-20T12:00:00.000Z",
+    }));
+    const expensesBeforePagination = expenses;
+    const distributionsBeforePagination = distributions.length;
+    distributions.push(
+      {
+        id: "41000000-0000-4000-8000-000000000061",
+        expense_id: paginationFixtures[2].id,
+        household_member_id: memberA,
+        amount: "202.00",
+        percentage: "100.00",
+      },
+      {
+        id: "41000000-0000-4000-8000-000000000062",
+        expense_id: paginationFixtures[0].id,
+        household_member_id: memberA,
+        amount: "200.00",
+        percentage: "100.00",
+      },
+    );
+    expenses = [...baselineExpenses, ...paginationFixtures];
+    observedOperations.length = 0;
+    const firstPage = await route.GET(request("?page=1&pageSize=25"));
+    const firstPageBody = await readJson(firstPage);
+    assert.equal(firstPage.status, 200);
+    assert.equal(firstPageBody.pagination.page, 1);
+    assert.equal(firstPageBody.pagination.pageSize, 25);
+    assert.equal(firstPageBody.pagination.total, 29);
+    assert.equal(firstPageBody.pagination.totalPages, 2);
+    assert.equal(firstPageBody.summary.totalCount, 29);
+    assert.equal(firstPageBody.summary.totalAmount, 5397.5);
+    assert.equal(firstPageBody.data.length, 25);
+    assert.ok(hasOperation({ type: "range", table: "tb_expenses", from: 0, to: 24 }));
+    const firstPageIds = new Set(firstPageBody.data.map(({ id }) => id));
+    const firstPageDistributionQuery = observedOperations.find(
+      ({ type, table, operator }) =>
+        type === "filter" &&
+        table === "tb_expense_distributions" &&
+        operator === "in",
+    );
+    assert.ok(firstPageDistributionQuery);
+    assert.ok(
+      firstPageDistributionQuery.value.every((id) => firstPageIds.has(id)),
+    );
+    assert.equal(
+      observedOperations.filter(
+        ({ type, table }) =>
+          type === "from" && table === "tb_expense_distributions",
+      ).length,
+      1,
+    );
+    assert.equal(
+      observedOperations.filter(
+        ({ type, table }) =>
+          type === "from" && table === "tb_household_members",
+      ).length,
+      1,
+    );
+    assert.deepEqual(
+      firstPageBody.data.find(({ id }) => id === paginationFixtures[2].id).distributions,
+      [
+        {
+          memberId: memberA,
+          memberName: "Member A",
+          percentage: 100,
+          amount: 202,
+        },
+      ],
+    );
+
+    observedOperations.length = 0;
+    const secondPage = await route.GET(request("?page=2&pageSize=25"));
+    const secondPageBody = await readJson(secondPage);
+    assert.equal(secondPageBody.data.length, 4);
+    assert.equal(
+      secondPageBody.data.some(({ id }) =>
+        firstPageBody.data.some((first) => first.id === id),
+      ),
+      false,
+    );
+    assert.deepEqual(secondPageBody.pagination, {
+      page: 2,
+      pageSize: 25,
+      total: 29,
+      totalPages: 2,
+    });
+    assert.equal(secondPageBody.summary.totalAmount, 5397.5);
+    const secondPageIds = new Set(secondPageBody.data.map(({ id }) => id));
+    const secondPageDistributionQuery = observedOperations.find(
+      ({ type, table, operator }) =>
+        type === "filter" &&
+        table === "tb_expense_distributions" &&
+        operator === "in",
+    );
+    assert.ok(secondPageDistributionQuery);
+    assert.ok(
+      secondPageDistributionQuery.value.every((id) => secondPageIds.has(id)),
+    );
+    assert.equal(
+      observedOperations.filter(
+        ({ type, table }) =>
+          type === "from" && table === "tb_expense_distributions",
+      ).length,
+      1,
+    );
+    assert.equal(
+      observedOperations.filter(
+        ({ type, table }) =>
+          type === "from" && table === "tb_household_members",
+      ).length,
+      1,
+    );
+    assert.deepEqual(
+      secondPageBody.data.find(({ id }) => id === paginationFixtures[0].id)
+        .distributions,
+      [
+        {
+          memberId: memberA,
+          memberName: "Member A",
+          percentage: 100,
+          amount: 200,
+        },
+      ],
+    );
+    for (const pageSize of [50, 100]) {
+      const response = await route.GET(request(`?pageSize=${pageSize}`));
+      const body = await readJson(response);
+      assert.equal(body.pagination.pageSize, pageSize);
+      assert.equal(body.pagination.total, 29);
+      assert.equal(body.summary.totalAmount, 5397.5);
+    }
+
+    const amountTiePage = await route.GET(
+      request("?sort=amount&sortDirection=asc&pageSize=100"),
+    );
+    const amountTieIds = (await readJson(amountTiePage)).data.map(({ id }) => id);
+    assert.deepEqual(amountTieIds.slice(1, 3), [paginationFixtures[1].id, paginationFixtures[0].id]);
+    assert.deepEqual(amountTieIds.slice(3, 5), [paginationFixtures[2].id, paginationFixtures[3].id]);
+    const dateTiePage = await route.GET(request("?pageSize=100"));
+    const dateTieIds = (await readJson(dateTiePage)).data.map(({ id }) => id);
+    assert.deepEqual(dateTieIds.slice(0, 2), [paginationFixtures[26].id, paginationFixtures[25].id]);
+    expenses = expensesBeforePagination;
+    distributions.length = distributionsBeforePagination;
+    console.log("PASS server pagination, cross-page summary and stable tie-break ordering");
+
+    const searchMerchant = await route.GET(request("?search=Market"));
+    assert.deepEqual((await readJson(searchMerchant)).data.map(({ id }) => id), [
+      expenseNewer,
+    ]);
+    const searchDescription = await route.GET(request("?search=Cafe expense"));
+    assert.deepEqual((await readJson(searchDescription)).data.map(({ id }) => id), [
+      expenseOlder,
+    ]);
+    observedOperations.length = 0;
+    const searchMicro = await route.GET(request("?search=Food"));
+    assert.deepEqual((await readJson(searchMicro)).data.map(({ id }) => id), [
+      expenseNewer,
+    ]);
+    assert.ok(
+      hasOperation({
+        type: "filter",
+        table: "tb_categories",
+        operator: "ilike",
+        column: "name",
+      }),
+    );
+    const searchMacro = await route.GET(request("?search=Food macro"));
+    assert.deepEqual((await readJson(searchMacro)).data.map(({ id }) => id), [
+      expenseNewer,
+    ]);
+    const searchAndMacro = await route.GET(
+      request(`?search=Food&macroId=${expenseMacroCategory}`),
+    );
+    assert.deepEqual(
+      (await readJson(searchAndMacro)).data.map(({ id }) => id),
+      [expenseNewer],
+    );
+    const searchAndMicro = await route.GET(
+      request(`?search=Food&categoryId=${categoryA}`),
+    );
+    assert.deepEqual(
+      (await readJson(searchAndMicro)).data.map(({ id }) => id),
+      [expenseNewer],
+    );
+    const searchMissing = await route.GET(request("?search=does-not-exist"));
+    assert.deepEqual((await readJson(searchMissing)).data, []);
+    console.log("PASS DB-side partial search over merchant, description and categories");
+
+    const reservedSearchTerms = [":", ".", "%", "_", "*", ",", "(", ")", "\\", '"', "partial text"];
+    const expensesBeforeReservedSearch = expenses;
+    expenses = [
+      ...baselineExpenses,
+      ...reservedSearchTerms.map((term, index) => ({
+        ...baselineExpenses[0],
+        id: `42000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`,
+        merchant: `Reserved ${term} merchant`,
+        description: `Reserved ${term} description`,
+        created_at: `2026-08-15T12:${String(index).padStart(2, "0")}:00.000Z`,
+      })),
+    ];
+    for (const term of reservedSearchTerms) {
+      const response = await route.GET(
+        request(`?search=${encodeURIComponent(term)}`),
+      );
+      assert.equal(response.status, 200, `reserved search ${JSON.stringify(term)}`);
+      const body = await readJson(response);
+      assert.equal(body.data.length, 1, `reserved search ${JSON.stringify(term)}`);
+      assert.match(body.data[0].merchant, new RegExp(`Reserved ${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} merchant`));
+    }
+    const reservedOrFilter = observedOperations.find(({ type }) => type === "or");
+    assert.ok(reservedOrFilter?.value.includes('merchant.ilike."%'));
+    expenses = expensesBeforeReservedSearch;
+    console.log("PASS partial search preserves PostgREST-reserved characters");
+
+    aggregateError = { code: "PGRST123", message: "aggregates unavailable" };
+    observedOperations.length = 0;
+    const aggregateFallback = await route.GET(request());
+    assert.equal(aggregateFallback.status, 200);
+    assert.equal((await readJson(aggregateFallback)).summary.totalAmount, 150.5);
+    assert.ok(
+      observedOperations.some(
+        ({ type, columns }) => type === "select" && columns === "total_amount",
+      ),
+    );
+    assert.ok(
+      hasOperation({ type: "range", table: "tb_expenses", from: 0, to: 1 }),
+    );
+
+    const expensesBeforeSummaryFallback = expenses;
+    const largeSummaryFixtures = Array.from({ length: 2500 }, (_, index) => ({
+      ...baselineExpenses[0],
+      id: `43000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      merchant: `Summary ${index}`,
+      description: `Summary fallback ${index}`,
+      total_amount: "1.00",
+      created_at: "2026-08-15T12:00:00.000Z",
+    }));
+    expenses = largeSummaryFixtures;
+    fallbackMaxRows = 500;
+    observedOperations.length = 0;
+    const largeAggregateFallback = await route.GET(request());
+    assert.equal(largeAggregateFallback.status, 200);
+    assert.equal(
+      (await readJson(largeAggregateFallback)).summary.totalAmount,
+      2500,
+    );
+    assert.deepEqual(
+      observedOperations
+        .filter(({ type, columns }) => type === "select" && columns === "total_amount")
+        .length,
+      5,
+    );
+    assert.equal(
+      observedOperations.filter(
+        ({ type, column, ascending }) =>
+          type === "order" && column === "id" && ascending === true,
+      ).length,
+      6,
+    );
+    assert.deepEqual(
+      observedOperations
+        .filter(({ type, from }) => type === "range" && from !== undefined)
+        .map(({ from, to }) => [from, to]),
+      [
+        [0, 24],
+        [0, 499],
+        [500, 999],
+        [1000, 1499],
+        [1500, 1999],
+        [2000, 2499],
+      ],
+    );
+    fallbackMaxRows = undefined;
+    expenses = expensesBeforeSummaryFallback;
+
+    expenses = largeSummaryFixtures;
+    aggregateError = { code: "PGRST123", message: "aggregates unavailable" };
+    fallbackMaxRows = 500;
+    fallbackIncompleteFrom = 500;
+    await expectError(
+      route,
+      "",
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operación.",
+    );
+    fallbackIncompleteFrom = undefined;
+    fallbackErrorFrom = 500;
+    await expectError(
+      route,
+      "",
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operación.",
+    );
+    fallbackErrorFrom = undefined;
+    fallbackMaxRows = undefined;
+    expenses = expensesBeforeSummaryFallback;
+
+    aggregateError = { code: "42501", message: "aggregate denied" };
+    observedOperations.length = 0;
+    await expectError(
+      route,
+      "",
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operación.",
+    );
+    assert.equal(
+      observedOperations.some(
+        ({ type, columns }) => type === "select" && columns === "total_amount",
+      ),
+      false,
+    );
+    aggregateError = undefined;
+    aggregateValueOverride = "100000000000.00";
+    const safeLargeAggregate = await route.GET(request());
+    assert.equal(safeLargeAggregate.status, 200);
+    assert.equal((await readJson(safeLargeAggregate)).summary.totalAmount, 100000000000);
+    aggregateValueOverride = undefined;
+    aggregateValueOverride = "90071992547409.92";
+    await expectError(
+      route,
+      "",
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operación.",
+    );
+    aggregateValueOverride = undefined;
+
+    aggregateNull = true;
+    await expectError(
+      route,
+      "",
+      500,
+      "INTERNAL_ERROR",
+      "No fue posible completar la operación.",
+    );
+    aggregateNull = false;
+    for (const malformedAggregate of [
+      {},
+      [],
+      [{ unexpected: "value" }],
+      [{ sum: null }],
+      [{ sum: "not-a-number" }],
+      null,
+    ]) {
+      aggregateDataOverride = malformedAggregate;
+      await expectError(
+        route,
+        "",
+        500,
+        "INTERNAL_ERROR",
+        "No fue posible completar la operación.",
+      );
+    }
+    aggregateDataOverride = undefined;
+
+    expenses = [];
+    aggregateNull = true;
+    const nullAggregate = await route.GET(request());
+    assert.equal(nullAggregate.status, 200);
+    assert.equal((await readJson(nullAggregate)).summary.totalAmount, 0);
+    aggregateNull = false;
+    expenses = [...baselineExpenses];
+    console.log("PASS aggregate fallback, error propagation and safe monetary serialization");
+
+    const macro = await route.GET(request(`?macroId=${expenseMacroCategory}`));
+    const macroBody = await readJson(macro);
+    assert.deepEqual(macroBody.data.map(({ id }) => id), [expenseNewer]);
+    assert.equal(macroBody.summary.totalAmount, 100.5);
+    const compatible = await route.GET(
+      request(`?macroId=${expenseMacroCategory}&categoryId=${categoryA}`),
+    );
+    assert.deepEqual((await readJson(compatible)).data.map(({ id }) => id), [
+      expenseNewer,
+    ]);
+    const incompatible = await route.GET(
+      request(`?macroId=${expenseMacroCategory}&categoryId=${incomeCategory}`),
+    );
+    assert.deepEqual((await readJson(incompatible)).data, []);
+    console.log("PASS macro filtering enforces the category hierarchy");
+
+    const amountAscending = await route.GET(
+      request("?sort=amount&sortDirection=asc"),
+    );
+    assert.deepEqual((await readJson(amountAscending)).data.map(({ id }) => id), [
+      expenseOlder,
+      expenseNewer,
+    ]);
+    for (const query of [
+      "?page=0",
+      "?page=1.5",
+      "?pageSize=10",
+      "?sort=private_value",
+      "?sortDirection=sideways",
+      "?macroId=invalid",
+      "?search=",
+    ]) {
+      await expectError(
+        route,
+        query,
+        422,
+        "VALIDATION_ERROR",
+        "Solicitud inválida.",
+      );
+    }
+    console.log("PASS collection pagination, macro, search and sort validation");
+
     expenses = [];
     const empty = await route.GET(request());
     assert.equal(empty.status, 200);
-    assert.deepEqual(await readJson(empty), { data: [] });
+    assert.deepEqual(await readJson(empty), {
+      data: [],
+      pagination: { page: 1, pageSize: 25, total: 0, totalPages: 0 },
+      summary: { totalCount: 0, totalAmount: 0 },
+    });
     expenses = [...baselineExpenses];
     console.log("PASS empty result returns data array");
 
@@ -797,7 +1397,7 @@ async function main() {
         [
           serviceModule,
           {
-            listExpenses: async () => {
+            listExpensesCollection: async () => {
               throw unexpectedError;
             },
           },
@@ -819,7 +1419,9 @@ async function main() {
           type === "from" ||
           type === "select" ||
           type === "filter" ||
-          type === "order",
+          type === "order" ||
+          type === "or" ||
+          type === "range",
       ),
     );
     assert.ok(!observedOperations.some(({ type }) => type === "rpc"));

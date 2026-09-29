@@ -4,7 +4,7 @@ import {
 } from "@/app/api/_lib/http-context";
 import {
   createExpense,
-  listExpenses,
+  listExpensesCollection,
 } from "@/modules/expenses/expense.service";
 import {
   ExpenseCreatedNotHydratedError,
@@ -22,6 +22,12 @@ const ALLOWED_QUERY_PARAMETERS = new Set([
   "merchant",
   "minAmount",
   "maxAmount",
+  "page",
+  "pageSize",
+  "search",
+  "macroId",
+  "sort",
+  "sortDirection",
 ]);
 
 function errorResponse(
@@ -60,6 +66,8 @@ function buildFilters(searchParams: URLSearchParams): ExpenseReadFilters {
     "categoryId",
     "memberId",
     "merchant",
+    "search",
+    "macroId",
   ] as const;
 
   for (const name of stringFilters) {
@@ -70,14 +78,31 @@ function buildFilters(searchParams: URLSearchParams): ExpenseReadFilters {
     }
   }
 
+  const sort = searchParams.get("sort");
+  const sortDirection = searchParams.get("sortDirection");
+  if (sort !== null) {
+    filters.sort = sort as "date" | "amount" | "merchant";
+  }
+  if (sortDirection !== null) {
+    filters.sortDirection = sortDirection as "asc" | "desc";
+  }
+
   const minAmount = searchParams.get("minAmount");
   const maxAmount = searchParams.get("maxAmount");
+  const page = searchParams.get("page");
+  const pageSize = searchParams.get("pageSize");
 
   if (minAmount !== null) {
     filters.minAmount = Number(minAmount);
   }
   if (maxAmount !== null) {
     filters.maxAmount = Number(maxAmount);
+  }
+  if (page !== null) {
+    filters.page = Number(page);
+  }
+  if (pageSize !== null) {
+    filters.pageSize = Number(pageSize) as 25 | 50 | 100;
   }
 
   return filters;
@@ -240,9 +265,9 @@ export async function GET(request: Request): Promise<Response> {
 
   try {
     const { householdId } = await getConfiguredHttpHouseholdContext();
-    const expenses = await listExpenses({ householdId }, filters);
+    const result = await listExpensesCollection({ householdId }, filters);
 
-    return Response.json({ data: expenses });
+    return Response.json(result);
   } catch (error) {
     if (error instanceof ExpenseDomainError) {
       if (error.code === "VALIDATION_ERROR") {

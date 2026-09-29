@@ -7,6 +7,23 @@ export interface ExpenseCategory {
   name: string;
 }
 
+export interface ExpenseListCategory extends ExpenseCategory {
+  parentId?: string | null;
+  parentName?: string | null;
+}
+
+export interface ExpenseListMember {
+  memberId: string;
+  name: string;
+}
+
+export interface ExpenseListDistribution {
+  memberId: string;
+  memberName: string;
+  percentage: number;
+  amount: number;
+}
+
 export interface ExpenseItem {
   id: string;
   expenseId: string;
@@ -48,10 +65,19 @@ export interface Expense {
 export interface ExpenseListItem {
   id: string;
   merchant: string | null;
+  description?: string | null;
   totalAmount: number;
   expenseDate: string;
-  category: ExpenseCategory | null;
+  category: ExpenseListCategory | null;
+  paidBy?: ExpenseListMember | null;
+  distributions?: ExpenseListDistribution[];
 }
+
+export type ExpenseListSort = "date" | "amount" | "merchant";
+
+export type ExpenseSortDirection = "asc" | "desc";
+
+export type ExpensePageSize = 25 | 50 | 100;
 
 export interface ExpenseReadFilters {
   from?: string;
@@ -61,6 +87,30 @@ export interface ExpenseReadFilters {
   merchant?: string;
   minAmount?: number;
   maxAmount?: number;
+  page?: number;
+  pageSize?: ExpensePageSize;
+  search?: string;
+  macroId?: string;
+  sort?: ExpenseListSort;
+  sortDirection?: ExpenseSortDirection;
+}
+
+export interface ExpenseListPagination {
+  page: number;
+  pageSize: ExpensePageSize;
+  total: number;
+  totalPages: number;
+}
+
+export interface ExpenseListSummary {
+  totalCount: number;
+  totalAmount: number;
+}
+
+export interface ExpenseListResult {
+  data: ExpenseListItem[];
+  pagination: ExpenseListPagination;
+  summary: ExpenseListSummary;
 }
 
 export interface ExpenseCreateItemInput {

@@ -9,6 +9,9 @@ import {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const EXPENSE_PAGE_SIZES = new Set([25, 50, 100]);
+const EXPENSE_LIST_SORTS = new Set(["date", "amount", "merchant"]);
+const EXPENSE_SORT_DIRECTIONS = new Set(["asc", "desc"]);
 
 function validationError(message: string): never {
   throw new ExpenseDomainError("VALIDATION_ERROR", message);
@@ -493,5 +496,43 @@ export function validateExpenseReadFilters(filters: ExpenseReadFilters): void {
     filters.minAmount > filters.maxAmount
   ) {
     validationError("minAmount must be less than or equal to maxAmount.");
+  }
+
+  if (
+    filters.page !== undefined &&
+    (!Number.isInteger(filters.page) || filters.page < 1)
+  ) {
+    validationError("page must be an integer greater than or equal to 1.");
+  }
+
+  if (
+    filters.pageSize !== undefined &&
+    !EXPENSE_PAGE_SIZES.has(filters.pageSize)
+  ) {
+    validationError("pageSize must be one of 25, 50 or 100.");
+  }
+
+  if (filters.search !== undefined) {
+    if (filters.search.trim().length === 0 || filters.search.length > 100) {
+      validationError("search must be a non-empty value of at most 100 characters.");
+    }
+  }
+
+  if (filters.macroId !== undefined) {
+    validateUuid(filters.macroId, "macroId");
+  }
+
+  if (
+    filters.sort !== undefined &&
+    !EXPENSE_LIST_SORTS.has(filters.sort)
+  ) {
+    validationError("sort is not supported.");
+  }
+
+  if (
+    filters.sortDirection !== undefined &&
+    !EXPENSE_SORT_DIRECTIONS.has(filters.sortDirection)
+  ) {
+    validationError("sortDirection must be asc or desc.");
   }
 }

@@ -342,6 +342,8 @@ merchant
 minAmount
 maxAmount
 
+search (busca en comercio, descripción, nombre de microcategoría y nombre de macrocategoría)
+
 Ejemplo:
 
 GET /api/expenses?from=2026-08-01&to=2026-08-07&categoryId=food
@@ -353,17 +355,34 @@ Response:
 {
 "id": "expense-id",
 "merchant": "D1",
+"description": "Compra de mercado",
 "totalAmount": 185000,
 "expenseDate": "2026-08-07",
 "category": {
 "id": "food",
-"name": "Alimentación"
+"name": "Supermercado",
+"parentId": "food-macro",
+"parentName": "Alimentación"
+},
+"paidBy": {
+"memberId": "member-id",
+"name": "Felipe"
+},
+"distributions": [
+{
+"memberId": "member-id",
+"memberName": "Felipe",
+"percentage": 100,
+"amount": 185000
+}
 }
 }
 ]
 }
 
 Los resultados deberán corresponder únicamente a gastos `CONFIRMED` del hogar asociado al contexto actual. `CANCELLED` no aparecerá en este listado financiero.
+
+`paidBy` y `distributions` se enriquecen únicamente para los gastos de la página solicitada. `totalCount` y `totalAmount` representan todos los gastos que cumplen los filtros aplicados.
 
 `memberId` filtra los gastos en los que el integrante participa mediante `ExpenseDistribution.household_member_id`. No filtra por creador ni por pagador. Esta misma semántica será utilizada por `get_expenses` y el servicio de gastos.
 
