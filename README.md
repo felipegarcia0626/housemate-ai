@@ -370,16 +370,20 @@ E2E_SUPABASE_URL
 E2E_SUPABASE_SERVICE_ROLE_KEY
 E2E_ALLOWED_SUPABASE_PROJECT_REF
 E2E_HOUSEHOLD_ID
+E2E_ALLOWED_HOUSEHOLD_ID
 E2E_MEMBER_ID
 ```
 
 `E2E_SUPABASE_URL` debe ser la URL estándar de un proyecto Supabase aislado y
 su project ref debe coincidir exactamente con
 `E2E_ALLOWED_SUPABASE_PROJECT_REF`. El household debe existir en ese proyecto
-y tener al menos dos integrantes. Playwright prepara dos gastos temporales,
-ejecuta el smoke test y los elimina al finalizar. Si falta una variable, el
-proyecto no está explícitamente autorizado o el household coincide con el MVP,
-el runner se detiene antes de crear o eliminar fixtures.
+y tener al menos dos integrantes. `E2E_ALLOWED_HOUSEHOLD_ID` debe coincidir
+exactamente con `E2E_HOUSEHOLD_ID`; el household E2E debe ser diferente de
+cualquier household utilizado por datos reales o MVP. El proyecto Supabase
+puede ser el mismo proyecto de la aplicación, pero los tests solo crean y
+eliminan datos dentro del household explícitamente autorizado. Si falta una
+variable, el proyecto no está autorizado o los households no coinciden, el
+runner se detiene antes de crear o eliminar fixtures.
 
 Instala el navegador una vez y ejecuta:
 

@@ -25,6 +25,7 @@ function readE2EContext() {
     supabaseUrl: requiredEnvironment("E2E_SUPABASE_URL"),
     serviceRoleKey: requiredEnvironment("E2E_SUPABASE_SERVICE_ROLE_KEY"),
     householdId: requiredEnvironment("E2E_HOUSEHOLD_ID"),
+    allowedHouseholdId: requiredEnvironment("E2E_ALLOWED_HOUSEHOLD_ID"),
     memberId: requiredEnvironment("E2E_MEMBER_ID"),
     allowedProjectRef: requiredEnvironment("E2E_ALLOWED_SUPABASE_PROJECT_REF"),
   };
@@ -62,10 +63,17 @@ function readE2EContext() {
 
   for (const [name, value] of [
     ["E2E_HOUSEHOLD_ID", context.householdId],
+    ["E2E_ALLOWED_HOUSEHOLD_ID", context.allowedHouseholdId],
     ["E2E_MEMBER_ID", context.memberId],
   ]) {
     if (!UUID_PATTERN.test(value))
       throw new Error(`${name} must be a valid UUID.`);
+  }
+
+  if (context.householdId !== context.allowedHouseholdId) {
+    throw new Error(
+      "E2E household does not match E2E_ALLOWED_HOUSEHOLD_ID.",
+    );
   }
 
   if (
