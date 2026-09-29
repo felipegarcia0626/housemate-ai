@@ -213,8 +213,9 @@ class FakeQuery {
     this.orders = [];
   }
 
-  select(columns) {
+  select(columns, options = {}) {
     this.selectedColumns = columns;
+    this.countRequested = options.count === "exact";
     return this;
   }
 
@@ -249,6 +250,16 @@ class FakeQuery {
     return this;
   }
 
+  ilike(column, value) {
+    this.filters.push({ operator: "ilike", column, value });
+    return this;
+  }
+
+  range(from, to) {
+    this.rangeValues = { from, to };
+    return this;
+  }
+
   in(column, values) {
     this.filters.push({ operator: "in", column, value: values });
     return this;
@@ -277,7 +288,16 @@ class FakeQuery {
         if (operator === "eq") return row[column] === value;
         if (operator === "in") return value.includes(row[column]);
         if (operator === "gte") return row[column] >= value;
-        return row[column] <= value;
+        if (operator === "lte") return row[column] <= value;
+        if (operator === "ilike") {
+          const search = String(value)
+            .replace(/^%/, "")
+            .replace(/%$/, "")
+            .replace(/\\([%_\\])/g, "$1")
+            .toLowerCase();
+          return String(row[column] ?? "").toLowerCase().includes(search);
+        }
+        return false;
       }),
     );
 
@@ -290,7 +310,12 @@ class FakeQuery {
       return 0;
     });
 
-    return rows;
+    const total = rows.length;
+    if (this.rangeValues) {
+      rows = rows.slice(this.rangeValues.from, this.rangeValues.to + 1);
+    }
+
+    return { rows, total };
   }
 
   async maybeSingle() {
@@ -301,7 +326,7 @@ class FakeQuery {
         return { data: null, error: { message: "sensitive delete detail" } };
       }
 
-      const row = this.apply()[0] ?? null;
+      const row = this.apply().rows[0] ?? null;
       if (row === null) {
         return { data: null, error: null };
       }
@@ -322,7 +347,7 @@ class FakeQuery {
         return { data: null, error: { message: "sensitive update detail" } };
       }
 
-      const row = this.apply()[0] ?? null;
+      const row = this.apply().rows[0] ?? null;
       if (row === null) {
         return { data: null, error: null };
       }
@@ -333,8 +358,8 @@ class FakeQuery {
       return { data: row, error: null };
     }
 
-    const rows = this.apply();
-    return { data: rows[0] ?? null, error: null };
+    const result = this.apply();
+    return { data: result.rows[0] ?? null, error: null };
   }
 
   async single() {
@@ -397,7 +422,14 @@ class FakeQuery {
     const result =
       readFailed || sharingFailed || balanceFailed
         ? { data: null, error: { message: "sensitive database detail" } }
-        : { data: this.apply(), error: null };
+        : (() => {
+            const applied = this.apply();
+            return {
+              data: applied.rows,
+              error: null,
+              count: this.countRequested ? applied.total : null,
+            };
+          })();
     return Promise.resolve(result).then(resolve, reject);
   }
 }
@@ -502,6 +534,12 @@ async function main() {
   });
   assert.equal(result.incomes[2].categoryId, null);
   assert.equal(result.summary.totalIncome, 1023.06);
+  assert.deepEqual(result.pagination, {
+    page: 1,
+    pageSize: 25,
+    total: 3,
+    totalPages: 1,
+  });
   console.log("PASS real Service mapping, deterministic order and totalIncome");
 
   const filtered = await listIncomes(
@@ -518,12 +556,22 @@ async function main() {
     ["26000000-0000-4000-8000-000000000042"],
   );
   assert.equal(filtered.summary.totalIncome, 20.02);
+  assert.deepEqual(filtered.pagination, {
+    page: 1,
+    pageSize: 25,
+    total: 1,
+    totalPages: 1,
+  });
 
   const empty = await listIncomes(
     { householdId: householdA },
     { memberId: memberAWithoutIncome },
   );
-  assert.deepEqual(empty, { incomes: [], summary: { totalIncome: 0 } });
+  assert.deepEqual(empty, {
+    incomes: [],
+    pagination: { page: 1, pageSize: 25, total: 0, totalPages: 0 },
+    summary: { totalIncome: 0 },
+  });
   console.log("PASS real Service combined filters and empty summary");
 
   await expectDomainError(

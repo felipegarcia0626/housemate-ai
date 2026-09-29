@@ -1,5 +1,8 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
-import { getAvailableCategoryIds } from "@/modules/categories/category.repository";
+import {
+  getAvailableCategoryIds,
+  listHierarchicalCategories,
+} from "@/modules/categories/category.repository";
 
 import type {
   Income,
@@ -9,6 +12,7 @@ import type {
 } from "./income.types";
 
 type DatabaseNumeric = number | string;
+const INCOME_SUMMARY_BATCH_SIZE = 500;
 
 interface IncomeRow {
   id: string;
@@ -49,6 +53,12 @@ export interface IncomeUpdatePersistenceInput extends IncomeUpdateInput {
 export interface IncomeDeletePersistenceInput {
   householdId: string;
   incomeId: string;
+}
+
+export interface IncomeListRepositoryResult {
+  incomes: Income[];
+  allMatchingAmounts: DatabaseNumeric[];
+  total: number;
 }
 
 function getIncomePersistenceErrorKind(
@@ -249,41 +259,154 @@ export async function deleteIncome(
   return data.id;
 }
 
+function escapeIlikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+async function getIncomeMicroCategoryIdsForMacro(
+  macroId: string,
+): Promise<string[]> {
+  const categories = await listHierarchicalCategories("INCOME");
+  return categories
+    .filter((category) => category.macroId.toLowerCase() === macroId.toLowerCase())
+    .map((category) => category.id);
+}
+
 export async function listIncomes(
   householdId: string,
   filters: IncomeListFilters,
-): Promise<Income[]> {
-  let query = getSupabaseAdminClient()
-    .from("tb_incomes")
-    .select(
-      "id,household_id,created_by,member_id,amount,income_date,description,category_id,created_at,updated_at",
-    )
-    .eq("household_id", householdId)
-    .order("income_date", { ascending: false })
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: true });
-
-  if (filters.from !== undefined) {
-    query = query.gte("income_date", filters.from);
-  }
-
-  if (filters.to !== undefined) {
-    query = query.lte("income_date", filters.to);
-  }
-
-  if (filters.memberId !== undefined) {
-    query = query.eq("member_id", filters.memberId);
-  }
-
+): Promise<IncomeListRepositoryResult> {
+  const page = filters.page ?? 1;
+  const pageSize = filters.pageSize ?? 25;
+  const sortBy = filters.sortBy ?? "incomeDate";
+  const sortOrder = filters.sortOrder ?? "desc";
+  const sortColumn =
+    sortBy === "amount"
+      ? "amount"
+      : sortBy === "description"
+        ? "description"
+        : "income_date";
+  const ascending = sortOrder === "asc";
+  const macroCategoryIds =
+    filters.macroId === undefined
+      ? undefined
+      : await getIncomeMicroCategoryIdsForMacro(filters.macroId);
   if (filters.categoryId !== undefined) {
-    query = query.eq("category_id", filters.categoryId);
+    const availableCategoryIds = await getAvailableCategoryIds(
+      [filters.categoryId],
+      "INCOME",
+    );
+    if (!availableCategoryIds.has(filters.categoryId.toLowerCase())) {
+      return { incomes: [], allMatchingAmounts: [], total: 0 };
+    }
   }
 
-  const { data, error } = await query;
-
-  if (error) {
-    throw new IncomeRepositoryError("TECHNICAL", error);
+  if (macroCategoryIds !== undefined && macroCategoryIds.length === 0) {
+    return { incomes: [], allMatchingAmounts: [], total: 0 };
   }
 
-  return ((data ?? []) as IncomeRow[]).map(mapIncome);
+  const buildQuery = (columns: string) => {
+    let query = getSupabaseAdminClient()
+      .from("tb_incomes")
+      .select(columns, { count: "exact" })
+      .eq("household_id", householdId);
+
+    if (filters.from !== undefined) {
+      query = query.gte("income_date", filters.from);
+    }
+
+    if (filters.to !== undefined) {
+      query = query.lte("income_date", filters.to);
+    }
+
+    if (filters.memberId !== undefined) {
+      query = query.eq("member_id", filters.memberId);
+    }
+
+    if (filters.categoryId !== undefined) {
+      query = query.eq("category_id", filters.categoryId);
+    }
+
+    if (macroCategoryIds !== undefined) {
+      query = query.in("category_id", macroCategoryIds);
+    }
+
+    if (filters.search !== undefined) {
+      query = query.ilike(
+        "description",
+        `%${escapeIlikePattern(filters.search)}%`,
+      );
+    }
+
+    return query;
+  };
+
+  const pageQuery = buildQuery(
+    "id,household_id,created_by,member_id,amount,income_date,description,category_id,created_at,updated_at",
+  )
+    .order(sortColumn, { ascending })
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: true })
+    .range((page - 1) * pageSize, page * pageSize - 1);
+  const pageResult = await pageQuery;
+
+  if (pageResult.error) {
+    throw new IncomeRepositoryError("TECHNICAL", pageResult.error);
+  }
+
+  if (
+    pageResult.count === null ||
+    !Number.isInteger(pageResult.count) ||
+    pageResult.count < 0
+  ) {
+    throw new IncomeRepositoryError(
+      "TECHNICAL",
+      new Error("Income collection count is unavailable."),
+    );
+  }
+
+  const allMatchingAmounts: DatabaseNumeric[] = [];
+  for (
+    let from = 0;
+    from < pageResult.count;
+    from += INCOME_SUMMARY_BATCH_SIZE
+  ) {
+    const to = Math.min(
+      from + INCOME_SUMMARY_BATCH_SIZE,
+      pageResult.count,
+    ) - 1;
+    const summaryResult = await buildQuery("amount")
+      .order("id", { ascending: true })
+      .range(from, to);
+
+    if (summaryResult.error) {
+      throw new IncomeRepositoryError("TECHNICAL", summaryResult.error);
+    }
+
+    const rows = (summaryResult.data ?? []) as unknown as Array<{
+      amount: DatabaseNumeric;
+    }>;
+    const expectedBatchCount = to - from + 1;
+    if (rows.length !== expectedBatchCount) {
+      throw new IncomeRepositoryError(
+        "TECHNICAL",
+        new Error("Income summary returned an incomplete batch."),
+      );
+    }
+
+    allMatchingAmounts.push(...rows.map((row) => row.amount));
+  }
+
+  if (allMatchingAmounts.length !== pageResult.count) {
+    throw new IncomeRepositoryError(
+      "TECHNICAL",
+      new Error("Income summary returned an incomplete result."),
+    );
+  }
+
+  return {
+    incomes: ((pageResult.data ?? []) as unknown as IncomeRow[]).map(mapIncome),
+    allMatchingAmounts,
+    total: pageResult.count,
+  };
 }

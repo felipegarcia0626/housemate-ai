@@ -8,6 +8,9 @@ import {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const INCOME_PAGE_SIZES = new Set([25, 50, 100]);
+const INCOME_LIST_SORTS = new Set(["incomeDate", "amount", "description"]);
+const INCOME_SORT_ORDERS = new Set(["asc", "desc"]);
 
 function validationError(message: string): never {
   throw new IncomeDomainError("VALIDATION_ERROR", message);
@@ -59,6 +62,46 @@ export function validateIncomeListFilters(filters: IncomeListFilters): void {
 
   if (filters.categoryId !== undefined) {
     validateIncomeUuid(filters.categoryId, "categoryId");
+  }
+
+  if (filters.macroId !== undefined) {
+    validateIncomeUuid(filters.macroId, "macroId");
+  }
+
+  if (
+    filters.page !== undefined &&
+    (!Number.isInteger(filters.page) || filters.page < 1)
+  ) {
+    validationError("page must be an integer greater than or equal to 1.");
+  }
+
+  if (
+    filters.pageSize !== undefined &&
+    !INCOME_PAGE_SIZES.has(filters.pageSize)
+  ) {
+    validationError("pageSize must be one of 25, 50 or 100.");
+  }
+
+  if (filters.search !== undefined) {
+    if (filters.search.trim().length === 0 || filters.search.length > 100) {
+      validationError(
+        "search must be a non-empty value of at most 100 characters.",
+      );
+    }
+  }
+
+  if (
+    filters.sortBy !== undefined &&
+    !INCOME_LIST_SORTS.has(filters.sortBy)
+  ) {
+    validationError("sortBy is not supported.");
+  }
+
+  if (
+    filters.sortOrder !== undefined &&
+    !INCOME_SORT_ORDERS.has(filters.sortOrder)
+  ) {
+    validationError("sortOrder must be asc or desc.");
   }
 }
 

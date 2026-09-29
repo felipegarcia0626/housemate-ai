@@ -30,6 +30,8 @@ const missingMember = "42000000-0000-4000-8000-000000000013";
 const categoryA = "42000000-0000-4000-8000-000000000021";
 const incomeMacroCategory = "42000000-0000-4000-8000-000000000023";
 const incomeCategoryB = "42000000-0000-4000-8000-000000000030";
+const incomeMacroCategoryB = "42000000-0000-4000-8000-000000000037";
+const incomeCategoryC = "42000000-0000-4000-8000-000000000038";
 const expenseCategory = "42000000-0000-4000-8000-000000000024";
 const inactiveIncomeCategory = "42000000-0000-4000-8000-000000000025";
 const legacyCategory = "42000000-0000-4000-8000-000000000026";
@@ -113,7 +115,21 @@ const categories = [
     is_active: true,
   },
   {
+    id: incomeCategoryC,
+    movement_type: "INCOME",
+    level: "MICRO",
+    parent_id: incomeMacroCategoryB,
+    is_active: true,
+  },
+  {
     id: incomeMacroCategory,
+    movement_type: "INCOME",
+    level: "MACRO",
+    parent_id: null,
+    is_active: true,
+  },
+  {
+    id: incomeMacroCategoryB,
     movement_type: "INCOME",
     level: "MACRO",
     parent_id: null,
@@ -169,8 +185,9 @@ class FakeQuery {
     this.orderings = [];
   }
 
-  select(columns) {
+  select(columns, options = {}) {
     this.columns = columns;
+    this.countRequested = options.count === "exact";
     observedOperations.push({ type: "select", table: this.table, columns });
     return this;
   }
@@ -219,6 +236,29 @@ class FakeQuery {
       operator: "lte",
       column,
       value,
+    });
+    return this;
+  }
+
+  ilike(column, value) {
+    this.filters.push({ operator: "ilike", column, value });
+    observedOperations.push({
+      type: "filter",
+      table: this.table,
+      operator: "ilike",
+      column,
+      value,
+    });
+    return this;
+  }
+
+  range(from, to) {
+    this.rangeValues = { from, to };
+    observedOperations.push({
+      type: "range",
+      table: this.table,
+      from,
+      to,
     });
     return this;
   }
@@ -303,6 +343,14 @@ class FakeQuery {
         if (operator === "in") return value.includes(current);
         if (operator === "gte") return String(current) >= String(value);
         if (operator === "lte") return String(current) <= String(value);
+        if (operator === "ilike") {
+          const search = String(value)
+            .replace(/^%/, "")
+            .replace(/%$/, "")
+            .replace(/\\([%_\\])/g, "$1")
+            .toLowerCase();
+          return String(current ?? "").toLowerCase().includes(search);
+        }
         return false;
       }),
     );
@@ -320,9 +368,12 @@ class FakeQuery {
     if (this.orderings.length > 0) {
       rows = [...rows].sort((left, right) => {
         for (const ordering of this.orderings) {
-          const comparison = String(left[ordering.column]).localeCompare(
-            String(right[ordering.column]),
-          );
+          const leftValue = left[ordering.column];
+          const rightValue = right[ordering.column];
+          const comparison =
+            ordering.column === "amount"
+              ? Number(leftValue) - Number(rightValue)
+              : String(leftValue).localeCompare(String(rightValue));
           if (comparison !== 0)
             return ordering.ascending ? comparison : -comparison;
         }
@@ -330,7 +381,12 @@ class FakeQuery {
       });
     }
 
-    return { data: rows, error: null };
+    const total = rows.length;
+    if (this.rangeValues) {
+      rows = rows.slice(this.rangeValues.from, this.rangeValues.to + 1);
+    }
+
+    return { data: rows, error: null, count: this.countRequested ? total : null };
   }
 
   maybeSingle() {
@@ -1086,6 +1142,12 @@ async function main() {
           categoryId: null,
         },
       ],
+      pagination: {
+        page: 1,
+        pageSize: 25,
+        total: 3,
+        totalPages: 1,
+      },
       summary: { totalIncome: 60.06 },
     });
     for (const item of successBody.data) {
@@ -1113,21 +1175,22 @@ async function main() {
         value: householdA,
       }),
     );
-    assert.deepEqual(
-      observedOperations
-        .filter(({ type, table }) => type === "order" && table === "tb_incomes")
-        .map(({ column, ascending }) => ({ column, ascending })),
-      [
-        { column: "income_date", ascending: false },
-        { column: "created_at", ascending: false },
-        { column: "id", ascending: true },
-      ],
-    );
+    const incomeOrderings = observedOperations
+      .filter(({ type, table }) => type === "order" && table === "tb_incomes")
+      .map(({ column, ascending }) => ({ column, ascending }));
+    assert.deepEqual(incomeOrderings.slice(0, 3), [
+      { column: "income_date", ascending: false },
+      { column: "created_at", ascending: false },
+      { column: "id", ascending: true },
+    ]);
+    assert.deepEqual(incomeOrderings.slice(3), [
+      { column: "id", ascending: true },
+    ]);
     assert.equal(
       observedOperations.filter(
         ({ type, table }) => type === "from" && table === "tb_incomes",
       ).length,
-      1,
+      2,
     );
     console.log("PASS GET returns exact DTO, summary and deterministic order");
     console.log("PASS household isolation and numeric JSON serialization");
@@ -1163,11 +1226,161 @@ async function main() {
     }
     console.log("PASS all four filters can be combined");
 
+    const paginatedFixtures = Array.from({ length: 26 }, (_, index) => ({
+      id: `42000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`,
+      household_id: householdA,
+      created_by: memberA,
+      member_id: memberA,
+      amount: String(100 + index),
+      income_date: "2026-09-01",
+      description: `Paginated ${index}`,
+      category_id: index === 0 ? incomeCategoryC : categoryA,
+      created_at: `2026-09-${String(1 + (index % 9)).padStart(2, "0")}T12:00:00+00:00`,
+      updated_at: `2026-09-${String(1 + (index % 9)).padStart(2, "0")}T12:00:00+00:00`,
+    }));
+    incomes = [...baselineIncomes, ...paginatedFixtures];
+    const expectedPaginatedTotal = incomes
+      .filter(({ household_id }) => household_id === householdA)
+      .reduce((total, income) => total + Number(income.amount), 0);
+
+    const pageOne = await route.GET(request("?page=1&pageSize=25"));
+    const pageOneBody = await readJson(pageOne);
+    assert.equal(pageOne.status, 200);
+    assert.equal(pageOneBody.data.length, 25);
+    assert.deepEqual(pageOneBody.pagination, {
+      page: 1,
+      pageSize: 25,
+      total: 29,
+      totalPages: 2,
+    });
+    assert.equal(pageOneBody.summary.totalIncome, expectedPaginatedTotal);
+
+    const pageTwo = await route.GET(request("?page=2&pageSize=25"));
+    const pageTwoBody = await readJson(pageTwo);
+    assert.equal(pageTwo.status, 200);
+    assert.equal(pageTwoBody.data.length, 4);
+    assert.equal(
+      new Set(pageOneBody.data.map(({ id }) => id)).size,
+      25,
+    );
+    assert.equal(
+      pageTwoBody.data.some(({ id }) =>
+        pageOneBody.data.some((pageOneItem) => pageOneItem.id === id),
+      ),
+      false,
+    );
+    assert.ok(
+      observedOperations.some(
+        ({ type, table, from, to }) =>
+          type === "range" && table === "tb_incomes" && from === 0 && to === 24,
+      ),
+    );
+    assert.ok(
+      observedOperations.some(
+        ({ type, table, from, to }) =>
+          type === "range" && table === "tb_incomes" && from === 25 && to === 49,
+      ),
+    );
+
+    const searchResult = await route.GET(request("?search=Paginated%205"));
+    const searchBody = await readJson(searchResult);
+    assert.equal(searchBody.data.length, 1);
+    assert.equal(searchBody.data[0].description, "Paginated 5");
+    assert.ok(
+      observedOperations.some(
+        ({ type, operator, column, value }) =>
+          type === "filter" &&
+          operator === "ilike" &&
+          column === "description" &&
+          value === "%Paginated 5%",
+      ),
+    );
+    const literalWildcardSearch = await route.GET(request("?search=%25"));
+    const literalWildcardBody = await readJson(literalWildcardSearch);
+    assert.equal(literalWildcardSearch.status, 200);
+    assert.deepEqual(literalWildcardBody.data, []);
+
+    const macroResult = await route.GET(
+      request(`?macroId=${incomeMacroCategoryB}`),
+    );
+    const macroBody = await readJson(macroResult);
+    assert.deepEqual(macroBody.data.map(({ categoryId }) => categoryId), [
+      incomeCategoryC,
+    ]);
+    assert.equal(macroBody.summary.totalIncome, 100);
+
+    for (const categoryId of [
+      expenseCategory,
+      inactiveIncomeCategory,
+      activeUnderInactiveIncomeMacro,
+      invalidHierarchyIncomeCategory,
+    ]) {
+      const categoryFiltered = await route.GET(
+        request(`?categoryId=${categoryId}`),
+      );
+      const categoryFilteredBody = await readJson(categoryFiltered);
+      assert.equal(categoryFiltered.status, 200);
+      assert.deepEqual(categoryFilteredBody.data, []);
+      assert.equal(categoryFilteredBody.summary.totalIncome, 0);
+    }
+
+    for (const [sortBy, sortOrder] of [
+      ["incomeDate", "asc"],
+      ["incomeDate", "desc"],
+      ["amount", "asc"],
+      ["amount", "desc"],
+      ["description", "asc"],
+      ["description", "desc"],
+    ]) {
+      const sorted = await route.GET(
+        request(`?sortBy=${sortBy}&sortOrder=${sortOrder}&pageSize=25`),
+      );
+      const sortedBody = await readJson(sorted);
+      assert.equal(sorted.status, 200);
+      assert.equal(sortedBody.data.length, 25);
+      assert.ok(
+        observedOperations.some(
+          ({ type, table, column, ascending }) =>
+            type === "order" &&
+            table === "tb_incomes" &&
+            column ===
+              (sortBy === "incomeDate"
+                ? "income_date"
+                : sortBy === "amount"
+                  ? "amount"
+                  : "description") &&
+            ascending === (sortOrder === "asc"),
+        ),
+      );
+    }
+
+    for (const query of [
+      "?sortBy=household_id",
+      "?sortOrder=sideways",
+      "?page=0",
+      "?pageSize=10",
+      "?search=",
+      "?macroId=invalid",
+    ]) {
+      await expectError(
+        route,
+        query,
+        422,
+        "VALIDATION_ERROR",
+        "Solicitud inválida.",
+      );
+    }
+    incomes = [...baselineIncomes];
+    console.log(
+      "PASS Income pagination, description search, macro filtering, sorting and validation",
+    );
+
     incomes = [];
     const empty = await route.GET(request());
     assert.equal(empty.status, 200);
     assert.deepEqual(await readJson(empty), {
       data: [],
+      pagination: { page: 1, pageSize: 25, total: 0, totalPages: 0 },
       summary: { totalIncome: 0 },
     });
     incomes = [...baselineIncomes];
@@ -1178,6 +1391,7 @@ async function main() {
     assert.equal(missingCategoryResponse.status, 200);
     assert.deepEqual(await readJson(missingCategoryResponse), {
       data: [],
+      pagination: { page: 1, pageSize: 25, total: 0, totalPages: 0 },
       summary: { totalIncome: 0 },
     });
     console.log(
@@ -1324,7 +1538,8 @@ async function main() {
           type === "from" ||
           type === "select" ||
           type === "filter" ||
-          type === "order",
+          type === "order" ||
+          type === "range",
       ),
     );
     assert.ok(!observedOperations.some(({ type }) => type === "rpc"));
@@ -1341,8 +1556,8 @@ async function main() {
         [
           repositoryModule,
           {
-            listIncomes: async () =>
-              Array.from({ length: 91 }, () => ({
+            listIncomes: async () => {
+              const incomes = Array.from({ length: 91 }, () => ({
                 id: incomeFirst,
                 householdId: householdA,
                 createdBy: memberA,
@@ -1353,7 +1568,13 @@ async function main() {
                 categoryId: null,
                 createdAt: "2026-08-01T00:00:00+00:00",
                 updatedAt: "2026-08-01T00:00:00+00",
-              })),
+              }));
+              return {
+                incomes,
+                allMatchingAmounts: incomes.map(({ amount }) => amount),
+                total: incomes.length,
+              };
+            },
             isIncomeMemberInHousehold: async () => true,
             isIncomeCategoryAvailable: async () => true,
             IncomeRepositoryError: class IncomeRepositoryError extends Error {

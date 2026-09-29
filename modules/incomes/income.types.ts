@@ -16,7 +16,19 @@ export interface IncomeListFilters {
   to?: string;
   memberId?: string;
   categoryId?: string;
+  macroId?: string;
+  search?: string;
+  page?: number;
+  pageSize?: IncomePageSize;
+  sortBy?: IncomeListSort;
+  sortOrder?: IncomeSortOrder;
 }
+
+export type IncomePageSize = 25 | 50 | 100;
+
+export type IncomeListSort = "incomeDate" | "amount" | "description";
+
+export type IncomeSortOrder = "asc" | "desc";
 
 export interface IncomeCreateInput {
   memberId: string;
@@ -44,6 +56,12 @@ export interface IncomeCreateServiceContext extends IncomeServiceContext {
 
 export interface IncomeListResult {
   incomes: Income[];
+  pagination: {
+    page: number;
+    pageSize: IncomePageSize;
+    total: number;
+    totalPages: number;
+  };
   summary: {
     totalIncome: number;
   };

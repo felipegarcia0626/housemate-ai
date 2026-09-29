@@ -15,6 +15,12 @@ const ALLOWED_QUERY_PARAMETERS = new Set([
   "to",
   "memberId",
   "categoryId",
+  "macroId",
+  "search",
+  "page",
+  "pageSize",
+  "sortBy",
+  "sortOrder",
 ]);
 
 function errorResponse(
@@ -58,7 +64,14 @@ function hasUnsupportedOrRepeatedParameters(
 
 function buildFilters(searchParams: URLSearchParams): IncomeListFilters {
   const filters: IncomeListFilters = {};
-  const filterNames = ["from", "to", "memberId", "categoryId"] as const;
+  const filterNames = [
+    "from",
+    "to",
+    "memberId",
+    "categoryId",
+    "macroId",
+    "search",
+  ] as const;
 
   for (const name of filterNames) {
     const value = searchParams.get(name);
@@ -67,6 +80,18 @@ function buildFilters(searchParams: URLSearchParams): IncomeListFilters {
       filters[name] = value;
     }
   }
+
+  const page = searchParams.get("page");
+  const pageSize = searchParams.get("pageSize");
+  const sortBy = searchParams.get("sortBy");
+  const sortOrder = searchParams.get("sortOrder");
+
+  if (page !== null) filters.page = Number(page);
+  if (pageSize !== null) filters.pageSize = Number(pageSize) as 25 | 50 | 100;
+  if (sortBy !== null) {
+    filters.sortBy = sortBy as "incomeDate" | "amount" | "description";
+  }
+  if (sortOrder !== null) filters.sortOrder = sortOrder as "asc" | "desc";
 
   return filters;
 }
@@ -93,7 +118,11 @@ export async function GET(request: Request): Promise<Response> {
       categoryId: income.categoryId,
     }));
 
-    return Response.json({ data, summary: result.summary });
+    return Response.json({
+      data,
+      pagination: result.pagination,
+      summary: result.summary,
+    });
   } catch (error) {
     if (error instanceof IncomeDomainError) {
       if (error.code === "VALIDATION_ERROR") {

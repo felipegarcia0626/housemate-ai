@@ -573,7 +573,24 @@ from
 to
 memberId
 categoryId
+macroId
+search
+page
+pageSize
+sortBy
+sortOrder
 ```
+
+`categoryId` representa una categoría `MICRO` de tipo `INCOME` y `macroId`
+representa su categoría padre `MACRO`. Ambos filtros respetan únicamente
+categorías activas con una relación jerárquica válida del mismo tipo de
+movimiento. `search` busca únicamente sobre `description`.
+
+`page` es un entero mayor o igual que 1 y `pageSize` admite únicamente `25`,
+`50` o `100`. Si se omiten, sus valores predeterminados son `1` y `25`.
+`sortBy` admite únicamente `incomeDate`, `amount` o `description`, y
+`sortOrder` únicamente `asc` o `desc`. La respuesta utiliza un orden
+secundario por `created_at` y un desempate determinista por `id`.
 
 Response:
 
@@ -590,13 +607,23 @@ Response:
       "categoryId": null
     }
   ],
+  "pagination": {
+    "page": 1,
+    "pageSize": 25,
+    "total": 1,
+    "totalPages": 1
+  },
   "summary": {
     "totalIncome": 1500000
   }
 }
 ```
 
-El backend realizará la suma y devolverá exclusivamente ingresos del hogar asociado al contexto actual.
+El backend realizará la suma sobre todo el conjunto que cumple los filtros,
+no únicamente sobre la página solicitada, y devolverá exclusivamente ingresos
+del hogar asociado al contexto actual. `data` contiene únicamente los registros
+de la página solicitada. `pagination.total` representa el total filtrado y
+`pagination.totalPages` el número de páginas resultante.
 
 Cada elemento de `data` expone únicamente `id`, `createdBy`, `memberId`, `amount`, `incomeDate`, `description` y `categoryId`. `categoryId` es `string | null`; este listado no hidrata un objeto de categoría. `householdId`, `createdAt` y `updatedAt` no forman parte del contrato público. `amount` y `summary.totalIncome` se serializan como números JSON.
 

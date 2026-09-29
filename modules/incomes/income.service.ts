@@ -285,15 +285,31 @@ export async function listIncomes(
       );
     }
 
-    const incomes = await listIncomesInRepository(context.householdId, filters);
-    const totalIncomeCents = incomes.reduce(
-      (total, income, index) =>
-        total + toIncomeAmountCents(income.amount, `incomes[${index}].amount`),
+    const result = await listIncomesInRepository(
+      context.householdId,
+      filters,
+    );
+    const totalIncomeCents = result.allMatchingAmounts.reduce(
+      (total, amount, index) =>
+        total +
+        toIncomeAmountCents(
+          typeof amount === "number" ? amount : Number(amount),
+          `incomes[${index}].amount`,
+        ),
       BigInt(0),
     );
 
+    const page = filters.page ?? 1;
+    const pageSize = filters.pageSize ?? 25;
+
     return {
-      incomes,
+      incomes: result.incomes,
+      pagination: {
+        page,
+        pageSize,
+        total: result.total,
+        totalPages: result.total === 0 ? 0 : Math.ceil(result.total / pageSize),
+      },
       summary: {
         totalIncome: centsToSafeNumber(totalIncomeCents, "totalIncome"),
       },
