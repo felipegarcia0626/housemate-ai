@@ -1,3 +1,7 @@
+const { loadEnvConfig } = require("@next/env");
+
+loadEnvConfig(process.cwd());
+
 const { defineConfig } = require("@playwright/test");
 const { readE2EContext } = require("./tests/e2e/fixtures.cjs");
 
