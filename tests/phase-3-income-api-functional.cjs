@@ -1200,6 +1200,8 @@ async function main() {
       ["?to=2026-08-03", "lte", "income_date", "2026-08-03"],
       [`?memberId=${memberA}`, "eq", "member_id", memberA],
       [`?categoryId=${categoryA}`, "eq", "category_id", categoryA],
+      ["?minAmount=20", "gte", "amount", 20],
+      ["?maxAmount=20.02", "lte", "amount", 20.02],
     ];
     for (const [query, operator, column, value] of filterCases) {
       observedOperations.length = 0;
@@ -1225,6 +1227,41 @@ async function main() {
       assert.ok(hasOperation({ type: "filter", column }), column);
     }
     console.log("PASS all four filters can be combined");
+
+    incomes = [...baselineIncomes];
+    const amountRange = await route.GET(
+      request("?minAmount=20&maxAmount=30.03"),
+    );
+    assert.equal(amountRange.status, 200);
+    const amountRangeBody = await readJson(amountRange);
+    assert.deepEqual(
+      amountRangeBody.data.map(({ id }) => id),
+      [incomeSecond, incomeThird],
+    );
+    assert.deepEqual(amountRangeBody.pagination, {
+      page: 1,
+      pageSize: 25,
+      total: 2,
+      totalPages: 1,
+    });
+    assert.equal(amountRangeBody.summary.totalIncome, 50.05);
+    assert.ok(
+      hasOperation({
+        type: "filter",
+        operator: "gte",
+        column: "amount",
+        value: 20,
+      }),
+    );
+    assert.ok(
+      hasOperation({
+        type: "filter",
+        operator: "lte",
+        column: "amount",
+        value: 30.03,
+      }),
+    );
+    console.log("PASS Income amount range filters update data, pagination and summary");
 
     const paginatedFixtures = Array.from({ length: 26 }, (_, index) => ({
       id: `42000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`,
@@ -1361,6 +1398,11 @@ async function main() {
       "?pageSize=10",
       "?search=",
       "?macroId=invalid",
+      "?minAmount=",
+      "?maxAmount=",
+      "?minAmount=-1",
+      "?maxAmount=-1",
+      "?minAmount=30&maxAmount=20",
     ]) {
       await expectError(
         route,
@@ -1372,7 +1414,7 @@ async function main() {
     }
     incomes = [...baselineIncomes];
     console.log(
-      "PASS Income pagination, description search, macro filtering, sorting and validation",
+      "PASS Income pagination, amount filters, description search, macro filtering, sorting and validation",
     );
 
     incomes = [];

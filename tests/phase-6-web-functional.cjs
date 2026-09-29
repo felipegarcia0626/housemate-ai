@@ -252,16 +252,30 @@ for (const marker of [
   "incomeListMemberId",
   "incomeListMacroId",
   "incomeListMicroId",
+  "incomeListMinAmount",
+  "incomeListMaxAmount",
+  "incomeFiltersOpen",
+  "incomeFilterDraft",
   "incomeListPagination",
   "incomeListSummary",
   "incomeListPageSize",
   "incomeListSort",
   "incomeListSortOrder",
+  "incomeHeaderFilterOpen",
+  "incomeMacroFilterQuery",
+  "incomeMicroFilterQuery",
+  "incomeMemberFilterQuery",
   "incomeFilterMicros",
+  "incomeFilterMacros",
+  "incomeFilterMembers",
+  "selectIncomeMemberFilter",
+  "applyIncomeFilters",
   'params.set("search"',
   'params.set("memberId"',
   'params.set("macroId"',
   'params.set("categoryId"',
+  'params.set("minAmount"',
+  'params.set("maxAmount"',
   'params.set("from"',
   'params.set("to"',
   "sortBy: incomeListSort",
@@ -272,6 +286,9 @@ for (const marker of [
   'aria-label="Filtrar ingresos por micro"',
   "Paginación de ingresos",
   "Ingresos por página",
+  "Más filtros",
+  "Monto mínimo",
+  "Monto máximo",
   "formatExpenseDateForTable(income.incomeDate)",
   "incomeCategoryParts",
   "incomeListSummary.totalIncome",
@@ -293,6 +310,26 @@ if (page.includes('api<Income[]>("/api/incomes"'))
   throw new Error("Income collection must consume the paginated response");
 if (page.includes('className="form expense-edit-row"'))
   throw new Error("Income editing must use the modal instead of inline forms");
+const incomeSectionStart = page.indexOf('section === "incomes"');
+const incomeSectionEnd = page.indexOf('section === "agent"', incomeSectionStart);
+const incomeSection =
+  incomeSectionStart >= 0 && incomeSectionEnd >= incomeSectionStart
+    ? page.slice(incomeSectionStart, incomeSectionEnd)
+    : "";
+if (
+  incomeSectionStart < 0 ||
+  incomeSectionEnd < incomeSectionStart ||
+  incomeSection.includes('className="columns"') ||
+  incomeSection.includes('className="income-filter-control"') ||
+  incomeSection.includes("Resultados según los filtros seleccionados.") ||
+  !incomeSection.includes('className="panel expense-list-toolbar"') ||
+  !incomeSection.includes('className="panel expense-list-summary"') ||
+  !incomeSection.includes('className="expense-list-layout"') ||
+  !incomeSection.includes('className="expense-header-filter"')
+)
+  throw new Error(
+    "Income collection must reuse the separated Expenses layout and column filters",
+  );
 console.log(
   "PASS Web Income listing uses server-side filters, sorting, pagination, and summary",
 );

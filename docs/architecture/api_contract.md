@@ -575,6 +575,8 @@ memberId
 categoryId
 macroId
 search
+minAmount
+maxAmount
 page
 pageSize
 sortBy
@@ -588,6 +590,9 @@ movimiento. `search` busca únicamente sobre `description`.
 
 `page` es un entero mayor o igual que 1 y `pageSize` admite únicamente `25`,
 `50` o `100`. Si se omiten, sus valores predeterminados son `1` y `25`.
+`minAmount` y `maxAmount`, cuando se proporcionan, son números finitos no
+negativos; ambos límites son inclusivos y `minAmount` no puede ser mayor que
+`maxAmount`.
 `sortBy` admite únicamente `incomeDate`, `amount` o `description`, y
 `sortOrder` únicamente `asc` o `desc`. La respuesta utiliza un orden
 secundario por `created_at` y un desempate determinista por `id`.

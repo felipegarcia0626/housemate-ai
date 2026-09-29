@@ -16,6 +16,12 @@ function validationError(message: string): never {
   throw new IncomeDomainError("VALIDATION_ERROR", message);
 }
 
+function validateAmount(value: number, fieldName: string): void {
+  if (!Number.isFinite(value) || value < 0) {
+    validationError(`${fieldName} must be a non-negative finite number.`);
+  }
+}
+
 export function validateIncomeUuid(value: string, fieldName: string): void {
   if (!UUID_PATTERN.test(value)) {
     validationError(`${fieldName} must be a valid UUID.`);
@@ -66,6 +72,22 @@ export function validateIncomeListFilters(filters: IncomeListFilters): void {
 
   if (filters.macroId !== undefined) {
     validateIncomeUuid(filters.macroId, "macroId");
+  }
+
+  if (filters.minAmount !== undefined) {
+    validateAmount(filters.minAmount, "minAmount");
+  }
+
+  if (filters.maxAmount !== undefined) {
+    validateAmount(filters.maxAmount, "maxAmount");
+  }
+
+  if (
+    filters.minAmount !== undefined &&
+    filters.maxAmount !== undefined &&
+    filters.minAmount > filters.maxAmount
+  ) {
+    validationError("minAmount must be less than or equal to maxAmount.");
   }
 
   if (

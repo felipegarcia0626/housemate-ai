@@ -17,6 +17,8 @@ const ALLOWED_QUERY_PARAMETERS = new Set([
   "categoryId",
   "macroId",
   "search",
+  "minAmount",
+  "maxAmount",
   "page",
   "pageSize",
   "sortBy",
@@ -83,11 +85,15 @@ function buildFilters(searchParams: URLSearchParams): IncomeListFilters {
 
   const page = searchParams.get("page");
   const pageSize = searchParams.get("pageSize");
+  const minAmount = searchParams.get("minAmount");
+  const maxAmount = searchParams.get("maxAmount");
   const sortBy = searchParams.get("sortBy");
   const sortOrder = searchParams.get("sortOrder");
 
   if (page !== null) filters.page = Number(page);
   if (pageSize !== null) filters.pageSize = Number(pageSize) as 25 | 50 | 100;
+  if (minAmount !== null) filters.minAmount = Number(minAmount);
+  if (maxAmount !== null) filters.maxAmount = Number(maxAmount);
   if (sortBy !== null) {
     filters.sortBy = sortBy as "incomeDate" | "amount" | "description";
   }
@@ -101,6 +107,13 @@ export async function GET(request: Request): Promise<Response> {
 
   if (hasUnsupportedOrRepeatedParameters(searchParams)) {
     return invalidRequest(400);
+  }
+
+  if (
+    searchParams.get("minAmount") === "" ||
+    searchParams.get("maxAmount") === ""
+  ) {
+    return invalidRequest(422);
   }
 
   const filters = buildFilters(searchParams);

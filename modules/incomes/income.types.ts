@@ -18,6 +18,8 @@ export interface IncomeListFilters {
   categoryId?: string;
   macroId?: string;
   search?: string;
+  minAmount?: number;
+  maxAmount?: number;
   page?: number;
   pageSize?: IncomePageSize;
   sortBy?: IncomeListSort;

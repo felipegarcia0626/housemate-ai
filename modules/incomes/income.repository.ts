@@ -338,6 +338,14 @@ export async function listIncomes(
       );
     }
 
+    if (filters.minAmount !== undefined) {
+      query = query.gte("amount", filters.minAmount);
+    }
+
+    if (filters.maxAmount !== undefined) {
+      query = query.lte("amount", filters.maxAmount);
+    }
+
     return query;
   };
 

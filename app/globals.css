@@ -570,7 +570,7 @@ textarea {
   border-bottom: 1px solid #edf2f0;
 }
 .income-table-row {
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.9fr) auto;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 0.9fr) auto;
 }
 .expense-table-row:last-child {
   border-bottom: 0;

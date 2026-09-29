@@ -618,6 +618,19 @@ export default function HomePage() {
   const [incomeListMemberId, setIncomeListMemberId] = useState("");
   const [incomeListMacroId, setIncomeListMacroId] = useState("");
   const [incomeListMicroId, setIncomeListMicroId] = useState("");
+  const [incomeListMinAmount, setIncomeListMinAmount] = useState("");
+  const [incomeListMaxAmount, setIncomeListMaxAmount] = useState("");
+  const [incomeFiltersOpen, setIncomeFiltersOpen] = useState(false);
+  const [incomeFilterDraft, setIncomeFilterDraft] = useState({
+    minAmount: "",
+    maxAmount: "",
+  });
+  const [incomeHeaderFilterOpen, setIncomeHeaderFilterOpen] = useState<
+    "macro" | "micro" | "member" | null
+  >(null);
+  const [incomeMacroFilterQuery, setIncomeMacroFilterQuery] = useState("");
+  const [incomeMicroFilterQuery, setIncomeMicroFilterQuery] = useState("");
+  const [incomeMemberFilterQuery, setIncomeMemberFilterQuery] = useState("");
   const [incomeListPage, setIncomeListPage] = useState(1);
   const [incomeListPageSize, setIncomeListPageSize] =
     useState<IncomePageSize>(25);
@@ -768,9 +781,32 @@ export default function HomePage() {
     () =>
       incomeCategories.filter(
         (category) =>
-          !incomeListMacroId || category.macroId === incomeListMacroId,
+          (!incomeListMacroId || category.macroId === incomeListMacroId) &&
+          category.name
+            .toLocaleLowerCase("es")
+            .includes(incomeMicroFilterQuery.trim().toLocaleLowerCase("es")),
       ),
-    [incomeCategories, incomeListMacroId],
+    [incomeCategories, incomeListMacroId, incomeMicroFilterQuery],
+  );
+
+  const incomeFilterMacros = useMemo(
+    () =>
+      incomeMacros.filter((macro) =>
+        macro.name
+          .toLocaleLowerCase("es")
+          .includes(incomeMacroFilterQuery.trim().toLocaleLowerCase("es")),
+      ),
+    [incomeMacroFilterQuery, incomeMacros],
+  );
+
+  const incomeFilterMembers = useMemo(
+    () =>
+      members.filter((member) =>
+        member.displayName
+          .toLocaleLowerCase("es")
+          .includes(incomeMemberFilterQuery.trim().toLocaleLowerCase("es")),
+      ),
+    [incomeMemberFilterQuery, members],
   );
 
   const editIncomeMicros = useMemo(
@@ -872,7 +908,9 @@ export default function HomePage() {
       incomeListTo ||
       incomeListMemberId ||
       incomeListMacroId ||
-      incomeListMicroId,
+      incomeListMicroId ||
+      incomeListMinAmount ||
+      incomeListMaxAmount,
   );
 
   function memberLabel(memberId: string): string {
@@ -951,13 +989,40 @@ export default function HomePage() {
   }
 
   function clearIncomeFilters(): void {
+    const emptyFilters = {
+      minAmount: "",
+      maxAmount: "",
+    };
     setIncomeListSearch("");
     setIncomeListFrom("");
     setIncomeListTo("");
     setIncomeListMemberId("");
     setIncomeListMacroId("");
     setIncomeListMicroId("");
+    setIncomeListMinAmount("");
+    setIncomeListMaxAmount("");
     setIncomeListPage(1);
+    setIncomeFilterDraft(emptyFilters);
+    setIncomeFiltersOpen(false);
+    setIncomeHeaderFilterOpen(null);
+    setIncomeMacroFilterQuery("");
+    setIncomeMicroFilterQuery("");
+    setIncomeMemberFilterQuery("");
+  }
+
+  function openIncomeFilters(): void {
+    setIncomeFilterDraft({
+      minAmount: incomeListMinAmount,
+      maxAmount: incomeListMaxAmount,
+    });
+    setIncomeFiltersOpen(true);
+  }
+
+  function applyIncomeFilters(): void {
+    setIncomeListMinAmount(incomeFilterDraft.minAmount);
+    setIncomeListMaxAmount(incomeFilterDraft.maxAmount);
+    setIncomeListPage(1);
+    setIncomeFiltersOpen(false);
   }
 
   function selectIncomeMacroFilter(macroId: string): void {
@@ -973,11 +1038,22 @@ export default function HomePage() {
       setIncomeListMicroId("");
     }
     setIncomeListPage(1);
+    setIncomeHeaderFilterOpen(null);
+    setIncomeMacroFilterQuery("");
   }
 
   function selectIncomeMicroFilter(microId: string): void {
     setIncomeListMicroId(microId);
     setIncomeListPage(1);
+    setIncomeHeaderFilterOpen(null);
+    setIncomeMicroFilterQuery("");
+  }
+
+  function selectIncomeMemberFilter(memberId: string): void {
+    setIncomeListMemberId(memberId);
+    setIncomeListPage(1);
+    setIncomeHeaderFilterOpen(null);
+    setIncomeMemberFilterQuery("");
   }
 
   function toggleIncomeSort(sort: IncomeListSort): void {
@@ -1201,6 +1277,8 @@ export default function HomePage() {
       if (incomeListMemberId) params.set("memberId", incomeListMemberId);
       if (incomeListMacroId) params.set("macroId", incomeListMacroId);
       if (incomeListMicroId) params.set("categoryId", incomeListMicroId);
+      if (incomeListMinAmount) params.set("minAmount", incomeListMinAmount);
+      if (incomeListMaxAmount) params.set("maxAmount", incomeListMaxAmount);
       if (incomeListFrom) params.set("from", incomeListFrom);
       if (incomeListTo) params.set("to", incomeListTo);
 
@@ -1241,6 +1319,8 @@ export default function HomePage() {
     incomeListFrom,
     incomeListMacroId,
     incomeListMemberId,
+    incomeListMaxAmount,
+    incomeListMinAmount,
     incomeListMicroId,
     incomeListPage,
     incomeListPageSize,
@@ -2335,7 +2415,7 @@ export default function HomePage() {
             <div>
               <p className="section-kicker">MOVIMIENTOS</p>
               <h2>Expenses</h2>
-              <p className="muted">Gestiona tus gastos del hogar.</p>
+              <p className="muted">Gestiona los gastos del hogar.</p>
             </div>
             <button
               className="primary expenses-create-button"
@@ -2996,7 +3076,7 @@ export default function HomePage() {
         </section>
       )}
       {!loading && section === "incomes" && (
-        <section>
+        <section className="expenses-page">
           <div className="expenses-page-header">
             <div>
               <p className="section-kicker">MOVIMIENTOS</p>
@@ -3014,8 +3094,142 @@ export default function HomePage() {
               + Agregar ingreso
             </button>
           </div>
-          <div className="columns">
-            {showIncomeForm && (
+          {incomeListError && (
+            <p className="alert" role="alert">
+              {incomeListError}
+            </p>
+          )}
+          <div className="panel expense-list-toolbar">
+            <div className="expenses-toolbar-main">
+              <label className="expense-search-field">
+                <span aria-hidden="true">⌕</span>
+                <input
+                  aria-label="Buscar ingresos"
+                  value={incomeListSearch}
+                  placeholder="Buscar ingresos..."
+                  onChange={(event) => {
+                    setIncomeListSearch(event.target.value);
+                    setIncomeListPage(1);
+                  }}
+                />
+              </label>
+              <div
+                className="expense-date-range"
+                aria-label="Rango de fechas de ingresos"
+              >
+                <label className="expense-date-control">
+                  Desde
+                  <input
+                    type="date"
+                    aria-label="Fecha inicial de ingresos"
+                    value={incomeListFrom}
+                    onChange={(event) => {
+                      setIncomeListFrom(event.target.value);
+                      setIncomeListPage(1);
+                    }}
+                  />
+                </label>
+                <label className="expense-date-control">
+                  Hasta
+                  <input
+                    type="date"
+                    aria-label="Fecha final de ingresos"
+                    value={incomeListTo}
+                    onChange={(event) => {
+                      setIncomeListTo(event.target.value);
+                      setIncomeListPage(1);
+                    }}
+                  />
+                </label>
+              </div>
+              <button
+                type="button"
+                className={
+                  incomeFiltersOpen
+                    ? "secondary-control is-active"
+                    : "secondary-control"
+                }
+                onClick={() => {
+                  if (incomeFiltersOpen) setIncomeFiltersOpen(false);
+                  else openIncomeFilters();
+                }}
+              >
+                <FilterIcon />
+                Más filtros
+              </button>
+            </div>
+            {incomeFiltersOpen && (
+              <div className="expense-filter-panel expense-amount-filter-panel">
+                <div className="expense-filter-panel-heading">
+                  <div>
+                    <strong>Más filtros</strong>
+                    <span>Filtra por monto sin salir del listado.</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="filter-panel-close"
+                    aria-label="Cerrar filtros de ingresos"
+                    onClick={() => setIncomeFiltersOpen(false)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="expense-list-filter-grid">
+                  <label>
+                    Monto mínimo
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={incomeFilterDraft.minAmount}
+                      onChange={(event) =>
+                        setIncomeFilterDraft({
+                          ...incomeFilterDraft,
+                          minAmount: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Monto máximo
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={incomeFilterDraft.maxAmount}
+                      onChange={(event) =>
+                        setIncomeFilterDraft({
+                          ...incomeFilterDraft,
+                          maxAmount: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="expense-filter-panel-actions">
+                  <button type="button" onClick={clearIncomeFilters}>
+                    Limpiar
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={applyIncomeFilters}
+                  >
+                    Aplicar
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="panel expense-list-summary" aria-live="polite">
+            <span>
+              {incomeListPagination.total}{" "}
+              {incomeListPagination.total === 1 ? "ingreso" : "ingresos"}
+            </span>
+            <strong>{money(incomeListSummary.totalIncome)}</strong>
+          </div>
+          <div className="expense-list-layout">
+          {showIncomeForm && (
               <div
                 className="expense-form-backdrop"
                 role="dialog"
@@ -3162,134 +3376,12 @@ export default function HomePage() {
                   </form>
                 </div>
               </div>
-            )}
-            <article className="panel expense-results">
+          )}
+          <article className="panel expense-results">
               <div className="panel-heading">
                 <div>
                   <h2>Ingresos</h2>
-                  <p className="muted">
-                    {incomeListLoading
-                      ? "Actualizando resultados..."
-                      : "Resultados según los filtros seleccionados."}
-                  </p>
                 </div>
-              </div>
-              {incomeListError && (
-                <p className="alert" role="alert">
-                  {incomeListError}
-                </p>
-              )}
-              <div className="panel expense-list-toolbar income-list-toolbar">
-                <div className="expenses-toolbar-main">
-                  <label className="expense-search-field">
-                    <span aria-hidden="true">⌕</span>
-                    <input
-                      aria-label="Buscar ingresos"
-                      value={incomeListSearch}
-                      placeholder="Buscar ingresos..."
-                      onChange={(event) => {
-                        setIncomeListSearch(event.target.value);
-                        setIncomeListPage(1);
-                      }}
-                    />
-                  </label>
-                  <div
-                    className="expense-date-range"
-                    aria-label="Rango de fechas de ingresos"
-                  >
-                    <label className="expense-date-control">
-                      Desde
-                      <input
-                        type="date"
-                        aria-label="Fecha inicial de ingresos"
-                        value={incomeListFrom}
-                        onChange={(event) => {
-                          setIncomeListFrom(event.target.value);
-                          setIncomeListPage(1);
-                        }}
-                      />
-                    </label>
-                    <label className="expense-date-control">
-                      Hasta
-                      <input
-                        type="date"
-                        aria-label="Fecha final de ingresos"
-                        value={incomeListTo}
-                        onChange={(event) => {
-                          setIncomeListTo(event.target.value);
-                          setIncomeListPage(1);
-                        }}
-                      />
-                    </label>
-                  </div>
-                  <label className="income-filter-control">
-                    Integrante
-                    <select
-                      aria-label="Filtrar ingresos por integrante"
-                      value={incomeListMemberId}
-                      onChange={(event) => {
-                        setIncomeListMemberId(event.target.value);
-                        setIncomeListPage(1);
-                      }}
-                    >
-                      <option value="">Todos</option>
-                      {members.map((member) => (
-                        <option key={member.id} value={member.id}>
-                          {member.displayName}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="income-filter-control">
-                    Macro
-                    <select
-                      aria-label="Filtrar ingresos por macro"
-                      value={incomeListMacroId}
-                      onChange={(event) =>
-                        selectIncomeMacroFilter(event.target.value)
-                      }
-                    >
-                      <option value="">Todas</option>
-                      {incomeMacros.map((macro) => (
-                        <option key={macro.id} value={macro.id}>
-                          {macro.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="income-filter-control">
-                    Micro
-                    <select
-                      aria-label="Filtrar ingresos por micro"
-                      value={incomeListMicroId}
-                      onChange={(event) =>
-                        selectIncomeMicroFilter(event.target.value)
-                      }
-                    >
-                      <option value="">Todas</option>
-                      {incomeFilterMicros.map((category) => (
-                        <option key={category.id} value={category.id}>
-                          {category.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    className="secondary-control"
-                    onClick={clearIncomeFilters}
-                    disabled={!incomeHasActiveFilters}
-                  >
-                    Limpiar filtros
-                  </button>
-                </div>
-              </div>
-              <div className="expense-list-summary" aria-live="polite">
-                <span>
-                  {incomeListPagination.total}{" "}
-                  {incomeListPagination.total === 1 ? "ingreso" : "ingresos"}
-                </span>
-                <strong>{money(incomeListSummary.totalIncome)}</strong>
               </div>
               {incomeListLoading && (
                 <p className="loading" role="status">
@@ -3333,6 +3425,126 @@ export default function HomePage() {
                         active={incomeListSort === "incomeDate"}
                       />
                     </button>
+                    <div className="expense-header-filter">
+                      <button
+                        type="button"
+                        className="expense-header-button"
+                        aria-label="Filtrar ingresos por macro"
+                        aria-expanded={incomeHeaderFilterOpen === "macro"}
+                        onClick={() =>
+                          setIncomeHeaderFilterOpen((current) =>
+                            current === "macro" ? null : "macro",
+                          )
+                        }
+                      >
+                        Macro
+                        <FilterIcon />
+                        {incomeListMacroId && (
+                          <span
+                            className="expense-filter-indicator"
+                            aria-label="Filtro activo"
+                          />
+                        )}
+                      </button>
+                      {incomeHeaderFilterOpen === "macro" && (
+                        <div className="expense-header-popover">
+                          <input
+                            className="expense-header-search"
+                            aria-label="Buscar macro de ingresos"
+                            placeholder="Buscar macro..."
+                            value={incomeMacroFilterQuery}
+                            onChange={(event) =>
+                              setIncomeMacroFilterQuery(event.target.value)
+                            }
+                          />
+                          <button
+                            type="button"
+                            className={
+                              !incomeListMacroId
+                                ? "expense-filter-option is-selected"
+                                : "expense-filter-option"
+                            }
+                            onClick={() => selectIncomeMacroFilter("")}
+                          >
+                            Todas las macros
+                          </button>
+                          {incomeFilterMacros.map((macro) => (
+                            <button
+                              type="button"
+                              className={
+                                incomeListMacroId === macro.id
+                                  ? "expense-filter-option is-selected"
+                                  : "expense-filter-option"
+                              }
+                              key={macro.id}
+                              onClick={() => selectIncomeMacroFilter(macro.id)}
+                            >
+                              {macro.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="expense-header-filter">
+                      <button
+                        type="button"
+                        className="expense-header-button"
+                        aria-label="Filtrar ingresos por micro"
+                        aria-expanded={incomeHeaderFilterOpen === "micro"}
+                        onClick={() =>
+                          setIncomeHeaderFilterOpen((current) =>
+                            current === "micro" ? null : "micro",
+                          )
+                        }
+                      >
+                        Micro
+                        <FilterIcon />
+                        {incomeListMicroId && (
+                          <span
+                            className="expense-filter-indicator"
+                            aria-label="Filtro activo"
+                          />
+                        )}
+                      </button>
+                      {incomeHeaderFilterOpen === "micro" && (
+                        <div className="expense-header-popover">
+                          <input
+                            className="expense-header-search"
+                            aria-label="Buscar micro de ingresos"
+                            placeholder="Buscar micro..."
+                            value={incomeMicroFilterQuery}
+                            onChange={(event) =>
+                              setIncomeMicroFilterQuery(event.target.value)
+                            }
+                          />
+                          <button
+                            type="button"
+                            className={
+                              !incomeListMicroId
+                                ? "expense-filter-option is-selected"
+                                : "expense-filter-option"
+                            }
+                            onClick={() => selectIncomeMicroFilter("")}
+                          >
+                            Todas las micros
+                          </button>
+                          {incomeFilterMicros.map((category) => (
+                            <button
+                              type="button"
+                              className={
+                                incomeListMicroId === category.id
+                                  ? "expense-filter-option is-selected"
+                                  : "expense-filter-option"
+                              }
+                              key={category.id}
+                              onClick={() => selectIncomeMicroFilter(category.id)}
+                            >
+                              {category.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <button
                       type="button"
                       className="expense-sort-button"
@@ -3345,9 +3557,66 @@ export default function HomePage() {
                         active={incomeListSort === "description"}
                       />
                     </button>
-                    <span>Macro</span>
-                    <span>Micro</span>
-                    <span>Miembro</span>
+                    <div className="expense-header-filter">
+                      <button
+                        type="button"
+                        className="expense-header-button"
+                        aria-label="Filtrar ingresos por integrante"
+                        aria-expanded={incomeHeaderFilterOpen === "member"}
+                        onClick={() =>
+                          setIncomeHeaderFilterOpen((current) =>
+                            current === "member" ? null : "member",
+                          )
+                        }
+                      >
+                        Integrante
+                        <FilterIcon />
+                        {incomeListMemberId && (
+                          <span
+                            className="expense-filter-indicator"
+                            aria-label="Filtro activo"
+                          />
+                        )}
+                      </button>
+                      {incomeHeaderFilterOpen === "member" && (
+                        <div className="expense-header-popover">
+                          <input
+                            className="expense-header-search"
+                            aria-label="Buscar integrante de ingresos"
+                            placeholder="Buscar integrante..."
+                            value={incomeMemberFilterQuery}
+                            onChange={(event) =>
+                              setIncomeMemberFilterQuery(event.target.value)
+                            }
+                          />
+                          <button
+                            type="button"
+                            className={
+                              !incomeListMemberId
+                                ? "expense-filter-option is-selected"
+                                : "expense-filter-option"
+                            }
+                            onClick={() => selectIncomeMemberFilter("")}
+                          >
+                            Todos los integrantes
+                          </button>
+                          {incomeFilterMembers.map((member) => (
+                            <button
+                              type="button"
+                              className={
+                                incomeListMemberId === member.id
+                                  ? "expense-filter-option is-selected"
+                                  : "expense-filter-option"
+                              }
+                              key={member.id}
+                              onClick={() => selectIncomeMemberFilter(member.id)}
+                            >
+                              {member.displayName}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <button
                       type="button"
                       className="expense-sort-button"
@@ -3378,12 +3647,6 @@ export default function HomePage() {
                             </div>
                         <div
                               className="expense-table-cell"
-                              data-label="Descripción"
-                            >
-                              {income.description || "—"}
-                            </div>
-                        <div
-                              className="expense-table-cell"
                               data-label="Macro"
                             >
                               {category.macro}
@@ -3394,6 +3657,12 @@ export default function HomePage() {
                               title={incomeCategoryLabel(income.categoryId)}
                             >
                               {category.micro}
+                            </div>
+                        <div
+                              className="expense-table-cell"
+                              data-label="Descripción"
+                            >
+                              {income.description || "—"}
                             </div>
                         <div
                               className="expense-table-cell"
@@ -3536,7 +3805,7 @@ export default function HomePage() {
                   ›
                 </button>
               </div>
-            </article>
+          </article>
           </div>
         </section>
       )}
