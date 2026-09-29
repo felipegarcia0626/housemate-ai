@@ -359,6 +359,37 @@ node tests/phase-6-agent-http-functional.cjs
 
 También existen harnesses por fase para categorías, gastos, ingresos, dashboard, balance, agente, WhatsApp, facturas y contexto HTTP. Los scripts `.sql` requieren una instancia PostgreSQL/Supabase accesible mediante `DATABASE_URL`; las pruebas de integridad están diseñadas para ejecutarse dentro de transacciones y revertir sus fixtures cuando así lo indica el propio script.
 
+### Browser E2E local aislado
+
+Los browser tests utilizan Playwright y requieren un contexto E2E explícito y
+aislado. No reutilizan `HOUSEMATE_MVP_HOUSEHOLD_ID` ni las credenciales del
+entorno MVP. Configura, fuera del repositorio, estas variables:
+
+```text
+E2E_SUPABASE_URL
+E2E_SUPABASE_SERVICE_ROLE_KEY
+E2E_ALLOWED_SUPABASE_PROJECT_REF
+E2E_HOUSEHOLD_ID
+E2E_MEMBER_ID
+```
+
+`E2E_SUPABASE_URL` debe ser la URL estándar de un proyecto Supabase aislado y
+su project ref debe coincidir exactamente con
+`E2E_ALLOWED_SUPABASE_PROJECT_REF`. El household debe existir en ese proyecto
+y tener al menos dos integrantes. Playwright prepara dos gastos temporales,
+ejecuta el smoke test y los elimina al finalizar. Si falta una variable, el
+proyecto no está explícitamente autorizado o el household coincide con el MVP,
+el runner se detiene antes de crear o eliminar fixtures.
+
+Instala el navegador una vez y ejecuta:
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+```
+
+Los reportes y fixtures generados quedan ignorados por Git.
+
 Antes de declarar un incremento terminado, valida especialmente:
 
 - aislamiento por hogar;
