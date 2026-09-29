@@ -63,6 +63,20 @@ type Income = {
   description: string;
   categoryId: string | null;
 };
+type IncomePageSize = 25 | 50 | 100;
+type IncomeListSort = "incomeDate" | "amount" | "description";
+type IncomeCollection = {
+  data: Income[];
+  pagination: {
+    page: number;
+    pageSize: IncomePageSize;
+    total: number;
+    totalPages: number;
+  };
+  summary: {
+    totalIncome: number;
+  };
+};
 
 type Category = { id: string; name: string };
 type HouseholdMember = { id: string; displayName: string };
@@ -588,6 +602,33 @@ export default function HomePage() {
   const [expenseListRefreshToken, setExpenseListRefreshToken] = useState(0);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [incomes, setIncomes] = useState<Income[]>([]);
+  const [incomeListPagination, setIncomeListPagination] =
+    useState<IncomeCollection["pagination"]>({
+      page: 1,
+      pageSize: 25,
+      total: 0,
+      totalPages: 0,
+    });
+  const [incomeListSummary, setIncomeListSummary] =
+    useState<IncomeCollection["summary"]>({ totalIncome: 0 });
+  const [incomeListSearch, setIncomeListSearch] = useState("");
+  const [incomeListFrom, setIncomeListFrom] = useState("");
+  const [incomeListTo, setIncomeListTo] = useState("");
+  const [incomeListMemberId, setIncomeListMemberId] = useState("");
+  const [incomeListMacroId, setIncomeListMacroId] = useState("");
+  const [incomeListMicroId, setIncomeListMicroId] = useState("");
+  const [incomeListPage, setIncomeListPage] = useState(1);
+  const [incomeListPageSize, setIncomeListPageSize] =
+    useState<IncomePageSize>(25);
+  const [incomeListSort, setIncomeListSort] =
+    useState<IncomeListSort>("incomeDate");
+  const [incomeListSortOrder, setIncomeListSortOrder] = useState<
+    "asc" | "desc"
+  >("desc");
+  const [incomeListLoading, setIncomeListLoading] = useState(false);
+  const [incomeListError, setIncomeListError] = useState("");
+  const [incomeListReady, setIncomeListReady] = useState(false);
+  const [incomeListRefreshToken, setIncomeListRefreshToken] = useState(0);
   const [categories, setCategories] = useState<Category[]>([]);
   const [expenseCategories, setExpenseCategories] = useState<
     HierarchicalCategory[]
@@ -722,6 +763,15 @@ export default function HomePage() {
     [incomeCategories, incomeMacroId],
   );
 
+  const incomeFilterMicros = useMemo(
+    () =>
+      incomeCategories.filter(
+        (category) =>
+          !incomeListMacroId || category.macroId === incomeListMacroId,
+      ),
+    [incomeCategories, incomeListMacroId],
+  );
+
   const editIncomeMicros = useMemo(
     () =>
       incomeCategories.filter(
@@ -769,6 +819,28 @@ export default function HomePage() {
       "Sin categoría";
   }
 
+  function incomeCategoryParts(categoryId: string | null): {
+    macro: string;
+    micro: string;
+  } {
+    if (!categoryId) return { macro: "Sin macro", micro: "Sin categoría" };
+    const hierarchicalCategory = incomeCategories.find(
+      (category) => category.id === categoryId,
+    );
+    if (hierarchicalCategory) {
+      return {
+        macro: hierarchicalCategory.macroName,
+        micro: hierarchicalCategory.name,
+      };
+    }
+    return {
+      macro: "Sin macro",
+      micro:
+        categories.find((category) => category.id === categoryId)?.name ??
+        "Sin categoría",
+    };
+  }
+
   const topCategory = useMemo(() => {
     if (!dashboard || dashboard.byCategory.length === 0) return null;
     return dashboard.byCategory.reduce((top, current) =>
@@ -792,6 +864,15 @@ export default function HomePage() {
   ].filter(Boolean).length;
   const expenseHasActiveFilters =
     expenseListSearch.trim().length > 0 || expenseFilterCount > 0;
+
+  const incomeHasActiveFilters = Boolean(
+    incomeListSearch.trim() ||
+      incomeListFrom ||
+      incomeListTo ||
+      incomeListMemberId ||
+      incomeListMacroId ||
+      incomeListMicroId,
+  );
 
   function memberLabel(memberId: string): string {
     return memberNames[memberId] ?? memberId;
@@ -868,6 +949,48 @@ export default function HomePage() {
     setExpenseListPage(1);
   }
 
+  function clearIncomeFilters(): void {
+    setIncomeListSearch("");
+    setIncomeListFrom("");
+    setIncomeListTo("");
+    setIncomeListMemberId("");
+    setIncomeListMacroId("");
+    setIncomeListMicroId("");
+    setIncomeListPage(1);
+  }
+
+  function selectIncomeMacroFilter(macroId: string): void {
+    setIncomeListMacroId(macroId);
+    if (
+      incomeListMicroId &&
+      macroId &&
+      !incomeCategories.some(
+        (category) =>
+          category.id === incomeListMicroId && category.macroId === macroId,
+      )
+    ) {
+      setIncomeListMicroId("");
+    }
+    setIncomeListPage(1);
+  }
+
+  function selectIncomeMicroFilter(microId: string): void {
+    setIncomeListMicroId(microId);
+    setIncomeListPage(1);
+  }
+
+  function toggleIncomeSort(sort: IncomeListSort): void {
+    if (incomeListSort === sort) {
+      setIncomeListSortOrder((direction) =>
+        direction === "asc" ? "desc" : "asc",
+      );
+    } else {
+      setIncomeListSort(sort);
+      setIncomeListSortOrder("desc");
+    }
+    setIncomeListPage(1);
+  }
+
   function chooseAgentSuggestion(message: string): void {
     setSection("agent");
     setAgentMessage(message);
@@ -881,7 +1004,6 @@ export default function HomePage() {
     try {
       const [
         dashboardResult,
-        incomeResult,
         categoryResult,
         expenseCategoryResult,
         incomeCategoryResult,
@@ -890,7 +1012,6 @@ export default function HomePage() {
         balanceResult,
       ] = await Promise.allSettled([
         api<Dashboard>("/api/dashboard/summary"),
-        api<Income[]>("/api/incomes"),
         api<Category[]>("/api/categories"),
         api<HierarchicalCategory[]>(
           "/api/categories/hierarchical?movementType=EXPENSE",
@@ -909,8 +1030,6 @@ export default function HomePage() {
       if (dashboardResult.status === "fulfilled")
         setDashboard(dashboardResult.value);
       else failed("dashboard");
-      if (incomeResult.status === "fulfilled") setIncomes(incomeResult.value);
-      else failed("incomes");
       if (categoryResult.status === "fulfilled")
         setCategories(categoryResult.value);
       else failed("categories");
@@ -959,6 +1078,8 @@ export default function HomePage() {
       setLoading(false);
       setExpenseListReady(true);
       setExpenseListRefreshToken((value) => value + 1);
+      setIncomeListReady(true);
+      setIncomeListRefreshToken((value) => value + 1);
     }
   }
 
@@ -1062,6 +1183,72 @@ export default function HomePage() {
     expenseListSort,
     expenseListSortDirection,
     expenseListTo,
+  ]);
+
+  useEffect(() => {
+    if (!incomeListReady) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({
+        page: String(incomeListPage),
+        pageSize: String(incomeListPageSize),
+        sortBy: incomeListSort,
+        sortOrder: incomeListSortOrder,
+      });
+      if (incomeListSearch.trim())
+        params.set("search", incomeListSearch.trim());
+      if (incomeListMemberId) params.set("memberId", incomeListMemberId);
+      if (incomeListMacroId) params.set("macroId", incomeListMacroId);
+      if (incomeListMicroId) params.set("categoryId", incomeListMicroId);
+      if (incomeListFrom) params.set("from", incomeListFrom);
+      if (incomeListTo) params.set("to", incomeListTo);
+
+      setIncomeListLoading(true);
+      setIncomeListError("");
+      void requestJson<IncomeCollection>(
+        `/api/incomes?${params.toString()}`,
+        { signal: controller.signal },
+      )
+        .then((result) => {
+          const nextPage =
+            result.pagination.totalPages === 0
+              ? 1
+              : Math.min(result.pagination.page, result.pagination.totalPages);
+          setIncomes(result.data);
+          setIncomeListPagination(result.pagination);
+          setIncomeListSummary(result.summary);
+          if (nextPage !== incomeListPage) setIncomeListPage(nextPage);
+        })
+        .catch((cause: unknown) => {
+          if (cause instanceof DOMException && cause.name === "AbortError")
+            return;
+          setIncomeListError(
+            cause instanceof Error
+              ? cause.message
+              : "No fue posible cargar los ingresos.",
+          );
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setIncomeListLoading(false);
+        });
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    incomeListFrom,
+    incomeListMacroId,
+    incomeListMemberId,
+    incomeListMicroId,
+    incomeListPage,
+    incomeListPageSize,
+    incomeListReady,
+    incomeListRefreshToken,
+    incomeListSearch,
+    incomeListSort,
+    incomeListSortOrder,
+    incomeListTo,
   ]);
 
   async function submitExpense(event: FormEvent) {
@@ -2757,185 +2944,518 @@ export default function HomePage() {
                 Crear ingreso
               </button>
             </form>
-            <article className="panel">
-              <h2>Ingresos recientes</h2>
-              {incomes.length === 0 && (
-                <p className="muted">No hay ingresos.</p>
+            <article className="panel expense-results">
+              <div className="panel-heading">
+                <div>
+                  <h2>Ingresos</h2>
+                  <p className="muted">
+                    {incomeListLoading
+                      ? "Actualizando resultados..."
+                      : "Resultados según los filtros seleccionados."}
+                  </p>
+                </div>
+              </div>
+              {incomeListError && (
+                <p className="alert" role="alert">
+                  {incomeListError}
+                </p>
               )}
-              {incomes.map((income) => (
-                <div className="list-item" key={income.id}>
-                  {editingIncome === income.id ? (
-                    <form
-                      className="form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void saveIncome(income.id);
+              <div className="panel expense-list-toolbar income-list-toolbar">
+                <div className="expenses-toolbar-main">
+                  <label className="expense-search-field">
+                    <span aria-hidden="true">⌕</span>
+                    <input
+                      aria-label="Buscar ingresos"
+                      value={incomeListSearch}
+                      placeholder="Buscar ingresos..."
+                      onChange={(event) => {
+                        setIncomeListSearch(event.target.value);
+                        setIncomeListPage(1);
+                      }}
+                    />
+                  </label>
+                  <div
+                    className="expense-date-range"
+                    aria-label="Rango de fechas de ingresos"
+                  >
+                    <label className="expense-date-control">
+                      Desde
+                      <input
+                        type="date"
+                        aria-label="Fecha inicial de ingresos"
+                        value={incomeListFrom}
+                        onChange={(event) => {
+                          setIncomeListFrom(event.target.value);
+                          setIncomeListPage(1);
+                        }}
+                      />
+                    </label>
+                    <label className="expense-date-control">
+                      Hasta
+                      <input
+                        type="date"
+                        aria-label="Fecha final de ingresos"
+                        value={incomeListTo}
+                        onChange={(event) => {
+                          setIncomeListTo(event.target.value);
+                          setIncomeListPage(1);
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <label className="income-filter-control">
+                    Integrante
+                    <select
+                      aria-label="Filtrar ingresos por integrante"
+                      value={incomeListMemberId}
+                      onChange={(event) => {
+                        setIncomeListMemberId(event.target.value);
+                        setIncomeListPage(1);
                       }}
                     >
-                      <label>
-                        Integrante
-                        <select
-                          required
-                          value={editIncomeForm.memberId}
-                          onChange={(e) =>
-                            setEditIncomeForm({
-                              ...editIncomeForm,
-                              memberId: e.target.value,
-                            })
-                          }
-                        >
-                          <option value="">Seleccionar</option>
-                          {memberIds.map((id) => (
-                            <option key={id} value={id}>
-                              {memberLabel(id)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Monto
-                        <input
-                          required
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          value={editIncomeForm.amount}
-                          onChange={(e) =>
-                            setEditIncomeForm({
-                              ...editIncomeForm,
-                              amount: e.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Fecha
-                        <input
-                          required
-                          type="date"
-                          value={editIncomeForm.incomeDate}
-                          onChange={(e) =>
-                            setEditIncomeForm({
-                              ...editIncomeForm,
-                              incomeDate: e.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Categoría principal
-                        <select
-                          aria-label="Categoría principal del ingreso"
-                          value={editIncomeMacroId}
-                          onChange={(e) => {
-                            setEditIncomeMacroId(e.target.value);
-                            setEditIncomeLegacyCategoryName(null);
-                            setEditIncomeForm({
-                              ...editIncomeForm,
-                              categoryId: "",
-                            });
-                          }}
-                        >
-                          <option value="">
-                            {editIncomeLegacyCategoryName
-                              ? `Categoría histórica: ${editIncomeLegacyCategoryName}`
-                              : "Sin categoría"}
-                          </option>
-                          {incomeMacros.map((macro) => (
-                            <option key={macro.id} value={macro.id}>
-                              {macro.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Categoría específica
-                        <select
-                          aria-label="Categoría específica del ingreso"
-                          disabled={editIncomeMacroId === ""}
-                          value={editIncomeForm.categoryId}
-                          onChange={(e) =>
-                            setEditIncomeForm({
-                              ...editIncomeForm,
-                              categoryId: e.target.value,
-                            })
-                          }
-                        >
-                          <option value="">
-                            {editIncomeMacroId === ""
-                              ? "Selecciona una categoría principal"
-                              : "Sin categoría específica"}
-                          </option>
-                          {editIncomeMicros.map((category) => (
-                            <option key={category.id} value={category.id}>
-                              {category.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Descripción
-                        <textarea
-                          required
-                          value={editIncomeForm.description}
-                          onChange={(e) =>
-                            setEditIncomeForm({
-                              ...editIncomeForm,
-                              description: e.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                      <div className="actions">
-                        <button
-                          type="submit"
-                          disabled={
-                            busy ||
-                            (editIncomeLegacyCategoryName !== null &&
-                              editIncomeMacroId === "") ||
-                            (editIncomeMacroId !== "" &&
-                              editIncomeForm.categoryId === "")
-                          }
-                        >
-                          Guardar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={cancelIncomeEdit}
-                          disabled={busy}
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    </form>
-                  ) : (
-                    <>
-                      <div>
-                        <strong>{income.description}</strong>
-                        <p>
-                          {income.incomeDate} · {money(income.amount)} ·{" "}
-                          {memberLabel(income.memberId)} · {incomeCategoryLabel(income.categoryId)}
-                        </p>
-                      </div>
-                      <div className="actions">
-                        <button
-                          onClick={() => startIncomeEdit(income)}
-                          disabled={busy}
-                        >
-                          Editar
-                        </button>
-                        <button
-                          className="danger"
-                          onClick={() => void removeIncome(income.id)}
-                          disabled={busy}
-                        >
-                          Eliminar
-                        </button>
-                      </div>
-                    </>
+                      <option value="">Todos</option>
+                      {members.map((member) => (
+                        <option key={member.id} value={member.id}>
+                          {member.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="income-filter-control">
+                    Macro
+                    <select
+                      aria-label="Filtrar ingresos por macro"
+                      value={incomeListMacroId}
+                      onChange={(event) =>
+                        selectIncomeMacroFilter(event.target.value)
+                      }
+                    >
+                      <option value="">Todas</option>
+                      {incomeMacros.map((macro) => (
+                        <option key={macro.id} value={macro.id}>
+                          {macro.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="income-filter-control">
+                    Micro
+                    <select
+                      aria-label="Filtrar ingresos por micro"
+                      value={incomeListMicroId}
+                      onChange={(event) =>
+                        selectIncomeMicroFilter(event.target.value)
+                      }
+                    >
+                      <option value="">Todas</option>
+                      {incomeFilterMicros.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="secondary-control"
+                    onClick={clearIncomeFilters}
+                    disabled={!incomeHasActiveFilters}
+                  >
+                    Limpiar filtros
+                  </button>
+                </div>
+              </div>
+              <div className="expense-list-summary" aria-live="polite">
+                <span>
+                  {incomeListPagination.total}{" "}
+                  {incomeListPagination.total === 1 ? "ingreso" : "ingresos"}
+                </span>
+                <strong>{money(incomeListSummary.totalIncome)}</strong>
+              </div>
+              {incomeListLoading && (
+                <p className="loading" role="status">
+                  Cargando ingresos...
+                </p>
+              )}
+              {!incomeListLoading && !incomeListError && incomes.length === 0 && (
+                <div className="expense-empty-state">
+                  <strong>
+                    {incomeHasActiveFilters
+                      ? "No encontramos ingresos con estos filtros."
+                      : "Aún no tienes ingresos"}
+                  </strong>
+                  <p className="muted">
+                    {incomeHasActiveFilters
+                      ? "Prueba con otros criterios o limpia los filtros."
+                      : "Registra tu primer ingreso para comenzar a llevar el control."}
+                  </p>
+                  {incomeHasActiveFilters && (
+                    <button type="button" onClick={clearIncomeFilters}>
+                      Limpiar filtros
+                    </button>
                   )}
                 </div>
-              ))}
+              )}
+              {incomes.length > 0 && (
+                <div className="expense-table income-table" role="table">
+                  <div
+                    className="expense-table-row income-table-row expense-table-head"
+                    role="row"
+                  >
+                    <button
+                      type="button"
+                      className="expense-sort-button"
+                      data-sort="incomeDate"
+                      onClick={() => toggleIncomeSort("incomeDate")}
+                    >
+                      Fecha
+                      <SortIcon
+                        direction={incomeListSortOrder}
+                        active={incomeListSort === "incomeDate"}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="expense-sort-button"
+                      data-sort="description"
+                      onClick={() => toggleIncomeSort("description")}
+                    >
+                      Descripción
+                      <SortIcon
+                        direction={incomeListSortOrder}
+                        active={incomeListSort === "description"}
+                      />
+                    </button>
+                    <span>Macro</span>
+                    <span>Micro</span>
+                    <span>Miembro</span>
+                    <button
+                      type="button"
+                      className="expense-sort-button"
+                      data-sort="amount"
+                      onClick={() => toggleIncomeSort("amount")}
+                    >
+                      Monto
+                      <SortIcon
+                        direction={incomeListSortOrder}
+                        active={incomeListSort === "amount"}
+                      />
+                    </button>
+                    <span>Acciones</span>
+                  </div>
+                  {incomes.map((income) => {
+                    const category = incomeCategoryParts(income.categoryId);
+                    return (
+                      <div
+                        className="expense-table-row income-table-row"
+                        key={income.id}
+                        role="row"
+                      >
+                        {editingIncome === income.id ? (
+                          <form
+                            className="form expense-edit-row"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              void saveIncome(income.id);
+                            }}
+                          >
+                            <label>
+                              Integrante
+                              <select
+                                required
+                                value={editIncomeForm.memberId}
+                                onChange={(event) =>
+                                  setEditIncomeForm({
+                                    ...editIncomeForm,
+                                    memberId: event.target.value,
+                                  })
+                                }
+                              >
+                                <option value="">Seleccionar</option>
+                                {memberIds.map((id) => (
+                                  <option key={id} value={id}>
+                                    {memberLabel(id)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Monto
+                              <input
+                                required
+                                type="number"
+                                min="0.01"
+                                step="0.01"
+                                value={editIncomeForm.amount}
+                                onChange={(event) =>
+                                  setEditIncomeForm({
+                                    ...editIncomeForm,
+                                    amount: event.target.value,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              Fecha
+                              <input
+                                required
+                                type="date"
+                                value={editIncomeForm.incomeDate}
+                                onChange={(event) =>
+                                  setEditIncomeForm({
+                                    ...editIncomeForm,
+                                    incomeDate: event.target.value,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              Categoría principal
+                              <select
+                                aria-label="Categoría principal del ingreso"
+                                value={editIncomeMacroId}
+                                onChange={(event) => {
+                                  setEditIncomeMacroId(event.target.value);
+                                  setEditIncomeLegacyCategoryName(null);
+                                  setEditIncomeForm({
+                                    ...editIncomeForm,
+                                    categoryId: "",
+                                  });
+                                }}
+                              >
+                                <option value="">
+                                  {editIncomeLegacyCategoryName
+                                    ? `Categoría histórica: ${editIncomeLegacyCategoryName}`
+                                    : "Sin categoría"}
+                                </option>
+                                {incomeMacros.map((macro) => (
+                                  <option key={macro.id} value={macro.id}>
+                                    {macro.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Categoría específica
+                              <select
+                                aria-label="Categoría específica del ingreso"
+                                disabled={editIncomeMacroId === ""}
+                                value={editIncomeForm.categoryId}
+                                onChange={(event) =>
+                                  setEditIncomeForm({
+                                    ...editIncomeForm,
+                                    categoryId: event.target.value,
+                                  })
+                                }
+                              >
+                                <option value="">
+                                  {editIncomeMacroId === ""
+                                    ? "Selecciona una categoría principal"
+                                    : "Sin categoría específica"}
+                                </option>
+                                {editIncomeMicros.map((categoryOption) => (
+                                  <option
+                                    key={categoryOption.id}
+                                    value={categoryOption.id}
+                                  >
+                                    {categoryOption.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Descripción
+                              <textarea
+                                required
+                                value={editIncomeForm.description}
+                                onChange={(event) =>
+                                  setEditIncomeForm({
+                                    ...editIncomeForm,
+                                    description: event.target.value,
+                                  })
+                                }
+                              />
+                            </label>
+                            <div className="actions">
+                              <button
+                                type="submit"
+                                disabled={
+                                  busy ||
+                                  (editIncomeLegacyCategoryName !== null &&
+                                    editIncomeMacroId === "") ||
+                                  (editIncomeMacroId !== "" &&
+                                    editIncomeForm.categoryId === "")
+                                }
+                              >
+                                Guardar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelIncomeEdit}
+                                disabled={busy}
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <>
+                            <div
+                              className="expense-table-cell"
+                              data-label="Fecha"
+                            >
+                              {formatExpenseDateForTable(income.incomeDate)}
+                            </div>
+                            <div
+                              className="expense-table-cell"
+                              data-label="Descripción"
+                            >
+                              {income.description || "—"}
+                            </div>
+                            <div
+                              className="expense-table-cell"
+                              data-label="Macro"
+                            >
+                              {category.macro}
+                            </div>
+                            <div
+                              className="expense-table-cell"
+                              data-label="Micro"
+                              title={incomeCategoryLabel(income.categoryId)}
+                            >
+                              {category.micro}
+                            </div>
+                            <div
+                              className="expense-table-cell"
+                              data-label="Miembro"
+                            >
+                              {memberLabel(income.memberId)}
+                            </div>
+                            <strong
+                              className="expense-table-cell"
+                              data-label="Monto"
+                            >
+                              {money(income.amount)}
+                            </strong>
+                            <div
+                              className="actions expense-actions"
+                              data-label="Acciones"
+                            >
+                              <button
+                                type="button"
+                                className="expense-icon-button"
+                                aria-label={`Editar ingreso ${income.description}`}
+                                title="Editar ingreso"
+                                onClick={() => startIncomeEdit(income)}
+                                disabled={busy}
+                              >
+                                <EditIcon />
+                              </button>
+                              <button
+                                type="button"
+                                className="expense-icon-button danger"
+                                aria-label={`Eliminar ingreso ${income.description}`}
+                                title="Eliminar ingreso"
+                                onClick={() => void removeIncome(income.id)}
+                                disabled={busy}
+                              >
+                                <TrashIcon />
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="expense-pagination" aria-label="Paginación de ingresos">
+                <button
+                  type="button"
+                  className="expense-page-button"
+                  aria-label="Página anterior de ingresos"
+                  disabled={incomeListLoading || incomeListPagination.page <= 1}
+                  onClick={() =>
+                    setIncomeListPage((page) => Math.max(1, page - 1))
+                  }
+                >
+                  ‹
+                </button>
+                <div className="expense-page-controls">
+                  {paginationItems(
+                    incomeListPagination.page,
+                    Math.max(1, incomeListPagination.totalPages),
+                  ).map((item, index) =>
+                    item === "ellipsis" ? (
+                      <span
+                        className="expense-page-ellipsis"
+                        key={`income-ellipsis-${index}`}
+                      >
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className={
+                          item === incomeListPagination.page
+                            ? "expense-page-button active"
+                            : "expense-page-button"
+                        }
+                        aria-current={
+                          item === incomeListPagination.page ? "page" : undefined
+                        }
+                        onClick={() => setIncomeListPage(item)}
+                        disabled={incomeListLoading}
+                        key={`income-page-${item}`}
+                      >
+                        {item}
+                      </button>
+                    ),
+                  )}
+                </div>
+                <span className="expense-pagination-range">
+                  {incomeListPagination.total === 0
+                    ? "0 de 0"
+                    : `${(incomeListPagination.page - 1) * incomeListPagination.pageSize + 1}–${Math.min(
+                        incomeListPagination.page * incomeListPagination.pageSize,
+                        incomeListPagination.total,
+                      )} de ${incomeListPagination.total}`}
+                </span>
+                <label className="expense-page-size-control">
+                  <span>Ingresos por página</span>
+                  <select
+                    aria-label="Ingresos por página"
+                    value={incomeListPageSize}
+                    onChange={(event) => {
+                      setIncomeListPageSize(
+                        Number(event.target.value) as IncomePageSize,
+                      );
+                      setIncomeListPage(1);
+                    }}
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="expense-page-button"
+                  aria-label="Página siguiente de ingresos"
+                  disabled={
+                    incomeListLoading ||
+                    incomeListPagination.totalPages === 0 ||
+                    incomeListPagination.page >= incomeListPagination.totalPages
+                  }
+                  onClick={() =>
+                    setIncomeListPage((page) =>
+                      Math.min(incomeListPagination.totalPages, page + 1),
+                    )
+                  }
+                >
+                  ›
+                </button>
+              </div>
             </article>
           </div>
         </section>

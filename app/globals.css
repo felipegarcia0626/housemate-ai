@@ -569,6 +569,9 @@ textarea {
   padding: 0.8rem 0;
   border-bottom: 1px solid #edf2f0;
 }
+.income-table-row {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.9fr) auto;
+}
 .expense-table-row:last-child {
   border-bottom: 0;
 }
@@ -870,6 +873,9 @@ footer {
     gap: 0.8rem;
     padding: 1rem 0;
   }
+  .income-table-row {
+    min-width: 900px;
+  }
 }
 @media (max-width: 480px) {
   .shell {
@@ -922,6 +928,9 @@ footer {
   }
   .expense-table-row {
     min-width: 1120px;
+  }
+  .income-table-row {
+    min-width: 900px;
   }
   .expense-filter-panel-actions,
   .expense-create-modal-actions {

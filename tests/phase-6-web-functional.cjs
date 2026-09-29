@@ -243,6 +243,49 @@ console.log(
   "PASS Web Expense listing uses server-side filters, sorting, pagination, and summary",
 );
 
+for (const marker of [
+  "type IncomeCollection",
+  "requestJson<IncomeCollection>",
+  "incomeListSearch",
+  "incomeListFrom",
+  "incomeListTo",
+  "incomeListMemberId",
+  "incomeListMacroId",
+  "incomeListMicroId",
+  "incomeListPagination",
+  "incomeListSummary",
+  "incomeListPageSize",
+  "incomeListSort",
+  "incomeListSortOrder",
+  "incomeFilterMicros",
+  'params.set("search"',
+  'params.set("memberId"',
+  'params.set("macroId"',
+  'params.set("categoryId"',
+  'params.set("from"',
+  'params.set("to"',
+  "sortBy: incomeListSort",
+  "sortOrder: incomeListSortOrder",
+  'aria-label="Buscar ingresos"',
+  'aria-label="Filtrar ingresos por integrante"',
+  'aria-label="Filtrar ingresos por macro"',
+  'aria-label="Filtrar ingresos por micro"',
+  "Paginación de ingresos",
+  "Ingresos por página",
+  "formatExpenseDateForTable(income.incomeDate)",
+  "incomeCategoryParts",
+  "incomeListSummary.totalIncome",
+  "No encontramos ingresos",
+]) {
+  if (!page.includes(marker))
+    throw new Error("Missing Web Income collection marker: " + marker);
+}
+if (page.includes('api<Income[]>("/api/incomes"'))
+  throw new Error("Income collection must consume the paginated response");
+console.log(
+  "PASS Web Income listing uses server-side filters, sorting, pagination, and summary",
+);
+
 if (!page.includes("Promise.allSettled"))
   throw new Error("UI must load resources independently");
 if (page.includes("Promise.all(["))
