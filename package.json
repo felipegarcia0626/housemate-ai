@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test:e2e": "playwright test",
     "test:sql": "node scripts/run-sql-tests.cjs",
     "test:e2e:categories": "node tests/phase-7-categories-e2e.cjs",
     "test:sql:concurrency": "node scripts/run-sql-concurrency-test.cjs",
@@ -22,6 +23,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "1.51.1",
     "@types/node": "26.2.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.3",

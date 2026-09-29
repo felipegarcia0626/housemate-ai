@@ -17,6 +17,9 @@
 /coverage
 *.tsbuildinfo
 next-env.d.ts
+/playwright-report
+/test-results
+/tests/e2e/.generated
 
 # operating system and editors
 .DS_Store

@@ -154,6 +154,95 @@ for (const endpoint of [
     throw new Error(`Missing UI API integration: ${endpoint}`);
 }
 
+for (const marker of [
+  "type ExpenseCollection",
+  "requestJson<ExpenseCollection>",
+  "expenseListSearch",
+  "expenseListFrom",
+  "expenseListTo",
+  "expenseListMacroId",
+  "expenseListMicroId",
+  "expenseHeaderFilterOpen",
+  "expense-header-filter",
+  "Filtrar por Macro",
+  "Filtrar por Micro",
+  "expenseMacroFilterQuery",
+  "expenseMicroFilterQuery",
+  "Buscar macro...",
+  "Buscar micro...",
+  'params.set("macroId"',
+  'params.set("categoryId"',
+  "sort: expenseListSort",
+  "sortDirection: expenseListSortDirection",
+  "page: String(expenseListPage)",
+  "pageSize: String(expenseListPageSize)",
+  "expenseListPagination.totalPages",
+  "expenseListSummary.totalCount",
+  "expenseListSummary.totalAmount",
+  "formatExpenseDateForTable",
+  "expense.paidBy?.name",
+  "expense.distributions",
+  "formatDistribution",
+  "expense-sort-button",
+  "SortIcon",
+  "expense-icon-button",
+  "Editar gasto",
+  "Eliminar gasto",
+  "renderExpenseEditForm",
+  "expense-edit-title",
+  "expense-table",
+  "Limpiar filtros",
+  "Gastos por página",
+]) {
+  if (!page.includes(marker))
+    throw new Error("Missing Web Expense list marker: " + marker);
+}
+const expenseTableStart = page.indexOf('<div className="expense-table" role="table">');
+const expenseTableEnd = page.indexOf('</div>\n              )}', expenseTableStart);
+if (expenseTableStart < 0)
+  throw new Error("Missing structured Expense table");
+const expenseTableSource = page.slice(
+  expenseTableStart,
+  expenseTableEnd > expenseTableStart ? expenseTableEnd : expenseTableStart + 12000,
+);
+for (const marker of [
+  "Fecha",
+  "Macro",
+  "Micro",
+  "Detalle",
+  "Comercio",
+  "Monto",
+  "Pagador",
+  "Distribución",
+  "Acciones",
+  "formatExpenseDateForTable(expense.expenseDate)",
+  'data-sort="date"',
+  'data-sort="merchant"',
+  'data-sort="amount"',
+  "Filtrar por Macro",
+  "Filtrar por Micro",
+]) {
+  if (!expenseTableSource.includes(marker))
+    throw new Error(`Expense table is missing column/filter marker: ${marker}`);
+}
+if (expenseTableSource.includes("humanDate(expense.expenseDate)"))
+  throw new Error("Expense table dates must not use locale-dependent humanDate");
+if (page.includes('aria-label="Ordenar gastos"'))
+  throw new Error("Expense sorting must be controlled from table headers");
+if (page.includes("expense-action-trigger") || page.includes("expense-action-menu") || page.includes("⋯"))
+  throw new Error("Expense actions must not use the legacy overflow menu");
+const editModalStart = page.indexOf('aria-labelledby="expense-edit-title"');
+const editModalEnd = page.indexOf('aria-label="Cerrar edición de gasto"');
+if (editModalStart < 0 || editModalEnd < 0)
+  throw new Error("Expense edit flow must render in a dedicated dialog");
+if (!page.includes("onSubmit={(event) =>") || !page.includes("saveExpense(editingExpense)"))
+  throw new Error("Expense edit dialog must reuse the existing save flow");
+if (page.includes('disabled={!expenseListMacroId}'))
+  throw new Error("Micro filter must remain available without a selected macro");
+console.log(
+  "PASS Web Expense listing uses server-side filters, sorting, pagination, and summary",
+);
+
 if (!page.includes("Promise.allSettled"))
   throw new Error("UI must load resources independently");
 if (page.includes("Promise.all(["))
@@ -395,6 +484,8 @@ for (const marker of [
   "editExpenseLegacyCategoryName",
   "editExpenseMacroId",
   "editExpenseMicros",
+  "expense-edit-title",
+  "expense-edit-modal-form",
 ]) {
   if (!page.includes(marker))
     throw new Error(`Missing hierarchical Expense edit/list marker: ${marker}`);
@@ -420,6 +511,8 @@ for (const marker of [
   "onSubmit={(event) =>",
   "event.preventDefault()",
   'type="submit"',
+  "Comercio del gasto",
+  "value={editExpenseForm.merchant}",
   "Descripción del gasto",
   "value={editExpenseForm.totalAmount}",
   "value={editExpenseForm.categoryId}",
@@ -443,23 +536,65 @@ for (const marker of [
   "/api/expenses/${expenseId}",
   "expense.description",
   "expense.totalAmount",
+  "expense.expenseDate",
   "expense.category?.id",
   "expense.paidByMemberId",
+  "splits: (expense.splits ?? []).map(({ memberId, percentage }) => ({",
 ]) {
   if (!editSource.includes(marker))
     throw new Error(`Missing Expense detail hydration marker: ${marker}`);
 }
+if (editSource.includes("splits: expense.splits ?? []"))
+  throw new Error("Expense edit state must strip derived split amounts");
 
 const saveSource = page.slice(saveStart, cancelStart);
 for (const marker of [
+  "merchant: editExpenseForm.merchant || null",
   "editExpenseForm.description",
   "totalAmount: Number(editExpenseForm.totalAmount)",
+  "expenseDate: normalizedExpenseDate",
   "categoryId: editExpenseForm.categoryId || null",
   "paidByMemberId: editExpenseForm.paidByMemberId",
+  "splits: editExpenseForm.splits",
   "await refresh()",
 ]) {
   if (!saveSource.includes(marker))
     throw new Error(`Missing Expense Update payload marker: ${marker}`);
+}
+for (const marker of [
+  'aria-label="Fecha del gasto"',
+  'type="text"',
+  'inputMode="numeric"',
+  'placeholder="DD/MM/AAAA"',
+  "value={editExpenseForm.expenseDate}",
+  "expenseDate: event.target.value",
+  "formatExpenseDateForDisplay",
+  "parseExpenseDateForApi",
+  "normalizedExpenseDate",
+]) {
+  if (!page.includes(marker))
+    throw new Error(`Missing Expense edit date marker: ${marker}`);
+}
+const expenseDateInputStart = page.indexOf('aria-label="Fecha del gasto"');
+const expenseDateInputEnd = page.indexOf("/>", expenseDateInputStart);
+if (
+  expenseDateInputStart < 0 ||
+  expenseDateInputEnd < expenseDateInputStart ||
+  page.slice(expenseDateInputStart, expenseDateInputEnd).includes('type="date"')
+) {
+  throw new Error("Expense edit date must not use the browser-native date control");
+}
+const expenseDateDisplayStart = page.indexOf("function formatExpenseDateForDisplay");
+const expenseDateDisplayEnd = page.indexOf("function parseExpenseDateForApi", expenseDateDisplayStart);
+const expenseDateDisplaySource = page.slice(
+  expenseDateDisplayStart,
+  expenseDateDisplayEnd > expenseDateDisplayStart
+    ? expenseDateDisplayEnd
+    : expenseDateDisplayStart + 1000,
+);
+for (const forbidden of ["new Date", "Date.parse", "toISOString", "Intl.DateTimeFormat"]) {
+  if (expenseDateDisplaySource.includes(forbidden))
+    throw new Error(`Expense edit date display must not use ${forbidden}`);
 }
 for (const forbidden of [
   "amount:",
@@ -482,6 +617,41 @@ if (!(patchCall >= 0 && patchCall < refreshCall && refreshCall < saveCatch))
   );
 console.log(
   "PASS Expense Update UI hydrates detail and sends the contractual fields",
+);
+
+for (const marker of [
+  'response.status === 202',
+  'errorPayload?.code === "UPDATED_NOT_HYDRATED"',
+  'result: updatedNotHydrated ? "uncertain"',
+  "isUpdatedNotHydratedError(cause)",
+  "no se pudo confirmar la recarga",
+]) {
+  if (!page.includes(marker))
+    throw new Error(`Missing UPDATED_NOT_HYDRATED handling marker: ${marker}`);
+}
+const updatedNotHydratedSource = page.slice(
+  page.indexOf("async function saveExpense"),
+  page.indexOf("function cancelExpenseEdit"),
+);
+const updatedSaveCatch = updatedNotHydratedSource.indexOf("} catch");
+const uncertainError = updatedNotHydratedSource.indexOf(
+  "isUpdatedNotHydratedError(cause)",
+);
+const catchSource =
+  updatedSaveCatch >= 0
+    ? updatedNotHydratedSource.slice(updatedSaveCatch)
+    : "";
+if (
+  uncertainError < 0 ||
+  updatedSaveCatch < 0 ||
+  !catchSource.includes("isUpdatedNotHydratedError(cause)") ||
+  catchSource.includes("await refresh()")
+)
+  throw new Error(
+    "Expense Update must preserve context and avoid refresh for UPDATED_NOT_HYDRATED",
+  );
+console.log(
+  "PASS Expense Update keeps context and avoids automatic refresh for UPDATED_NOT_HYDRATED",
 );
 
 for (const marker of [
