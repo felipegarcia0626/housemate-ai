@@ -175,6 +175,7 @@ const categories = [
 
 let incomes = [...baselineIncomes];
 let failedTable;
+let failedDeleteCode;
 let nextCreatedIncome = 50;
 const observedOperations = [];
 
@@ -309,6 +310,16 @@ class FakeQuery {
   }
 
   execute() {
+    if (this.deleteRequested && failedDeleteCode) {
+      return {
+        data: null,
+        error: {
+          code: failedDeleteCode,
+          message: "sensitive foreign key detail",
+        },
+      };
+    }
+
     if (failedTable === this.table) {
       return {
         data: null,
@@ -761,6 +772,22 @@ async function main() {
       1,
     );
 
+    failedDeleteCode = "23503";
+    const referencedDelete = await updateRoute.DELETE(
+      deleteRequest(incomeSecond),
+      { params: Promise.resolve({ id: incomeSecond }) },
+    );
+    assert.equal(referencedDelete.status, 409);
+    assert.deepEqual(await readJson(referencedDelete), {
+      error: {
+        code: "INCOME_REFERENCED",
+        message:
+          "No se puede eliminar este ingreso porque está asociado a un registro de trazabilidad.",
+      },
+    });
+    assert.ok(incomes.some(({ id }) => id === incomeSecond));
+    failedDeleteCode = undefined;
+
     for (const [id, status, code] of [
       ["invalid", 422, "VALIDATION_ERROR"],
       [missingHousehold, 404, "NOT_FOUND"],
@@ -809,7 +836,7 @@ async function main() {
     failedTable = undefined;
     incomes = [...baselineIncomes];
     console.log(
-      "PASS Income DELETE validates isolation, errors and route boundaries",
+      "PASS Income DELETE validates isolation, referenced conflicts, errors and route boundaries",
     );
     const originalIncome = structuredClone(incomes[2]);
     const categoryAFixture = categories.find(({ id }) => id === categoryA);

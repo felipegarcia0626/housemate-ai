@@ -59,6 +59,13 @@ function deletePersistenceError(): IncomeDomainError {
   );
 }
 
+function incomeReferencedError(): IncomeDomainError {
+  return new IncomeDomainError(
+    "INCOME_REFERENCED",
+    "No se puede eliminar este ingreso porque está asociado a un registro de trazabilidad.",
+  );
+}
+
 function centsToSafeNumber(cents: bigint, fieldName: string): number {
   const absolute = cents < BigInt(0) ? -cents : cents;
   if (absolute > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -261,6 +268,10 @@ export async function deleteIncome(
         "NOT_FOUND",
         "Income was not found in the current household.",
       );
+    }
+
+    if (error instanceof IncomeRepositoryError && error.kind === "INTEGRITY") {
+      throw incomeReferencedError();
     }
 
     throw deletePersistenceError();

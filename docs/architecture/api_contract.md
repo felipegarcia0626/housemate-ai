@@ -680,6 +680,21 @@ El backend validará que el ingreso pertenezca al hogar y contexto actual. La el
 204 No Content
 ```
 
+Si el ingreso está referenciado por una `PendingProposal` completada, la
+eliminación será rechazada para preservar la trazabilidad y devolverá:
+
+```json
+{
+  "error": {
+    "code": "INCOME_REFERENCED",
+    "message": "No se puede eliminar este ingreso porque está asociado a un registro de trazabilidad."
+  }
+}
+```
+
+La respuesta utilizará HTTP `409 Conflict`. El backend no eliminará ni
+modificará el ingreso ni la propuesta relacionada.
+
 Cuando se ejecute mediante el agente, requerirá confirmación explícita. No se implementará soft delete, historial ni recuperación.
 
 No se expondrá `GET /api/incomes/{id}` durante el MVP.

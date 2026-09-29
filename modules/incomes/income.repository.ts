@@ -69,7 +69,9 @@ function getIncomePersistenceErrorKind(
     error !== null &&
     "code" in error &&
     typeof error.code === "string" &&
-    ["22023", "22P02", "23503", "23505", "23514"].includes(error.code)
+    ["22023", "22P02", "23001", "23503", "23505", "23514"].includes(
+      error.code,
+    )
   ) {
     return "INTEGRITY";
   }

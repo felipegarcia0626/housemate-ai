@@ -196,6 +196,7 @@ let failIncomeRead = false;
 let failIncomeWrite = false;
 let failIncomeUpdate = false;
 let failIncomeDelete = false;
+let incomeDeleteErrorCode;
 let failCategoryRead = false;
 let failSharingRuleRead = false;
 let failBalanceRead = false;
@@ -323,7 +324,13 @@ class FakeQuery {
       observedIncomeDeletes.push({ filters: [...this.filters] });
 
       if (failIncomeDelete) {
-        return { data: null, error: { message: "sensitive delete detail" } };
+        return {
+          data: null,
+          error: {
+            ...(incomeDeleteErrorCode ? { code: incomeDeleteErrorCode } : {}),
+            message: "sensitive delete detail",
+          },
+        };
       }
 
       const row = this.apply().rows[0] ?? null;
@@ -990,6 +997,22 @@ async function main() {
     ),
   );
 
+  const referencedIncomeId = "26000000-0000-4000-8000-000000000043";
+  failIncomeDelete = true;
+  incomeDeleteErrorCode = "23503";
+  const referencedDeleteError = await expectDomainError(
+    "referenced Income delete",
+    () => deleteIncome({ householdId: householdA }, referencedIncomeId),
+    "INCOME_REFERENCED",
+  );
+  assert.equal(
+    referencedDeleteError.message,
+    "No se puede eliminar este ingreso porque está asociado a un registro de trazabilidad.",
+  );
+  assert.ok(incomes.some((income) => income.id === referencedIncomeId));
+  incomeDeleteErrorCode = undefined;
+  failIncomeDelete = false;
+
   failIncomeDelete = true;
   const deletePersistenceError = await expectDomainError(
     "delete repository failure",
@@ -1026,7 +1049,7 @@ async function main() {
     );
   }
   console.log(
-    "PASS real deleteIncome result, physical deletion, isolation and sanitized errors",
+    "PASS real deleteIncome result, referenced conflict, physical deletion, isolation and sanitized errors",
   );
   console.log("PASS Income read/create/update regressions remain operational");
 

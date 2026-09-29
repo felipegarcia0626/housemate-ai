@@ -10,7 +10,11 @@ const UUID_PATTERN =
 
 function errorResponse(
   status: number,
-  code: "VALIDATION_ERROR" | "NOT_FOUND" | "INTERNAL_ERROR",
+  code:
+    | "VALIDATION_ERROR"
+    | "NOT_FOUND"
+    | "INCOME_REFERENCED"
+    | "INTERNAL_ERROR",
   message: string,
 ): Response {
   return Response.json({ error: { code, message } }, { status });
@@ -109,6 +113,13 @@ export async function DELETE(
       if (error.code === "VALIDATION_ERROR") return invalidRequest();
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {
         return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");
+      }
+      if (error.code === "INCOME_REFERENCED") {
+        return errorResponse(
+          409,
+          "INCOME_REFERENCED",
+          "No se puede eliminar este ingreso porque está asociado a un registro de trazabilidad.",
+        );
       }
     }
 

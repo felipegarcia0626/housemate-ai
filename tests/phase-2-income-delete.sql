@@ -2,10 +2,14 @@ BEGIN;
 
 -- Phase 2 Income delete integration test. All fixtures are rolled back.
 
+DELETE FROM public.tb_pending_proposals
+WHERE id = '29000000-0000-4000-8000-000000000051';
+
 DELETE FROM public.tb_incomes
 WHERE id IN (
   '29000000-0000-4000-8000-000000000041',
-  '29000000-0000-4000-8000-000000000042'
+  '29000000-0000-4000-8000-000000000042',
+  '29000000-0000-4000-8000-000000000043'
 );
 
 DELETE FROM public.tb_household_members
@@ -49,7 +53,23 @@ INSERT INTO public.tb_incomes (
 )
 VALUES
   ('29000000-0000-4000-8000-000000000041', '29000000-0000-4000-8000-000000000001', '29000000-0000-4000-8000-000000000021', '29000000-0000-4000-8000-000000000021', 100.00, '2026-08-09', 'Income to delete', NULL, '2026-08-09T12:00:00Z', '2026-08-09T12:00:00Z'),
-  ('29000000-0000-4000-8000-000000000042', '29000000-0000-4000-8000-000000000002', '29000000-0000-4000-8000-000000000022', '29000000-0000-4000-8000-000000000022', 200.00, '2026-08-09', 'Income in another household', NULL, '2026-08-09T12:00:00Z', '2026-08-09T12:00:00Z');
+  ('29000000-0000-4000-8000-000000000042', '29000000-0000-4000-8000-000000000002', '29000000-0000-4000-8000-000000000022', '29000000-0000-4000-8000-000000000022', 200.00, '2026-08-09', 'Income in another household', NULL, '2026-08-09T12:00:00Z', '2026-08-09T12:00:00Z'),
+  ('29000000-0000-4000-8000-000000000043', '29000000-0000-4000-8000-000000000001', '29000000-0000-4000-8000-000000000021', '29000000-0000-4000-8000-000000000021', 300.00, '2026-08-09', 'Referenced Income', NULL, '2026-08-09T12:00:00Z', '2026-08-09T12:00:00Z');
+
+INSERT INTO public.tb_pending_proposals (
+  id, household_id, conversation_key, operation_type, payload, status,
+  resolved_at, income_id
+)
+VALUES (
+  '29000000-0000-4000-8000-000000000051',
+  '29000000-0000-4000-8000-000000000001',
+  'phase-2-income-delete:referenced',
+  'CREATE_INCOME',
+  '{}'::jsonb,
+  'COMPLETED',
+  '2026-08-09T12:00:00Z',
+  '29000000-0000-4000-8000-000000000043'
+);
 
 DO $$
 BEGIN
@@ -100,7 +120,40 @@ DO $$
 DECLARE
   deleted_id UUID;
   affected_rows INTEGER;
+  referenced_delete_state TEXT;
 BEGIN
+  BEGIN
+    DELETE FROM public.tb_incomes
+    WHERE id = '29000000-0000-4000-8000-000000000043'
+      AND household_id = '29000000-0000-4000-8000-000000000001';
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS referenced_delete_state = RETURNED_SQLSTATE;
+  END;
+
+  IF referenced_delete_state NOT IN ('23001', '23503') THEN
+    RAISE EXCEPTION
+      'FAIL referenced Income delete returned SQLSTATE %',
+      COALESCE(referenced_delete_state, 'none');
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.tb_incomes
+    WHERE id = '29000000-0000-4000-8000-000000000043'
+  ) IS NOT TRUE THEN
+    RAISE EXCEPTION 'FAIL referenced Income was deleted';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.tb_pending_proposals
+    WHERE id = '29000000-0000-4000-8000-000000000051'
+      AND income_id = '29000000-0000-4000-8000-000000000043'
+      AND status = 'COMPLETED'
+  ) IS NOT TRUE THEN
+    RAISE EXCEPTION 'FAIL PendingProposal traceability row changed';
+  END IF;
+
   DELETE FROM public.tb_incomes
   WHERE id = '29000000-0000-4000-8000-000000000041'
     AND household_id = '29000000-0000-4000-8000-000000000001'
@@ -141,6 +194,7 @@ BEGIN
     RAISE EXCEPTION 'FAIL nonexistent Income delete affected a row';
   END IF;
 
+  RAISE NOTICE 'PASS referenced Income and PendingProposal remain intact';
   RAISE NOTICE 'PASS valid physical delete returned id and removed the Income';
   RAISE NOTICE 'PASS compound id + household_id filter isolates foreign and missing Incomes';
 END;
