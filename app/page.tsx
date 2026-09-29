@@ -602,6 +602,7 @@ export default function HomePage() {
   const [expenseListRefreshToken, setExpenseListRefreshToken] = useState(0);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [incomes, setIncomes] = useState<Income[]>([]);
+  const [showIncomeForm, setShowIncomeForm] = useState(false);
   const [incomeListPagination, setIncomeListPagination] =
     useState<IncomeCollection["pagination"]>({
       page: 1,
@@ -1448,6 +1449,7 @@ export default function HomePage() {
       });
       setIncomeForm(initialIncome);
       setIncomeMacroId("");
+      setShowIncomeForm(false);
       await refresh();
     } catch (cause) {
       setError(
@@ -1530,7 +1532,11 @@ export default function HomePage() {
   }
 
   async function removeIncome(incomeId: string) {
-    if (!window.confirm("¿Eliminar este ingreso?")) return;
+    const income = incomes.find((item) => item.id === incomeId);
+    const description = income?.description?.trim();
+    const amount = income ? ` de ${money(income.amount)}` : "";
+    const label = description ? ` "${description}"` : "";
+    if (!window.confirm(`¿Eliminar el ingreso${label}${amount}?`)) return;
     setBusy(true);
     setError("");
     try {
@@ -2023,6 +2029,168 @@ export default function HomePage() {
             </div>
           </>
         )}
+      </form>
+    );
+  }
+
+  function renderIncomeEditForm() {
+    if (!editingIncome) return null;
+    return (
+      <form
+        className="panel form expense-edit-modal-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void saveIncome(editingIncome);
+        }}
+      >
+        <div className="expense-create-modal-header">
+          <div>
+            <p className="section-kicker">EDITAR MOVIMIENTO</p>
+            <h2 id="income-edit-title">Editar ingreso</h2>
+          </div>
+          <button
+            type="button"
+            className="filter-panel-close"
+            aria-label="Cerrar edición de ingreso"
+            onClick={cancelIncomeEdit}
+            disabled={busy}
+          >
+            ×
+          </button>
+        </div>
+        {error && (
+          <p className="alert" role="alert">
+            {error}
+          </p>
+        )}
+        <label>
+          Integrante
+          <select
+            required
+            value={editIncomeForm.memberId}
+            onChange={(event) =>
+              setEditIncomeForm({
+                ...editIncomeForm,
+                memberId: event.target.value,
+              })
+            }
+          >
+            <option value="">Seleccionar</option>
+            {memberIds.map((id) => (
+              <option key={id} value={id}>
+                {memberLabel(id)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Monto
+          <input
+            required
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={editIncomeForm.amount}
+            onChange={(event) =>
+              setEditIncomeForm({
+                ...editIncomeForm,
+                amount: event.target.value,
+              })
+            }
+          />
+        </label>
+        <label>
+          Fecha
+          <input
+            required
+            type="date"
+            value={editIncomeForm.incomeDate}
+            onChange={(event) =>
+              setEditIncomeForm({
+                ...editIncomeForm,
+                incomeDate: event.target.value,
+              })
+            }
+          />
+        </label>
+        <label>
+          Categoría principal
+          <select
+            aria-label="Categoría principal del ingreso"
+            value={editIncomeMacroId}
+            onChange={(event) => {
+              setEditIncomeMacroId(event.target.value);
+              setEditIncomeLegacyCategoryName(null);
+              setEditIncomeForm({ ...editIncomeForm, categoryId: "" });
+            }}
+          >
+            <option value="">
+              {editIncomeLegacyCategoryName
+                ? `Categoría histórica: ${editIncomeLegacyCategoryName}`
+                : "Sin categoría"}
+            </option>
+            {incomeMacros.map((macro) => (
+              <option key={macro.id} value={macro.id}>
+                {macro.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Categoría específica
+          <select
+            aria-label="Categoría específica del ingreso"
+            disabled={editIncomeMacroId === ""}
+            value={editIncomeForm.categoryId}
+            onChange={(event) =>
+              setEditIncomeForm({
+                ...editIncomeForm,
+                categoryId: event.target.value,
+              })
+            }
+          >
+            <option value="">
+              {editIncomeMacroId === ""
+                ? "Selecciona una categoría principal"
+                : "Sin categoría específica"}
+            </option>
+            {editIncomeMicros.map((categoryOption) => (
+              <option key={categoryOption.id} value={categoryOption.id}>
+                {categoryOption.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Descripción
+          <textarea
+            required
+            value={editIncomeForm.description}
+            onChange={(event) =>
+              setEditIncomeForm({
+                ...editIncomeForm,
+                description: event.target.value,
+              })
+            }
+          />
+        </label>
+        <div className="expense-create-modal-actions">
+          <button type="button" onClick={cancelIncomeEdit} disabled={busy}>
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            className="primary"
+            disabled={
+              busy ||
+              (editIncomeLegacyCategoryName !== null &&
+                editIncomeMacroId === "") ||
+              (editIncomeMacroId !== "" && editIncomeForm.categoryId === "")
+            }
+          >
+            Guardar
+          </button>
+        </div>
       </form>
     );
   }
@@ -2829,14 +2997,53 @@ export default function HomePage() {
       )}
       {!loading && section === "incomes" && (
         <section>
-          {resourceErrors.incomes && (
-            <p className="alert" role="alert">
-              {resourceErrors.incomes}
-            </p>
-          )}
+          <div className="expenses-page-header">
+            <div>
+              <p className="section-kicker">MOVIMIENTOS</p>
+              <h2>Ingresos</h2>
+              <p className="muted">Gestiona los ingresos de tu hogar.</p>
+            </div>
+            <button
+              className="primary expenses-create-button"
+              type="button"
+              onClick={() => {
+                setError("");
+                setShowIncomeForm(true);
+              }}
+            >
+              + Agregar ingreso
+            </button>
+          </div>
           <div className="columns">
-            <form className="panel form" onSubmit={submitIncome}>
-              <h2>Registrar ingreso</h2>
+            {showIncomeForm && (
+              <div
+                className="expense-form-backdrop"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="income-create-title"
+              >
+                <div className="expense-create-modal">
+                  <form className="panel form" onSubmit={submitIncome}>
+                    <div className="expense-create-modal-header">
+                      <div>
+                        <p className="section-kicker">NUEVO MOVIMIENTO</p>
+                        <h2 id="income-create-title">Agregar ingreso</h2>
+                      </div>
+                      <button
+                        type="button"
+                        className="filter-panel-close"
+                        aria-label="Cerrar formulario de ingreso"
+                        onClick={() => setShowIncomeForm(false)}
+                        disabled={busy}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    {error && (
+                      <p className="alert" role="alert">
+                        {error}
+                      </p>
+                    )}
               {resourceErrors.categories && (
                 <p className="muted">{resourceErrors.categories}</p>
               )}
@@ -2940,10 +3147,22 @@ export default function HomePage() {
                   }
                 />
               </label>
-              <button className="primary" disabled={busy}>
-                Crear ingreso
-              </button>
-            </form>
+                    <div className="expense-create-modal-actions">
+                      <button
+                        type="button"
+                        onClick={() => setShowIncomeForm(false)}
+                        disabled={busy}
+                      >
+                        Cancelar
+                      </button>
+                      <button className="primary" disabled={busy}>
+                        Crear ingreso
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
             <article className="panel expense-results">
               <div className="panel-heading">
                 <div>
@@ -3151,193 +3370,44 @@ export default function HomePage() {
                         key={income.id}
                         role="row"
                       >
-                        {editingIncome === income.id ? (
-                          <form
-                            className="form expense-edit-row"
-                            onSubmit={(event) => {
-                              event.preventDefault();
-                              void saveIncome(income.id);
-                            }}
-                          >
-                            <label>
-                              Integrante
-                              <select
-                                required
-                                value={editIncomeForm.memberId}
-                                onChange={(event) =>
-                                  setEditIncomeForm({
-                                    ...editIncomeForm,
-                                    memberId: event.target.value,
-                                  })
-                                }
-                              >
-                                <option value="">Seleccionar</option>
-                                {memberIds.map((id) => (
-                                  <option key={id} value={id}>
-                                    {memberLabel(id)}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Monto
-                              <input
-                                required
-                                type="number"
-                                min="0.01"
-                                step="0.01"
-                                value={editIncomeForm.amount}
-                                onChange={(event) =>
-                                  setEditIncomeForm({
-                                    ...editIncomeForm,
-                                    amount: event.target.value,
-                                  })
-                                }
-                              />
-                            </label>
-                            <label>
-                              Fecha
-                              <input
-                                required
-                                type="date"
-                                value={editIncomeForm.incomeDate}
-                                onChange={(event) =>
-                                  setEditIncomeForm({
-                                    ...editIncomeForm,
-                                    incomeDate: event.target.value,
-                                  })
-                                }
-                              />
-                            </label>
-                            <label>
-                              Categoría principal
-                              <select
-                                aria-label="Categoría principal del ingreso"
-                                value={editIncomeMacroId}
-                                onChange={(event) => {
-                                  setEditIncomeMacroId(event.target.value);
-                                  setEditIncomeLegacyCategoryName(null);
-                                  setEditIncomeForm({
-                                    ...editIncomeForm,
-                                    categoryId: "",
-                                  });
-                                }}
-                              >
-                                <option value="">
-                                  {editIncomeLegacyCategoryName
-                                    ? `Categoría histórica: ${editIncomeLegacyCategoryName}`
-                                    : "Sin categoría"}
-                                </option>
-                                {incomeMacros.map((macro) => (
-                                  <option key={macro.id} value={macro.id}>
-                                    {macro.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Categoría específica
-                              <select
-                                aria-label="Categoría específica del ingreso"
-                                disabled={editIncomeMacroId === ""}
-                                value={editIncomeForm.categoryId}
-                                onChange={(event) =>
-                                  setEditIncomeForm({
-                                    ...editIncomeForm,
-                                    categoryId: event.target.value,
-                                  })
-                                }
-                              >
-                                <option value="">
-                                  {editIncomeMacroId === ""
-                                    ? "Selecciona una categoría principal"
-                                    : "Sin categoría específica"}
-                                </option>
-                                {editIncomeMicros.map((categoryOption) => (
-                                  <option
-                                    key={categoryOption.id}
-                                    value={categoryOption.id}
-                                  >
-                                    {categoryOption.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Descripción
-                              <textarea
-                                required
-                                value={editIncomeForm.description}
-                                onChange={(event) =>
-                                  setEditIncomeForm({
-                                    ...editIncomeForm,
-                                    description: event.target.value,
-                                  })
-                                }
-                              />
-                            </label>
-                            <div className="actions">
-                              <button
-                                type="submit"
-                                disabled={
-                                  busy ||
-                                  (editIncomeLegacyCategoryName !== null &&
-                                    editIncomeMacroId === "") ||
-                                  (editIncomeMacroId !== "" &&
-                                    editIncomeForm.categoryId === "")
-                                }
-                              >
-                                Guardar
-                              </button>
-                              <button
-                                type="button"
-                                onClick={cancelIncomeEdit}
-                                disabled={busy}
-                              >
-                                Cancelar
-                              </button>
-                            </div>
-                          </form>
-                        ) : (
-                          <>
-                            <div
+                        <div
                               className="expense-table-cell"
                               data-label="Fecha"
                             >
                               {formatExpenseDateForTable(income.incomeDate)}
                             </div>
-                            <div
+                        <div
                               className="expense-table-cell"
                               data-label="Descripción"
                             >
                               {income.description || "—"}
                             </div>
-                            <div
+                        <div
                               className="expense-table-cell"
                               data-label="Macro"
                             >
                               {category.macro}
                             </div>
-                            <div
+                        <div
                               className="expense-table-cell"
                               data-label="Micro"
                               title={incomeCategoryLabel(income.categoryId)}
                             >
                               {category.micro}
                             </div>
-                            <div
+                        <div
                               className="expense-table-cell"
                               data-label="Miembro"
                             >
                               {memberLabel(income.memberId)}
                             </div>
-                            <strong
+                        <strong
                               className="expense-table-cell"
                               data-label="Monto"
                             >
                               {money(income.amount)}
                             </strong>
-                            <div
+                        <div
                               className="actions expense-actions"
                               data-label="Acciones"
                             >
@@ -3362,11 +3432,21 @@ export default function HomePage() {
                                 <TrashIcon />
                               </button>
                             </div>
-                          </>
-                        )}
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {editingIncome && (
+                <div
+                  className="expense-form-backdrop"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="income-edit-title"
+                >
+                  <div className="expense-create-modal">
+                    {renderIncomeEditForm()}
+                  </div>
                 </div>
               )}
               <div className="expense-pagination" aria-label="Paginación de ingresos">

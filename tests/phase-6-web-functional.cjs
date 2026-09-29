@@ -276,12 +276,23 @@ for (const marker of [
   "incomeCategoryParts",
   "incomeListSummary.totalIncome",
   "No encontramos ingresos",
+  "showIncomeForm",
+  "setShowIncomeForm(true)",
+  "+ Agregar ingreso",
+  "income-create-title",
+  "Cerrar formulario de ingreso",
+  "renderIncomeEditForm",
+  "income-edit-title",
+  "Cerrar edición de ingreso",
+  "window.confirm(`¿Eliminar el ingreso",
 ]) {
   if (!page.includes(marker))
     throw new Error("Missing Web Income collection marker: " + marker);
 }
 if (page.includes('api<Income[]>("/api/incomes"'))
   throw new Error("Income collection must consume the paginated response");
+if (page.includes('className="form expense-edit-row"'))
+  throw new Error("Income editing must use the modal instead of inline forms");
 console.log(
   "PASS Web Income listing uses server-side filters, sorting, pagination, and summary",
 );
@@ -517,6 +528,13 @@ for (const marker of [
 }
 if (submitIncomeSource.includes("categoryId: incomeMacroId"))
   throw new Error("Income creation must not submit a macro category ID");
+for (const marker of [
+  "setShowIncomeForm(false)",
+  "await refresh()",
+]) {
+  if (!submitIncomeSource.includes(marker))
+    throw new Error(`Income creation modal is missing success handling: ${marker}`);
+}
 console.log(
   "PASS Income creation UI loads typed hierarchy and submits only the selected micro",
 );
@@ -700,8 +718,8 @@ console.log(
 for (const marker of [
   "incomeCategoryLabel(income.categoryId)",
   "startIncomeEdit(income)",
-  "editingIncome === income.id",
-  "saveIncome(income.id)",
+  "editingIncome &&",
+  "saveIncome(editingIncome)",
   "editIncomeMacroId",
   "editIncomeMicros",
   "editIncomeLegacyCategoryName",
@@ -754,6 +772,23 @@ if (incomeSaveSource.includes("categoryId: editIncomeMacroId"))
   throw new Error("Income Update must not submit a macro category ID");
 console.log(
   "PASS Income UI renders hierarchical labels, hydrates edits, and sends contractual PATCH fields",
+);
+
+const incomeDeleteStart = page.indexOf("async function removeIncome");
+const incomeDeleteEnd = page.indexOf("async function sendAgentMessage", incomeDeleteStart);
+if (incomeDeleteStart < 0 || incomeDeleteEnd < incomeDeleteStart)
+  throw new Error("Missing Income delete handler");
+const incomeDeleteSource = page.slice(incomeDeleteStart, incomeDeleteEnd);
+for (const marker of [
+  "window.confirm(`¿Eliminar el ingreso",
+  'method: "DELETE"',
+  "await refresh()",
+]) {
+  if (!incomeDeleteSource.includes(marker))
+    throw new Error(`Income delete is missing confirmation/refresh handling: ${marker}`);
+}
+console.log(
+  "PASS Income CRUD uses modal creation/editing and confirmed deletion",
 );
 
 for (const forbidden of [
