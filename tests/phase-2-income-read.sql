@@ -9,7 +9,10 @@ WHERE id IN (
   '26000000-0000-4000-8000-000000000041',
   '26000000-0000-4000-8000-000000000042',
   '26000000-0000-4000-8000-000000000043',
-  '26000000-0000-4000-8000-000000000044'
+  '26000000-0000-4000-8000-000000000044',
+  '26000000-0000-4000-8000-000000000051',
+  '26000000-0000-4000-8000-000000000052',
+  '26000000-0000-4000-8000-000000000053'
 );
 
 DELETE FROM public.tb_household_members
@@ -30,6 +33,17 @@ DELETE FROM public.tb_households
 WHERE id IN (
   '26000000-0000-4000-8000-000000000001',
   '26000000-0000-4000-8000-000000000002'
+);
+
+DELETE FROM public.tb_categories
+WHERE id IN (
+  '26000000-0000-4000-8000-000000000062',
+  '26000000-0000-4000-8000-000000000063'
+);
+
+DELETE FROM public.tb_categories
+WHERE id IN (
+  '26000000-0000-4000-8000-000000000061'
 );
 
 DELETE FROM public.tb_categories
@@ -59,6 +73,15 @@ INSERT INTO public.tb_categories (id, name, description, created_at)
 VALUES
   ('26000000-0000-4000-8000-000000000031', 'Phase 2 Income Salary', NULL, '2026-08-09T12:00:00Z'),
   ('26000000-0000-4000-8000-000000000032', 'Phase 2 Income Freelance', NULL, '2026-08-09T12:00:00Z');
+
+INSERT INTO public.tb_categories (
+  id, name, description, movement_type, level, parent_id, is_active,
+  created_at, updated_at
+)
+VALUES
+  ('26000000-0000-4000-8000-000000000061', 'Phase 2 Income Macro Search', NULL, 'INCOME', 'MACRO', NULL, TRUE, '2026-08-09T12:00:00Z', '2026-08-09T12:00:00Z'),
+  ('26000000-0000-4000-8000-000000000062', 'Phase 2 Income Micro Freelance', NULL, 'INCOME', 'MICRO', '26000000-0000-4000-8000-000000000061', TRUE, '2026-08-09T12:00:00Z', '2026-08-09T12:00:00Z'),
+  ('26000000-0000-4000-8000-000000000063', 'Phase 2 Income Micro Bonus', NULL, 'INCOME', 'MICRO', '26000000-0000-4000-8000-000000000061', TRUE, '2026-08-09T12:00:00Z', '2026-08-09T12:00:00Z');
 
 INSERT INTO public.tb_incomes (
   id, household_id, created_by, member_id, amount, income_date,
@@ -142,6 +165,163 @@ BEGIN
   ) THEN RAISE EXCEPTION 'FAIL cross-household member isolation'; END IF;
 
   RAISE NOTICE 'PASS from, to, range, member, category, combined, nullable category and empty-result queries';
+END;
+$$;
+
+INSERT INTO public.tb_incomes (
+  id, household_id, created_by, member_id, amount, income_date,
+  description, category_id, created_at, updated_at
+)
+VALUES
+  ('26000000-0000-4000-8000-000000000051', '26000000-0000-4000-8000-000000000001', '26000000-0000-4000-8000-000000000021', '26000000-0000-4000-8000-000000000021', 400, '2026-08-04', 'Freelance payout', '26000000-0000-4000-8000-000000000062', '2026-08-04T12:00:00Z', '2026-08-04T12:00:00Z'),
+  ('26000000-0000-4000-8000-000000000052', '26000000-0000-4000-8000-000000000001', '26000000-0000-4000-8000-000000000021', '26000000-0000-4000-8000-000000000021', 500, '2026-08-04', 'Annual bonus', '26000000-0000-4000-8000-000000000063', '2026-08-04T13:00:00Z', '2026-08-04T13:00:00Z'),
+  ('26000000-0000-4000-8000-000000000053', '26000000-0000-4000-8000-000000000001', '26000000-0000-4000-8000-000000000021', '26000000-0000-4000-8000-000000000021', 700, '2026-08-04', 'Legacy description only', '26000000-0000-4000-8000-000000000031', '2026-08-04T14:00:00Z', '2026-08-04T14:00:00Z');
+
+DO $$
+DECLARE
+  actual_count INTEGER;
+  actual_total NUMERIC(14,2);
+  page_id UUID;
+BEGIN
+  -- Search by description keeps legacy category references searchable.
+  SELECT COUNT(*) INTO actual_count
+  FROM public.tb_incomes
+  WHERE household_id = '26000000-0000-4000-8000-000000000001'
+    AND description ILIKE '%Legacy description%';
+  IF actual_count <> 1 THEN RAISE EXCEPTION 'FAIL description search'; END IF;
+
+  -- Search by exact and partial MICRO name.
+  SELECT COUNT(*) INTO actual_count
+  FROM public.tb_incomes AS income
+  JOIN public.tb_categories AS micro ON micro.id = income.category_id
+  JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND micro.movement_type = 'INCOME'
+    AND micro.level = 'MICRO'
+    AND micro.is_active
+    AND macro.movement_type = 'INCOME'
+    AND macro.level = 'MACRO'
+    AND macro.is_active
+    AND micro.name ILIKE '%Phase 2 Income Micro Freelance%';
+  IF actual_count <> 1 THEN RAISE EXCEPTION 'FAIL exact micro search'; END IF;
+
+  SELECT COUNT(*) INTO actual_count
+  FROM public.tb_incomes AS income
+  JOIN public.tb_categories AS micro ON micro.id = income.category_id
+  JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND micro.movement_type = 'INCOME'
+    AND micro.level = 'MICRO'
+    AND micro.is_active
+    AND macro.movement_type = 'INCOME'
+    AND macro.level = 'MACRO'
+    AND macro.is_active
+    AND micro.name ILIKE '%Micro Freel%';
+  IF actual_count <> 1 THEN RAISE EXCEPTION 'FAIL partial micro search'; END IF;
+
+  -- Search by exact and partial MACRO name expands to all valid child MICROS.
+  SELECT COUNT(*) INTO actual_count
+  FROM public.tb_incomes AS income
+  JOIN public.tb_categories AS micro ON micro.id = income.category_id
+  JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND micro.movement_type = 'INCOME'
+    AND micro.level = 'MICRO'
+    AND micro.is_active
+    AND macro.movement_type = 'INCOME'
+    AND macro.level = 'MACRO'
+    AND macro.is_active
+    AND macro.name ILIKE '%Phase 2 Income Macro Search%';
+  IF actual_count <> 2 THEN RAISE EXCEPTION 'FAIL exact macro search'; END IF;
+
+  SELECT COUNT(*) INTO actual_count
+  FROM public.tb_incomes AS income
+  JOIN public.tb_categories AS micro ON micro.id = income.category_id
+  JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND micro.movement_type = 'INCOME'
+    AND micro.level = 'MICRO'
+    AND micro.is_active
+    AND macro.movement_type = 'INCOME'
+    AND macro.level = 'MACRO'
+    AND macro.is_active
+    AND macro.name ILIKE '%Macro Search%';
+  IF actual_count <> 2 THEN RAISE EXCEPTION 'FAIL partial macro search'; END IF;
+
+  SELECT COUNT(*) INTO actual_count
+  FROM public.tb_incomes AS income
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND (
+      income.description ILIKE '%does-not-exist%'
+      OR EXISTS (
+        SELECT 1
+        FROM public.tb_categories AS micro
+        JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+        WHERE micro.id = income.category_id
+          AND micro.movement_type = 'INCOME'
+          AND micro.level = 'MICRO'
+          AND micro.is_active
+          AND macro.movement_type = 'INCOME'
+          AND macro.level = 'MACRO'
+          AND macro.is_active
+          AND (micro.name ILIKE '%does-not-exist%' OR macro.name ILIKE '%does-not-exist%')
+      )
+    );
+  IF actual_count <> 0 THEN RAISE EXCEPTION 'FAIL no-match search'; END IF;
+
+  -- Search remains AND-compatible with macroId and categoryId filters.
+  SELECT COUNT(*) INTO actual_count
+  FROM public.tb_incomes AS income
+  JOIN public.tb_categories AS micro ON micro.id = income.category_id
+  JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND income.category_id IN (
+      SELECT id FROM public.tb_categories
+      WHERE parent_id = '26000000-0000-4000-8000-000000000061'
+        AND movement_type = 'INCOME' AND level = 'MICRO' AND is_active
+    )
+    AND (income.description ILIKE '%Macro Search%'
+      OR micro.name ILIKE '%Macro Search%'
+      OR macro.name ILIKE '%Macro Search%');
+  IF actual_count <> 2 THEN RAISE EXCEPTION 'FAIL search plus macroId'; END IF;
+
+  SELECT COUNT(*) INTO actual_count
+  FROM public.tb_incomes AS income
+  JOIN public.tb_categories AS micro ON micro.id = income.category_id
+  JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND income.category_id = '26000000-0000-4000-8000-000000000062'
+    AND (income.description ILIKE '%Macro Search%'
+      OR micro.name ILIKE '%Macro Search%'
+      OR macro.name ILIKE '%Macro Search%');
+  IF actual_count <> 1 THEN RAISE EXCEPTION 'FAIL search plus categoryId'; END IF;
+
+  SELECT income.id INTO page_id
+  FROM public.tb_incomes AS income
+  JOIN public.tb_categories AS micro ON micro.id = income.category_id
+  JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND macro.name ILIKE '%Macro Search%'
+  ORDER BY income.amount DESC, income.id ASC
+  LIMIT 1 OFFSET 1;
+  IF page_id <> '26000000-0000-4000-8000-000000000051' THEN
+    RAISE EXCEPTION 'FAIL search pagination';
+  END IF;
+
+  SELECT COUNT(*), COALESCE(SUM(income.amount), 0)
+  INTO actual_count, actual_total
+  FROM public.tb_incomes AS income
+  JOIN public.tb_categories AS micro ON micro.id = income.category_id
+  JOIN public.tb_categories AS macro ON macro.id = micro.parent_id
+  WHERE income.household_id = '26000000-0000-4000-8000-000000000001'
+    AND (income.description ILIKE '%Macro Search%'
+      OR micro.name ILIKE '%Macro Search%'
+      OR macro.name ILIKE '%Macro Search%');
+  IF actual_count <> 2 OR actual_total <> 900 THEN
+    RAISE EXCEPTION 'FAIL search summary: count %, total %', actual_count, actual_total;
+  END IF;
+
+  RAISE NOTICE 'PASS Income description, Micro/Macro, partial, combined, pagination and summary searches';
 END;
 $$;
 

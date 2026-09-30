@@ -27,6 +27,14 @@ interface IncomeRow {
   updated_at: string;
 }
 
+interface IncomeCategorySearchRow {
+  id: string;
+  movement_type: string | null;
+  level: string | null;
+  parent_id: string | null;
+  is_active: boolean;
+}
+
 export type IncomeRepositoryErrorKind = "INTEGRITY" | "NOT_FOUND" | "TECHNICAL";
 
 export class IncomeRepositoryError extends Error {
@@ -262,7 +270,15 @@ export async function deleteIncome(
 }
 
 function escapeIlikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, "\\$&");
+  return value.replace(/[\\%_*]/g, "\\$&");
+}
+
+function quotePostgrestFilterValue(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function buildIncomeSearchPattern(value: string): string {
+  return `%${escapeIlikePattern(value)}%`;
 }
 
 async function getIncomeMicroCategoryIdsForMacro(
@@ -272,6 +288,76 @@ async function getIncomeMicroCategoryIdsForMacro(
   return categories
     .filter((category) => category.macroId.toLowerCase() === macroId.toLowerCase())
     .map((category) => category.id);
+}
+
+async function getIncomeCategoryIdsForSearch(
+  searchPattern: string,
+): Promise<string[]> {
+  const client = getSupabaseAdminClient();
+  const { data: matchingData, error: matchingError } = await client
+    .from("tb_categories")
+    .select("id,movement_type,level,parent_id,is_active")
+    .eq("movement_type", "INCOME")
+    .eq("is_active", true)
+    .in("level", ["MACRO", "MICRO"])
+    .ilike("name", searchPattern);
+
+  if (matchingError) {
+    throw new IncomeRepositoryError("TECHNICAL", matchingError);
+  }
+
+  const matchingRows = (matchingData ?? []) as IncomeCategorySearchRow[];
+  const matchingMacroIds = matchingRows
+    .filter((row) => row.level === "MACRO")
+    .map((row) => row.id);
+  const matchingMicroRows = matchingRows.filter(
+    (row) => row.level === "MICRO" && row.parent_id !== null,
+  );
+
+  const validMicroParentIds = new Set<string>();
+  if (matchingMicroRows.length > 0) {
+    const parentIds = [
+      ...new Set(matchingMicroRows.map((row) => row.parent_id as string)),
+    ];
+    const { data: parentData, error: parentError } = await client
+      .from("tb_categories")
+      .select("id,movement_type,level,is_active")
+      .in("id", parentIds)
+      .eq("movement_type", "INCOME")
+      .eq("level", "MACRO")
+      .eq("is_active", true);
+
+    if (parentError) {
+      throw new IncomeRepositoryError("TECHNICAL", parentError);
+    }
+
+    for (const parent of (parentData ?? []) as IncomeCategorySearchRow[]) {
+      validMicroParentIds.add(parent.id);
+    }
+  }
+
+  const matchingMicroIds = matchingMicroRows
+    .filter((row) => validMicroParentIds.has(row.parent_id as string))
+    .map((row) => row.id);
+
+  let childMicroIds: string[] = [];
+  if (matchingMacroIds.length > 0) {
+    const { data: childData, error: childError } = await client
+      .from("tb_categories")
+      .select("id")
+      .eq("movement_type", "INCOME")
+      .eq("level", "MICRO")
+      .eq("is_active", true)
+      .in("parent_id", matchingMacroIds);
+
+    if (childError) {
+      throw new IncomeRepositoryError("TECHNICAL", childError);
+    }
+
+    childMicroIds = (childData ?? []).map((row) => row.id as string);
+  }
+
+  return [...new Set([...matchingMicroIds, ...childMicroIds])];
 }
 
 export async function listIncomes(
@@ -307,6 +393,15 @@ export async function listIncomes(
     return { incomes: [], allMatchingAmounts: [], total: 0 };
   }
 
+  const searchPattern =
+    filters.search === undefined
+      ? undefined
+      : buildIncomeSearchPattern(filters.search);
+  const searchCategoryIds =
+    searchPattern === undefined
+      ? []
+      : await getIncomeCategoryIdsForSearch(searchPattern);
+
   const buildQuery = (columns: string) => {
     let query = getSupabaseAdminClient()
       .from("tb_incomes")
@@ -333,11 +428,13 @@ export async function listIncomes(
       query = query.in("category_id", macroCategoryIds);
     }
 
-    if (filters.search !== undefined) {
-      query = query.ilike(
-        "description",
-        `%${escapeIlikePattern(filters.search)}%`,
-      );
+    if (searchPattern !== undefined) {
+      const searchFilter = quotePostgrestFilterValue(searchPattern);
+      const searchColumns = [`description.ilike.${searchFilter}`];
+      if (searchCategoryIds.length > 0) {
+        searchColumns.push(`category_id.in.(${searchCategoryIds.join(",")})`);
+      }
+      query = query.or(searchColumns.join(","));
     }
 
     if (filters.minAmount !== undefined) {

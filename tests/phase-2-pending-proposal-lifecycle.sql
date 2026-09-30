@@ -302,6 +302,41 @@ BEGIN
 
   RAISE NOTICE 'PASS income confirmation and idempotent retry';
 
+  DELETE FROM public.tb_incomes
+   WHERE id = reference_id
+     AND public.tb_incomes.household_id = lifecycle.household_id;
+
+  IF EXISTS (
+    SELECT 1 FROM public.tb_incomes WHERE id = reference_id
+  ) THEN
+    RAISE EXCEPTION 'FAIL confirmed Income could not be deleted independently';
+  END IF;
+
+  SELECT public.fn_confirm_pending_income_consistent(
+    p_proposal_id => income_proposal_id,
+    p_household_id => household_id,
+    p_conversation_key => '2k-income',
+    p_actor_member_id => member_id,
+    p_context_source => 'WEB'::public.expense_source
+  ) INTO income_result;
+
+  IF income_result ->> 'status' <> 'ALREADY_COMPLETED'
+     OR (income_result ->> 'income_id')::UUID <> reference_id THEN
+    RAISE EXCEPTION
+      'FAIL repeated income confirmation after deletion was not idempotent: %',
+      income_result;
+  END IF;
+
+  SELECT COUNT(*) INTO after_count
+  FROM public.tb_incomes
+  WHERE public.tb_incomes.household_id = lifecycle.household_id;
+
+  IF after_count <> income_before_count THEN
+    RAISE EXCEPTION 'FAIL deleted Income retry changed the Income count';
+  END IF;
+
+  RAISE NOTICE 'PASS terminal Income confirmation remains idempotent after deletion';
+
   expected_state := NULL;
   actual_state := NULL;
   BEGIN

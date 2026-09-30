@@ -146,6 +146,7 @@ let categoryDrafts = [];
 let operations = [];
 let createdExpenses = [];
 let createdIncomes = [];
+const missingIncomeIds = new Set();
 let nextProposal = 1;
 let hydrationFailure = false;
 let confirmationFailure = false;
@@ -640,6 +641,7 @@ function expectAgentError(promise, code) {
 
 async function main() {
   let expenseDomainErrorClass;
+  let incomeDomainErrorClass;
   let categoryDomainErrorClass;
   const fakeExpenseService = {
     async prepareExpenseCreation(context, input) {
@@ -696,6 +698,9 @@ async function main() {
       };
     },
     async getIncomeById(context, incomeId) {
+      if (missingIncomeIds.has(incomeId)) {
+        throw new incomeDomainErrorClass("NOT_FOUND", "Income was deleted");
+      }
       return { id: incomeId };
     },
     async createIncome(context, input) {
@@ -879,6 +884,9 @@ async function main() {
   expenseDomainErrorClass = load(
     path.join(root, "modules", "expenses", "expense.types.ts"),
   ).ExpenseDomainError;
+  incomeDomainErrorClass = load(
+    path.join(root, "modules", "incomes", "income.types.ts"),
+  ).IncomeDomainError;
   categoryDomainErrorClass = load(
     path.join(root, "modules", "categories", "category.types.ts"),
   ).CategoryDomainError;
@@ -4660,6 +4668,24 @@ async function main() {
     null,
   );
   console.log("PASS create_income confirmation is terminal and idempotent");
+
+  missingIncomeIds.add(incomeConfirmed.incomeId);
+  const deletedIncomeRetry = await conversation.processAgentMessage(
+    incomeContext,
+    {
+      message: "si",
+      proposalId: incomeProposal.proposalId,
+    },
+  );
+  assert.equal(deletedIncomeRetry.type, "CONFIRMED");
+  assert.equal(deletedIncomeRetry.status, "ALREADY_COMPLETED");
+  assert.equal(deletedIncomeRetry.incomeId, incomeConfirmed.incomeId);
+  assert.equal(deletedIncomeRetry.income, null);
+  assert.equal(createdIncomes.length, beforeDirectIncomeCount + 1);
+  missingIncomeIds.delete(incomeConfirmed.incomeId);
+  console.log(
+    "PASS completed Income confirmation remains idempotent after Income deletion",
+  );
 
   const fencedIncomeContext = {
     ...contextA,

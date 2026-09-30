@@ -65,7 +65,10 @@ VALUES (
   '29000000-0000-4000-8000-000000000001',
   'phase-2-income-delete:referenced',
   'CREATE_INCOME',
-  '{}'::jsonb,
+  jsonb_build_object(
+    'actorMemberId', '29000000-0000-4000-8000-000000000021',
+    'source', 'WEB'
+  ),
   'COMPLETED',
   '2026-08-09T12:00:00Z',
   '29000000-0000-4000-8000-000000000043'
@@ -120,28 +123,18 @@ DO $$
 DECLARE
   deleted_id UUID;
   affected_rows INTEGER;
-  referenced_delete_state TEXT;
+  retry_result JSONB;
 BEGIN
-  BEGIN
-    DELETE FROM public.tb_incomes
-    WHERE id = '29000000-0000-4000-8000-000000000043'
-      AND household_id = '29000000-0000-4000-8000-000000000001';
-  EXCEPTION WHEN OTHERS THEN
-    GET STACKED DIAGNOSTICS referenced_delete_state = RETURNED_SQLSTATE;
-  END;
-
-  IF referenced_delete_state NOT IN ('23001', '23503') THEN
-    RAISE EXCEPTION
-      'FAIL referenced Income delete returned SQLSTATE %',
-      COALESCE(referenced_delete_state, 'none');
-  END IF;
+  DELETE FROM public.tb_incomes
+  WHERE id = '29000000-0000-4000-8000-000000000043'
+    AND household_id = '29000000-0000-4000-8000-000000000001';
 
   IF EXISTS (
     SELECT 1
     FROM public.tb_incomes
     WHERE id = '29000000-0000-4000-8000-000000000043'
-  ) IS NOT TRUE THEN
-    RAISE EXCEPTION 'FAIL referenced Income was deleted';
+  ) THEN
+    RAISE EXCEPTION 'FAIL referenced Income remains persisted after delete';
   END IF;
 
   IF EXISTS (
@@ -151,7 +144,22 @@ BEGIN
       AND income_id = '29000000-0000-4000-8000-000000000043'
       AND status = 'COMPLETED'
   ) IS NOT TRUE THEN
-    RAISE EXCEPTION 'FAIL PendingProposal traceability row changed';
+    RAISE EXCEPTION 'FAIL PendingProposal historical reference changed';
+  END IF;
+
+  SELECT public.fn_confirm_pending_income_consistent(
+    p_proposal_id => '29000000-0000-4000-8000-000000000051',
+    p_household_id => '29000000-0000-4000-8000-000000000001',
+    p_conversation_key => 'phase-2-income-delete:referenced',
+    p_actor_member_id => '29000000-0000-4000-8000-000000000021',
+    p_context_source => 'WEB'::public.expense_source
+  ) INTO retry_result;
+
+  IF retry_result ->> 'status' <> 'ALREADY_COMPLETED'
+     OR retry_result ->> 'income_id' <> '29000000-0000-4000-8000-000000000043' THEN
+    RAISE EXCEPTION
+      'FAIL terminal confirmation after Income deletion was not idempotent: %',
+      retry_result;
   END IF;
 
   DELETE FROM public.tb_incomes
@@ -194,7 +202,8 @@ BEGIN
     RAISE EXCEPTION 'FAIL nonexistent Income delete affected a row';
   END IF;
 
-  RAISE NOTICE 'PASS referenced Income and PendingProposal remain intact';
+  RAISE NOTICE 'PASS referenced Income deletes while PendingProposal keeps historical reference';
+  RAISE NOTICE 'PASS terminal confirmation remains idempotent after Income deletion';
   RAISE NOTICE 'PASS valid physical delete returned id and removed the Income';
   RAISE NOTICE 'PASS compound id + household_id filter isolates foreign and missing Incomes';
 END;

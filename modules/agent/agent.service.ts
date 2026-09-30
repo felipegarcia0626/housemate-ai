@@ -255,14 +255,21 @@ export async function confirmIncomeProposal(
       return { proposalId, status: "REJECTED" };
     }
     if (!result.incomeId) throw persistenceError();
-    const income = await getIncomeById(
-      { householdId: context.householdId },
-      result.incomeId,
-    );
+    let income: Awaited<ReturnType<typeof getIncomeById>> | null = null;
+    try {
+      income = await getIncomeById(
+        { householdId: context.householdId },
+        result.incomeId,
+      );
+    } catch (error) {
+      if (!(error instanceof IncomeDomainError) || error.code !== "NOT_FOUND") {
+        throw error;
+      }
+    }
     return {
       proposalId,
-      status: "CONFIRMED",
-      incomeId: income.id,
+      status: income ? "CONFIRMED" : "ALREADY_COMPLETED",
+      incomeId: result.incomeId,
       income,
     };
   } catch (error) {
@@ -420,21 +427,23 @@ export async function getTerminalProposalResult(
   }
 
   if (!proposal.incomeId) throw persistenceError();
+  let income: Awaited<ReturnType<typeof getIncomeById>> | null = null;
   try {
-    const income = await getIncomeById(
+    income = await getIncomeById(
       { householdId: context.householdId },
       proposal.incomeId,
     );
-    return {
-      proposalId: proposal.id,
-      status: "CONFIRMED",
-      incomeId: income.id,
-      income,
-    };
   } catch (error) {
-    if (error instanceof IncomeDomainError) throw error;
-    throw persistenceError();
+    if (!(error instanceof IncomeDomainError) || error.code !== "NOT_FOUND") {
+      throw error;
+    }
   }
+  return {
+    proposalId: proposal.id,
+    status: income ? "CONFIRMED" : "ALREADY_COMPLETED",
+    incomeId: proposal.incomeId,
+    income,
+  };
 }
 
 export async function confirmExpenseProposal(

@@ -997,22 +997,6 @@ async function main() {
     ),
   );
 
-  const referencedIncomeId = "26000000-0000-4000-8000-000000000043";
-  failIncomeDelete = true;
-  incomeDeleteErrorCode = "23503";
-  const referencedDeleteError = await expectDomainError(
-    "referenced Income delete",
-    () => deleteIncome({ householdId: householdA }, referencedIncomeId),
-    "INCOME_REFERENCED",
-  );
-  assert.equal(
-    referencedDeleteError.message,
-    "No se puede eliminar este ingreso porque está asociado a un registro de trazabilidad.",
-  );
-  assert.ok(incomes.some((income) => income.id === referencedIncomeId));
-  incomeDeleteErrorCode = undefined;
-  failIncomeDelete = false;
-
   failIncomeDelete = true;
   const deletePersistenceError = await expectDomainError(
     "delete repository failure",
@@ -1049,7 +1033,7 @@ async function main() {
     );
   }
   console.log(
-    "PASS real deleteIncome result, referenced conflict, physical deletion, isolation and sanitized errors",
+    "PASS real deleteIncome result, physical deletion, isolation and sanitized errors",
   );
   console.log("PASS Income read/create/update regressions remain operational");
 

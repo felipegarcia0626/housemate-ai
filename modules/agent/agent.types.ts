@@ -127,9 +127,9 @@ export interface IncomeProposalResult {
 
 export interface IncomeConfirmationResult {
   proposalId: string;
-  status: "CONFIRMED";
+  status: "CONFIRMED" | "ALREADY_COMPLETED";
   incomeId: string;
-  income: Income;
+  income: Income | null;
 }
 
 export interface IncomeRejectionResult {

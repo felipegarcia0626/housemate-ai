@@ -102,6 +102,7 @@ const baselineIncomes = [
 const categories = [
   {
     id: categoryA,
+    name: "Income Micro Alpha",
     movement_type: "INCOME",
     level: "MICRO",
     parent_id: incomeMacroCategory,
@@ -109,6 +110,7 @@ const categories = [
   },
   {
     id: incomeCategoryB,
+    name: "Income Micro Beta",
     movement_type: "INCOME",
     level: "MICRO",
     parent_id: incomeMacroCategory,
@@ -116,6 +118,7 @@ const categories = [
   },
   {
     id: incomeCategoryC,
+    name: "Income Micro Gamma",
     movement_type: "INCOME",
     level: "MICRO",
     parent_id: incomeMacroCategoryB,
@@ -123,6 +126,7 @@ const categories = [
   },
   {
     id: incomeMacroCategory,
+    name: "Income Macro Alpha",
     movement_type: "INCOME",
     level: "MACRO",
     parent_id: null,
@@ -130,6 +134,7 @@ const categories = [
   },
   {
     id: incomeMacroCategoryB,
+    name: "Income Macro Beta",
     movement_type: "INCOME",
     level: "MACRO",
     parent_id: null,
@@ -137,6 +142,7 @@ const categories = [
   },
   {
     id: expenseCategory,
+    name: "Expense Micro",
     movement_type: "EXPENSE",
     level: "MICRO",
     parent_id: "42000000-0000-4000-8000-000000000027",
@@ -144,6 +150,7 @@ const categories = [
   },
   {
     id: inactiveIncomeCategory,
+    name: "Inactive Income Micro",
     movement_type: "INCOME",
     level: "MICRO",
     parent_id: incomeMacroCategory,
@@ -151,6 +158,7 @@ const categories = [
   },
   {
     id: inactiveIncomeMacroCategory,
+    name: "Inactive Income Macro",
     movement_type: "INCOME",
     level: "MACRO",
     parent_id: null,
@@ -158,6 +166,7 @@ const categories = [
   },
   {
     id: activeUnderInactiveIncomeMacro,
+    name: "Inactive Parent Child",
     movement_type: "INCOME",
     level: "MICRO",
     parent_id: inactiveIncomeMacroCategory,
@@ -165,6 +174,7 @@ const categories = [
   },
   {
     id: invalidHierarchyIncomeCategory,
+    name: "Invalid Hierarchy Income Micro",
     movement_type: "INCOME",
     level: "MICRO",
     parent_id: "42000000-0000-4000-8000-000000000029",
@@ -253,6 +263,16 @@ class FakeQuery {
     return this;
   }
 
+  or(expression) {
+    this.orExpression = expression;
+    observedOperations.push({
+      type: "or",
+      table: this.table,
+      expression,
+    });
+    return this;
+  }
+
   range(from, to) {
     this.rangeValues = { from, to };
     observedOperations.push({
@@ -307,6 +327,32 @@ class FakeQuery {
     if (this.table === "tb_categories") return categories;
     if (this.table === "tb_incomes") return incomes;
     return [];
+  }
+
+  matchesOr(row) {
+    return this.orExpression
+      .split(/,(?=(?:description|category_id)\.)/)
+      .some((clause) => {
+        const ilikeMatch = /^(description|category_id)\.ilike\."(.*)"$/.exec(
+          clause,
+        );
+        if (ilikeMatch) {
+          const value = ilikeMatch[2]
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, "\\");
+          const search = value
+            .replace(/^%/, "")
+            .replace(/%$/, "")
+            .replace(/\\([%_*\\])/g, "$1")
+            .toLowerCase();
+          return String(row[ilikeMatch[1]] ?? "")
+            .toLowerCase()
+            .includes(search);
+        }
+
+        const inMatch = /^category_id\.in\.\((.*)\)$/.exec(clause);
+        return inMatch !== null && inMatch[1].split(",").includes(row.category_id);
+      });
   }
 
   execute() {
@@ -365,6 +411,10 @@ class FakeQuery {
         return false;
       }),
     );
+
+    if (this.orExpression !== undefined) {
+      rows = rows.filter((row) => this.matchesOr(row));
+    }
 
     if (this.deleteRequested) {
       const deletedIds = new Set(rows.map((row) => row.id));
@@ -772,22 +822,6 @@ async function main() {
       1,
     );
 
-    failedDeleteCode = "23503";
-    const referencedDelete = await updateRoute.DELETE(
-      deleteRequest(incomeSecond),
-      { params: Promise.resolve({ id: incomeSecond }) },
-    );
-    assert.equal(referencedDelete.status, 409);
-    assert.deepEqual(await readJson(referencedDelete), {
-      error: {
-        code: "INCOME_REFERENCED",
-        message:
-          "No se puede eliminar este ingreso porque está asociado a un registro de trazabilidad.",
-      },
-    });
-    assert.ok(incomes.some(({ id }) => id === incomeSecond));
-    failedDeleteCode = undefined;
-
     for (const [id, status, code] of [
       ["invalid", 422, "VALIDATION_ERROR"],
       [missingHousehold, 404, "NOT_FOUND"],
@@ -836,7 +870,7 @@ async function main() {
     failedTable = undefined;
     incomes = [...baselineIncomes];
     console.log(
-      "PASS Income DELETE validates isolation, referenced conflicts, errors and route boundaries",
+      "PASS Income DELETE validates isolation, errors and route boundaries",
     );
     const originalIncome = structuredClone(incomes[2]);
     const categoryAFixture = categories.find(({ id }) => id === categoryA);
@@ -1352,17 +1386,121 @@ async function main() {
     assert.equal(searchBody.data[0].description, "Paginated 5");
     assert.ok(
       observedOperations.some(
-        ({ type, operator, column, value }) =>
-          type === "filter" &&
-          operator === "ilike" &&
-          column === "description" &&
-          value === "%Paginated 5%",
+        ({ type, table, expression }) =>
+          type === "or" &&
+          table === "tb_incomes" &&
+          expression.includes('description.ilike."%Paginated 5%"'),
       ),
     );
     const literalWildcardSearch = await route.GET(request("?search=%25"));
     const literalWildcardBody = await readJson(literalWildcardSearch);
     assert.equal(literalWildcardSearch.status, 200);
     assert.deepEqual(literalWildcardBody.data, []);
+
+    const alphaMicroIncomes = incomes.filter(
+      ({ household_id, category_id }) =>
+        household_id === householdA && category_id === categoryA,
+    );
+    const gammaMicroIncomes = incomes.filter(
+      ({ household_id, category_id }) =>
+        household_id === householdA && category_id === incomeCategoryC,
+    );
+    const alphaSearch = await route.GET(
+      request(`?search=${encodeURIComponent("Income Micro Alpha")}&pageSize=100`),
+    );
+    const alphaSearchBody = await readJson(alphaSearch);
+    assert.equal(alphaSearch.status, 200);
+    assert.deepEqual(
+      alphaSearchBody.data.map(({ id }) => id).sort(),
+      alphaMicroIncomes.map(({ id }) => id).sort(),
+    );
+
+    const partialMicroSearch = await route.GET(
+      request(`?search=${encodeURIComponent("Micro Alph")}&pageSize=100`),
+    );
+    const partialMicroSearchBody = await readJson(partialMicroSearch);
+    assert.equal(partialMicroSearch.status, 200);
+    assert.deepEqual(
+      partialMicroSearchBody.data.map(({ id }) => id).sort(),
+      alphaMicroIncomes.map(({ id }) => id).sort(),
+    );
+
+    const macroSearch = await route.GET(
+      request(`?search=${encodeURIComponent("Income Macro Beta")}`),
+    );
+    const macroSearchBody = await readJson(macroSearch);
+    assert.equal(macroSearch.status, 200);
+    assert.deepEqual(
+      macroSearchBody.data.map(({ id }) => id).sort(),
+      gammaMicroIncomes.map(({ id }) => id).sort(),
+    );
+
+    const partialMacroSearch = await route.GET(
+      request(`?search=${encodeURIComponent("Macro Bet")}`),
+    );
+    const partialMacroSearchBody = await readJson(partialMacroSearch);
+    assert.equal(partialMacroSearch.status, 200);
+    assert.deepEqual(
+      partialMacroSearchBody.data.map(({ id }) => id).sort(),
+      gammaMicroIncomes.map(({ id }) => id).sort(),
+    );
+
+    const noCategoryMatch = await route.GET(
+      request(`?search=${encodeURIComponent("No income category match")}`),
+    );
+    const noCategoryMatchBody = await readJson(noCategoryMatch);
+    assert.equal(noCategoryMatch.status, 200);
+    assert.deepEqual(noCategoryMatchBody.data, []);
+
+    const searchWithMacro = await route.GET(
+      request(
+        `?search=${encodeURIComponent("Income Macro Alpha")}&macroId=${incomeMacroCategory}&pageSize=100`,
+      ),
+    );
+    const searchWithMacroBody = await readJson(searchWithMacro);
+    assert.equal(searchWithMacro.status, 200);
+    assert.deepEqual(
+      searchWithMacroBody.data.map(({ id }) => id).sort(),
+      alphaMicroIncomes.map(({ id }) => id).sort(),
+    );
+
+    const searchWithCategory = await route.GET(
+      request(
+        `?search=${encodeURIComponent("Income Macro Alpha")}&categoryId=${categoryA}&pageSize=100`,
+      ),
+    );
+    const searchWithCategoryBody = await readJson(searchWithCategory);
+    assert.equal(searchWithCategory.status, 200);
+    assert.deepEqual(
+      searchWithCategoryBody.data.map(({ id }) => id).sort(),
+      alphaMicroIncomes.map(({ id }) => id).sort(),
+    );
+
+    const mismatchedSearchAndCategory = await route.GET(
+      request(
+        `?search=${encodeURIComponent("Income Micro Gamma")}&categoryId=${categoryA}`,
+      ),
+    );
+    const mismatchedSearchAndCategoryBody = await readJson(
+      mismatchedSearchAndCategory,
+    );
+    assert.equal(mismatchedSearchAndCategory.status, 200);
+    assert.deepEqual(mismatchedSearchAndCategoryBody.data, []);
+
+    const alphaPage = await route.GET(
+      request(
+        `?search=${encodeURIComponent("Income Macro Alpha")}&page=2&pageSize=25`,
+      ),
+    );
+    const alphaPageBody = await readJson(alphaPage);
+    const alphaTotal = alphaMicroIncomes.reduce(
+      (total, { amount }) => total + Number(amount),
+      0,
+    );
+    assert.equal(alphaPage.status, 200);
+    assert.equal(alphaPageBody.data.length, 2);
+    assert.equal(alphaPageBody.pagination.total, alphaMicroIncomes.length);
+    assert.equal(alphaPageBody.summary.totalIncome, Math.round(alphaTotal * 100) / 100);
 
     const macroResult = await route.GET(
       request(`?macroId=${incomeMacroCategoryB}`),

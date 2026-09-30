@@ -658,6 +658,10 @@ Los estados persistidos son `AWAITING_CONFIRMATION`, `COMPLETED` y `REJECTED`.
 Al confirmar, la propuesta pasa a `COMPLETED` y conserva la referencia
 financiera; al rechazar, pasa a `REJECTED`, fija `resolved_at` y conserva
 `expense_id` e `income_id` en `NULL`. La propuesta no se elimina al resolverla.
+`expense_id` mantiene la FK al Expense para preservar las invariantes del
+flujo de gastos. `income_id` conserva el UUID histórico del Income confirmado,
+pero no mantiene una FK viva: eliminar un Income no debe eliminar ni bloquear
+la propuesta terminal que documenta su confirmación.
 Solo podrá existir una propuesta activa por `household_id + conversation_key`.
 
 Si llega una nueva operación de escritura mientras ya existe una propuesta pendiente para la misma clave, el backend rechazará la nueva operación con un conflicto y conservará intacta la propuesta anterior. El agente deberá pedir al usuario confirmar o rechazar primero esa propuesta. No se sobrescribirá el payload pendiente.

@@ -586,7 +586,11 @@ sortOrder
 `categoryId` representa una categoría `MICRO` de tipo `INCOME` y `macroId`
 representa su categoría padre `MACRO`. Ambos filtros respetan únicamente
 categorías activas con una relación jerárquica válida del mismo tipo de
-movimiento. `search` busca únicamente sobre `description`.
+movimiento. `search` realiza una búsqueda textual parcial y
+case-insensitive sobre `description`, el nombre de la categoría `MICRO` y el
+nombre de su categoría padre `MACRO`. `search` no sustituye a `categoryId` ni
+`macroId`; los filtros específicos y el resto de filtros de la colección se
+combinan mediante `AND`.
 
 `page` es un entero mayor o igual que 1 y `pageSize` admite únicamente `25`,
 `50` o `100`. Si se omiten, sus valores predeterminados son `1` y `25`.
@@ -681,19 +685,9 @@ El backend validará que el ingreso pertenezca al hogar y contexto actual. La el
 ```
 
 Si el ingreso está referenciado por una `PendingProposal` completada, la
-eliminación será rechazada para preservar la trazabilidad y devolverá:
-
-```json
-{
-  "error": {
-    "code": "INCOME_REFERENCED",
-    "message": "No se puede eliminar este ingreso porque está asociado a un registro de trazabilidad."
-  }
-}
-```
-
-La respuesta utilizará HTTP `409 Conflict`. El backend no eliminará ni
-modificará el ingreso ni la propuesta relacionada.
+eliminación seguirá siendo física. La propuesta conservará su `income_id`
+como referencia histórica, sin una FK viva hacia `tb_incomes`, y no se
+modificará.
 
 Cuando se ejecute mediante el agente, requerirá confirmación explícita. No se implementará soft delete, historial ni recuperación.
 

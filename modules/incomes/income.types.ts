@@ -80,7 +80,6 @@ export type IncomeDomainErrorCode =
   | "VALIDATION_ERROR"
   | "NOT_FOUND"
   | "HOUSEHOLD_MISMATCH"
-  | "INCOME_REFERENCED"
   | "PERSISTENCE_ERROR";
 
 export class IncomeDomainError extends Error {
