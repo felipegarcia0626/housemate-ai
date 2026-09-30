@@ -17,6 +17,7 @@
     "test:sql:agent-draft": "node scripts/run-agent-draft-concurrency-test.cjs"
   },
   "dependencies": {
+    "@supabase/ssr": "0.9.0",
     "@supabase/supabase-js": "2.100.0",
     "next": "16.3.0",
     "react": "19.2.8",

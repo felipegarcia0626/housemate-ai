@@ -215,6 +215,7 @@ Las rutas no contienen cálculos financieros, SQL, acceso directo a Supabase ni 
 | Variable                         | Uso                                                                              |
 | -------------------------------- | -------------------------------------------------------------------------------- |
 | `SUPABASE_URL`                   | URL del proyecto Supabase                                                        |
+| `SUPABASE_ANON_KEY`              | Cliente anonimo server-only para verificar sesiones de Supabase Auth; no sustituye la service role |
 | `SUPABASE_SERVICE_ROLE_KEY`      | Cliente administrativo server-only para persistencia; nunca exponer al navegador |
 | `HOUSEMATE_MVP_HOUSEHOLD_ID`     | Hogar controlado del MVP para Web/PWA                                            |
 | `HOUSEMATE_MVP_MEMBER_ID`        | Integrante/actor controlado del MVP                                              |

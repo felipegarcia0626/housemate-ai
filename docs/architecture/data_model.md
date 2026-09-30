@@ -150,12 +150,16 @@ Atributos conceptuales
 User
 ├── id
 ├── display_name
+├── auth_user_id (nullable)
 ├── external_identifier
 └── created_at
 Notas
 external_identifier permite asociar al usuario con un identificador externo sin acoplar el modelo directamente a WhatsApp.
 No se almacenarán contraseñas durante el MVP.
-La autenticación formal podrá incorporarse posteriormente.
+`auth_user_id` permite vincular opcionalmente la identidad de Supabase Auth con
+este usuario sin reemplazar `external_identifier`. La infraestructura de
+contexto autenticado puede resolver esa relación, pero las APIs del MVP siguen
+utilizando explícitamente el contexto configurado hasta una migración posterior.
 
 # 5. Household
 
@@ -198,6 +202,10 @@ HouseholdMember
 └── created_at
 Restricciones
 household_id → Household.id
+
+El esquema actual no tiene un estado de membership. En el resolver de contexto
+autenticado, las filas existentes se consideran activas; una futura revocación
+requiere agregar una política o columna explícita.
 user_id → User.id
 
 Un mismo usuario podrá pertenecer a un hogar.
@@ -1166,6 +1174,7 @@ Los siguientes tipos enum de PostgreSQL serán definidos en `public`:
 | `id` | `UUID` | NOT NULL | `gen_random_uuid()` | PK `pk_tb_users` |
 | `display_name` | `TEXT` | NOT NULL | — | — |
 | `external_identifier` | `TEXT` | NOT NULL | — | UNIQUE `uq_tb_users_external_identifier` |
+| `auth_user_id` | `UUID` | NULL | — | UNIQUE `uq_tb_users_auth_user_id`; FK a `auth.users(id)` cuando el schema Auth está disponible |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | — |
 
 ### 28.2.2 `public.tb_households`
@@ -1190,6 +1199,12 @@ Constraints adicionales:
 
 - `uq_tb_household_members_household_user UNIQUE (household_id, user_id)` impide representar dos veces al mismo usuario dentro del mismo hogar.
 - `uq_tb_household_members_household_id UNIQUE (household_id, id)` permite FK compuestas que garanticen pertenencia al hogar.
+
+En el contexto autenticado, las filas de `tb_household_members` se consideran
+memberships activas porque el esquema actual todavía no tiene una columna de
+estado. La revocación o desactivación explícita requiere un incremento
+posterior; el resolver no selecciona un hogar arbitrariamente cuando encuentra
+más de una fila.
 
 ### 28.2.4 `public.tb_categories`
 
@@ -1389,6 +1404,7 @@ cancelar o convertirlo en propuesta.
 | --- | --- | --- | --- | --- |
 | `fk_tb_household_members_household` | `tb_household_members.household_id` | `tb_households.id` | `RESTRICT` | `NO ACTION` |
 | `fk_tb_household_members_user` | `tb_household_members.user_id` | `tb_users.id` | `RESTRICT` | `NO ACTION` |
+| `fk_tb_users_auth_user` | `tb_users.auth_user_id` | `auth.users.id` (Supabase, cuando está disponible) | `RESTRICT` | `NO ACTION` |
 | `fk_tb_sharing_rules_household` | `tb_sharing_rules.household_id` | `tb_households.id` | `RESTRICT` | `NO ACTION` |
 | `fk_tb_sharing_rule_members_rule` | `tb_sharing_rule_members.sharing_rule_id` | `tb_sharing_rules.id` | `CASCADE` | `NO ACTION` |
 | `fk_tb_sharing_rule_members_member` | `tb_sharing_rule_members.household_member_id` | `tb_household_members.id` | `RESTRICT` | `NO ACTION` |
