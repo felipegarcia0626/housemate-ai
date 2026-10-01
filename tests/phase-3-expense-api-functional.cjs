@@ -1673,13 +1673,21 @@ async function main() {
     assert.ok(!detailSource.includes("delete("));
     console.log("PASS detail Route delegates without direct persistence");
 
-    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdB;
+    process.env.HOUSEMATE_MVP_MEMBER_ID = memberB;
+    authContextState = { kind: "valid", householdId: householdA };
     const updateBody = {
       merchant: "Updated Market",
       description: "Updated expense",
       paidByMemberId: memberA,
       categoryId: categoryA,
     };
+    const patchRequest = (body, query = "", expenseId = expenseNewer) =>
+      new Request(`http://localhost/api/expenses/${expenseId}${query}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
     observedOperations.length = 0;
     const updated = await detailRoute.PATCH(detailRequest(expenseNewer), {
       params: Promise.resolve({ id: expenseNewer }),
@@ -1704,6 +1712,42 @@ async function main() {
       ).length,
       1,
     );
+    for (const [authError, status] of [
+      ["UNAUTHENTICATED", 401],
+      ["APPLICATION_USER_NOT_FOUND", 403],
+      ["NO_ACTIVE_MEMBERSHIP", 403],
+      ["HOUSEHOLD_SELECTION_REQUIRED", 409],
+    ]) {
+      authContextState = { kind: authError, householdId: householdA };
+      observedOperations.length = 0;
+      const response = await detailRoute.PATCH(
+        patchRequest(updateBody),
+        { params: Promise.resolve({ id: expenseNewer }) },
+      );
+      assert.equal(response.status, status);
+      assert.equal((await readJson(response)).error.code, authError);
+      assert.ok(!observedOperations.some(({ type }) => type === "rpc"));
+    }
+    authContextState = { kind: "valid", householdId: householdA };
+    observedOperations.length = 0;
+    const crossHouseholdPayerPatch = await detailRoute.PATCH(
+      patchRequest({ ...updateBody, paidByMemberId: memberB }),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(crossHouseholdPayerPatch.status, 404);
+    assert.equal((await readJson(crossHouseholdPayerPatch)).error.code, "NOT_FOUND");
+    assert.ok(!observedOperations.some(({ type }) => type === "rpc"));
+    observedOperations.length = 0;
+    const crossHouseholdSplitPatch = await detailRoute.PATCH(
+      patchRequest({
+        ...updateBody,
+        splits: [{ memberId: memberB, percentage: 100 }],
+      }),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(crossHouseholdSplitPatch.status, 404);
+    assert.equal((await readJson(crossHouseholdSplitPatch)).error.code, "NOT_FOUND");
+    assert.ok(!observedOperations.some(({ type }) => type === "rpc"));
     const invalidUpdatedCategory = await detailRoute.PATCH(
       new Request("http://localhost/api/expenses/" + expenseNewer, {
         method: "PATCH",
@@ -1719,12 +1763,6 @@ async function main() {
     );
     console.log("PASS PATCH updates Expense and returns the public DTO");
 
-    const patchRequest = (body, query = "", expenseId = expenseNewer) =>
-      new Request(`http://localhost/api/expenses/${expenseId}${query}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
     assert.equal(
       (
         await detailRoute.PATCH(
@@ -1785,6 +1823,8 @@ async function main() {
       "PASS PATCH validates isolation, protected fields and route boundaries",
     );
 
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
     const deleteRequest = (expenseId, query = "") =>
       new Request(`http://localhost/api/expenses/${expenseId}${query}`, {
         method: "DELETE",

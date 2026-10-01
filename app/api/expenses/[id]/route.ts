@@ -1,5 +1,4 @@
 import {
-  getConfiguredHttpActorContext,
   getConfiguredHttpHouseholdContext,
 } from "@/app/api/_lib/http-context";
 import { resolveAuthenticatedContext } from "@/modules/context/authenticated-context.service";
@@ -233,14 +232,17 @@ export async function PATCH(
   }
 
   try {
-    const { householdId } = await getConfiguredHttpHouseholdContext();
-    const actorContext = await getConfiguredHttpActorContext();
-    if (actorContext.householdId !== householdId) {
-      return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");
-    }
-    const expense = await updateExpense({ householdId }, id, input);
+    const context = await resolveAuthenticatedContext();
+    const expense = await updateExpense(
+      { householdId: context.householdId },
+      id,
+      input,
+    );
     return Response.json({ data: publicExpense(expense) });
   } catch (error) {
+    if (error instanceof AuthenticatedContextError) {
+      return contextErrorResponse(error);
+    }
     const possibleExpenseId =
       typeof error === "object" && error !== null && "expenseId" in error
         ? (error as { expenseId?: unknown }).expenseId

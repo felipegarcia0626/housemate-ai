@@ -459,6 +459,8 @@ El backend deberá verificar que el gasto pertenezca al hogar correspondiente. E
 
 PATCH /api/expenses/{id}
 
+El household utilizado para resolver y actualizar el Expense proviene exclusivamente del `AuthenticatedContext` (`context.householdId`). Este endpoint no utiliza el contexto MVP ni persiste un actor de actualización; `paidByMemberId` continúa siendo el payer indicado en el payload y se valida dentro del household autenticado.
+
 Solo podrán actualizarse gastos `CONFIRMED` pertenecientes al hogar actual. Un gasto `CANCELLED` no podrá modificarse.
 
 Request parcial:
