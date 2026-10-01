@@ -586,6 +586,11 @@ La respuesta exitosa utiliza `201 Created` y expone únicamente `id`, `createdBy
 
 GET /api/incomes
 
+El household se obtiene exclusivamente desde `AuthenticatedContext`, resuelto
+a partir de la sesión de Supabase Auth. El endpoint no acepta `householdId`,
+`userId` ni `memberId` como contexto autoritativo desde la solicitud; `memberId`
+continúa siendo únicamente un filtro de la colección.
+
 Filtros opcionales:
 
 ```text

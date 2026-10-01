@@ -2,6 +2,8 @@ import {
   getConfiguredHttpActorContext,
   getConfiguredHttpHouseholdContext,
 } from "@/app/api/_lib/http-context";
+import { resolveAuthenticatedContext } from "@/modules/context/authenticated-context.service";
+import { AuthenticatedContextError } from "@/modules/context/authenticated-context.types";
 import { createIncome, listIncomes } from "@/modules/incomes/income.service";
 import {
   IncomeDomainError,
@@ -27,7 +29,14 @@ const ALLOWED_QUERY_PARAMETERS = new Set([
 
 function errorResponse(
   status: number,
-  code: "VALIDATION_ERROR" | "NOT_FOUND" | "INTERNAL_ERROR",
+  code:
+    | "VALIDATION_ERROR"
+    | "NOT_FOUND"
+    | "INTERNAL_ERROR"
+    | "UNAUTHENTICATED"
+    | "APPLICATION_USER_NOT_FOUND"
+    | "NO_ACTIVE_MEMBERSHIP"
+    | "HOUSEHOLD_SELECTION_REQUIRED",
   message: string,
 ): Response {
   return Response.json({ error: { code, message } }, { status });
@@ -35,6 +44,21 @@ function errorResponse(
 
 function invalidRequest(status: 400 | 422): Response {
   return errorResponse(status, "VALIDATION_ERROR", "Solicitud inválida.");
+}
+
+function contextErrorResponse(error: AuthenticatedContextError): Response {
+  switch (error.code) {
+    case "UNAUTHENTICATED":
+      return errorResponse(401, "UNAUTHENTICATED", "Se requiere una sesión autenticada.");
+    case "APPLICATION_USER_NOT_FOUND":
+      return errorResponse(403, "APPLICATION_USER_NOT_FOUND", "La identidad autenticada no tiene acceso a la aplicación.");
+    case "NO_ACTIVE_MEMBERSHIP":
+      return errorResponse(403, "NO_ACTIVE_MEMBERSHIP", "La identidad autenticada no tiene un hogar activo.");
+    case "HOUSEHOLD_SELECTION_REQUIRED":
+      return errorResponse(409, "HOUSEHOLD_SELECTION_REQUIRED", "Debes seleccionar un hogar antes de continuar.");
+    default:
+      return errorResponse(500, "INTERNAL_ERROR", "No fue posible completar la operación.");
+  }
 }
 
 function publicIncome(income: Income) {
@@ -119,8 +143,8 @@ export async function GET(request: Request): Promise<Response> {
   const filters = buildFilters(searchParams);
 
   try {
-    const { householdId } = await getConfiguredHttpHouseholdContext();
-    const result = await listIncomes({ householdId }, filters);
+    const context = await resolveAuthenticatedContext();
+    const result = await listIncomes({ householdId: context.householdId }, filters);
     const data = result.incomes.map((income) => ({
       id: income.id,
       createdBy: income.createdBy,
@@ -137,6 +161,9 @@ export async function GET(request: Request): Promise<Response> {
       summary: result.summary,
     });
   } catch (error) {
+    if (error instanceof AuthenticatedContextError) {
+      return contextErrorResponse(error);
+    }
     if (error instanceof IncomeDomainError) {
       if (error.code === "VALIDATION_ERROR") {
         return invalidRequest(422);
