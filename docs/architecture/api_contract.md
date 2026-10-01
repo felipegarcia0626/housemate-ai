@@ -260,7 +260,7 @@ El `categoryId` de nivel superior corresponde a `Expense.category_id` y represen
 
 En los items, `totalPrice` corresponde a `ExpenseItem.total_amount`. Se conserva `totalPrice` como nombre del contrato HTTP existente y `total_amount` como convención del modelo persistente.
 
-El backend determinará `createdBy` a partir del miembro asociado al contexto actual; el cliente no podrá utilizar este campo para cambiar libremente el autor del registro.
+El backend resolverá un `AuthenticatedContext` para esta operación. `context.householdId` determina el household y `context.memberId` determina `createdBy`; el cliente no podrá utilizar estos valores ni `createdBy` para cambiar libremente el autor o el household del registro. `paidByMemberId` continúa representando el miembro pagador enviado por el cliente y se valida dentro del household autenticado. `source` se asigna siempre como `WEB` en el servidor.
 
 `merchant` es opcional de extremo a extremo. Su ausencia se representa como `null`, nunca mediante una cadena vacía ni un nombre artificial.
 
@@ -288,6 +288,8 @@ El cliente no podrá enviar `id`, `householdId`, `createdBy`, `status`, `source`
 Los montos de las distribuciones se calcularán en centavos mediante restos mayores: parte entera inferior de cada asignación exacta, centavos residuales por parte fraccionaria descendente y desempate por `memberId` ascendente. Los porcentajes deberán sumar exactamente `100.00` y los montos resultantes deberán sumar exactamente `totalAmount`. No se utilizarán resultados financieros definitivos basados en punto flotante.
 
 La persistencia de Expense, items y distribuciones será una única operación atómica mediante la RPC PostgreSQL específica `public.fn_create_expense`. El repository realizará una sola llamada RPC; no ejecutará inserts PostgREST independientes.
+
+La creación requiere una sesión autenticada (`401 UNAUTHENTICATED`). Una identidad sin usuario de aplicación o sin membership activa produce `403`; si el usuario debe seleccionar un household, produce `409 HOUSEHOLD_SELECTION_REQUIRED`. Los errores técnicos se devuelven como `500 INTERNAL_ERROR` sanitizado.
 
 Response:
 

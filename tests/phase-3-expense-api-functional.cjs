@@ -38,6 +38,7 @@ const householdB = "41000000-0000-4000-8000-000000000002";
 const missingHousehold = "41000000-0000-4000-8000-000000000003";
 const memberA = "41000000-0000-4000-8000-000000000011";
 const memberB = "41000000-0000-4000-8000-000000000012";
+const memberC = "41000000-0000-4000-8000-000000000014";
 const missingMember = "41000000-0000-4000-8000-000000000013";
 const categoryA = "41000000-0000-4000-8000-000000000021";
 const expenseMacroCategory = "41000000-0000-4000-8000-000000000022";
@@ -79,6 +80,7 @@ const households = [{ id: householdA }, { id: householdB }];
 const members = [
   { id: memberA, household_id: householdA, display_name: "Member A" },
   { id: memberB, household_id: householdB, display_name: "Member B" },
+  { id: memberC, household_id: householdA, display_name: "Member C" },
 ];
 const categories = [
   {
@@ -1914,14 +1916,14 @@ async function main() {
     assert.ok(!deleteSource.includes(".rpc("));
     console.log("PASS DELETE sanitizes context and persistence failures");
 
-    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
-    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdB;
+    process.env.HOUSEMATE_MVP_MEMBER_ID = memberB;
     const createBody = {
       merchant: "Market",
       description: "Created expense",
       totalAmount: 100.5,
       expenseDate: "2026-08-12",
-      paidByMemberId: memberA,
+      paidByMemberId: memberC,
       categoryId: categoryA,
       items: [
         {
@@ -1939,6 +1941,7 @@ async function main() {
     assert.equal(created.status, 201);
     const createdBody = await readJson(created);
     assert.equal(createdBody.data.createdBy, memberA);
+    assert.equal(createdBody.data.paidByMemberId, memberC);
     assert.equal(createdBody.data.status, "CONFIRMED");
     assert.equal(createdBody.data.merchant, "Market");
     assert.equal(createdBody.data.category.id, categoryA);
@@ -1970,10 +1973,67 @@ async function main() {
     );
     assert.equal(createRpc.args.p_household_id, householdA);
     assert.equal(createRpc.args.p_created_by, memberA);
+    assert.equal(createRpc.args.p_paid_by, memberC);
     assert.equal(createRpc.args.p_source, "WEB");
+    assert.deepEqual(createRpc.args.p_items, [
+      {
+        name: "Groceries",
+        quantity: 2,
+        unitPrice: 50.25,
+        totalAmount: 100.5,
+        categoryId: categoryA,
+      },
+    ]);
+    assert.deepEqual(createRpc.args.p_distributions, [
+      {
+        householdMemberId: memberA,
+        percentage: 100,
+        amount: 100.5,
+      },
+    ]);
     console.log(
       "PASS POST creates an Expense through the controlled context and RPC",
     );
+
+    observedOperations.length = 0;
+    const crossHouseholdPayer = await route.POST(
+      postRequest({ ...createBody, paidByMemberId: memberB }),
+    );
+    assert.equal(crossHouseholdPayer.status, 404);
+    assert.equal((await readJson(crossHouseholdPayer)).error.code, "NOT_FOUND");
+    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense" }));
+
+    observedOperations.length = 0;
+    const crossHouseholdSplit = await route.POST(
+      postRequest({
+        ...createBody,
+        splits: [{ memberId: memberB, percentage: 100 }],
+      }),
+    );
+    assert.equal(crossHouseholdSplit.status, 404);
+    assert.equal((await readJson(crossHouseholdSplit)).error.code, "NOT_FOUND");
+    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense" }));
+
+    for (const [authError, status] of [
+      ["UNAUTHENTICATED", 401],
+      ["APPLICATION_USER_NOT_FOUND", 403],
+      ["NO_ACTIVE_MEMBERSHIP", 403],
+      ["HOUSEHOLD_SELECTION_REQUIRED", 409],
+    ]) {
+      authContextState = { kind: authError, householdId: householdA };
+      observedOperations.length = 0;
+      const response = await route.POST(postRequest(createBody));
+      assert.equal(response.status, status);
+      assert.equal((await readJson(response)).error.code, authError);
+      assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense" }));
+    }
+    authContextState = { kind: "valid", householdId: householdA };
+    assert.equal(
+      (await route.POST(postRequest({ ...createBody, createdBy: memberB })))
+        .status,
+      400,
+    );
+    console.log("PASS POST authenticates actor and rejects cross-household inputs");
 
     const externalContextBody = { ...createBody, householdId: householdB };
     assert.equal(
@@ -2046,13 +2106,13 @@ async function main() {
     );
 
     delete process.env.HOUSEMATE_MVP_MEMBER_ID;
-    assert.equal((await route.POST(postRequest(createBody))).status, 500);
+    assert.equal((await route.POST(postRequest(createBody))).status, 201);
     if (previousMemberId === undefined) {
       delete process.env.HOUSEMATE_MVP_MEMBER_ID;
     } else {
       process.env.HOUSEMATE_MVP_MEMBER_ID = previousMemberId;
     }
-    console.log("PASS POST sanitizes unavailable actor context");
+    console.log("PASS POST ignores unavailable MVP actor context");
 
     process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
 

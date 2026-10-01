@@ -1,7 +1,3 @@
-import {
-  getConfiguredHttpActorContext,
-  getConfiguredHttpHouseholdContext,
-} from "@/app/api/_lib/http-context";
 import { resolveAuthenticatedContext } from "@/modules/context/authenticated-context.service";
 import { AuthenticatedContextError } from "@/modules/context/authenticated-context.types";
 import {
@@ -329,17 +325,19 @@ export async function POST(request: Request): Promise<Response> {
     return invalidJson();
   }
 
-  let householdId: string;
-  let createdBy: string;
-
   try {
-    ({ householdId } = await getConfiguredHttpHouseholdContext());
-    ({ memberId: createdBy } = await getConfiguredHttpActorContext());
-    const input = parseCreateInput(body, createdBy);
-    const expense = await createExpense({ householdId }, input);
+    const context = await resolveAuthenticatedContext();
+    const input = parseCreateInput(body, context.memberId);
+    const expense = await createExpense(
+      { householdId: context.householdId },
+      input,
+    );
 
     return Response.json({ data: publicExpense(expense) }, { status: 201 });
   } catch (error) {
+    if (error instanceof AuthenticatedContextError) {
+      return contextErrorResponse(error);
+    }
     const possibleExpenseId =
       typeof error === "object" && error !== null && "expenseId" in error
         ? (error as { expenseId?: unknown }).expenseId
