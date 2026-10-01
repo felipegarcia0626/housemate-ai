@@ -12,6 +12,18 @@ const serviceModule = path.join(
   "expense.service.ts",
 );
 const routeModule = path.join(root, "app", "api", "expenses", "route.ts");
+const authServiceModule = path.join(
+  root,
+  "modules",
+  "context",
+  "authenticated-context.service.ts",
+);
+const authTypesModule = path.join(
+  root,
+  "modules",
+  "context",
+  "authenticated-context.types.ts",
+);
 const detailRouteModule = path.join(
   root,
   "app",
@@ -39,6 +51,29 @@ const expenseOlder = "41000000-0000-4000-8000-000000000032";
 const expenseCancelled = "41000000-0000-4000-8000-000000000033";
 const expenseOtherHousehold = "41000000-0000-4000-8000-000000000034";
 const expensePending = "41000000-0000-4000-8000-000000000035";
+
+let authContextState = { kind: "valid", householdId: householdA };
+class FakeAuthenticatedContextError extends Error {
+  constructor(code) {
+    super(code);
+    this.code = code;
+  }
+}
+const fakeAuthTypes = { AuthenticatedContextError: FakeAuthenticatedContextError };
+const fakeAuthService = {
+  resolveAuthenticatedContext: async () => {
+    if (authContextState.kind !== "valid") {
+      throw new FakeAuthenticatedContextError(authContextState.kind);
+    }
+    return {
+      authUserId: "auth-user",
+      userId: "app-user",
+      householdId: authContextState.householdId,
+      memberId: memberA,
+      source: "web",
+    };
+  },
+};
 
 const households = [{ id: householdA }, { id: householdB }];
 const members = [
@@ -701,7 +736,12 @@ async function main() {
     assert.ok(!routeSource.includes("supabase"));
     assert.ok(!routeSource.includes("process.env"));
 
-    const route = createTypeScriptLoader()(routeModule);
+    const route = createTypeScriptLoader(
+      new Map([
+        [authServiceModule, fakeAuthService],
+        [authTypesModule, fakeAuthTypes],
+      ]),
+    )(routeModule);
     assert.deepEqual(Object.keys(route).sort(), ["GET", "POST"]);
 
     observedOperations.length = 0;
@@ -1350,23 +1390,17 @@ async function main() {
       "PASS member filters enforce household membership without leakage",
     );
 
-    for (const configuredHousehold of [
-      undefined,
-      "invalid",
-      missingHousehold,
-    ]) {
-      if (configuredHousehold === undefined) {
-        delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-      } else {
-        process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = configuredHousehold;
-      }
+    for (const authError of ["UNAUTHENTICATED", "NO_ACTIVE_MEMBERSHIP"]) {
+      authContextState = { kind: authError, householdId: householdA };
       observedOperations.length = 0;
       await expectError(
         route,
         "",
-        500,
-        "INTERNAL_ERROR",
-        "No fue posible completar la operación.",
+        authError === "UNAUTHENTICATED" ? 401 : 403,
+        authError,
+        authError === "UNAUTHENTICATED"
+          ? "Se requiere una sesión autenticada."
+          : "La identidad autenticada no tiene un hogar activo.",
       );
       assert.ok(
         !observedOperations.some(
@@ -1374,8 +1408,25 @@ async function main() {
         ),
       );
     }
+    authContextState = { kind: "HOUSEHOLD_SELECTION_REQUIRED", householdId: householdA };
+    await expectError(
+      route,
+      "",
+      409,
+      "HOUSEHOLD_SELECTION_REQUIRED",
+      "Debes seleccionar un hogar antes de continuar.",
+    );
+    authContextState = { kind: "APPLICATION_USER_NOT_FOUND", householdId: householdA };
+    await expectError(
+      route,
+      "",
+      403,
+      "APPLICATION_USER_NOT_FOUND",
+      "La identidad autenticada no tiene acceso a la aplicación.",
+    );
+    authContextState = { kind: "valid", householdId: householdA };
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
-    console.log("PASS unavailable HTTP context maps to sanitized HTTP 500");
+    console.log("PASS authenticated context errors map to sanitized HTTP responses");
 
     failedTable = "tb_expenses";
     await expectError(

@@ -352,6 +352,11 @@ Esta respuesta confirma que el Expense existe; `expenseId` es el único identifi
 
 GET /api/expenses
 
+El household se obtiene exclusivamente desde `AuthenticatedContext`, resuelto
+a partir de la sesión de Supabase Auth. El endpoint no acepta `householdId` ni
+otro identificador de contexto desde la solicitud. `POST /api/expenses`
+continúa temporalmente utilizando el contexto MVP durante la migración gradual.
+
 Filtros opcionales:
 
 from
