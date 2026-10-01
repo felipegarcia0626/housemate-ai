@@ -56,6 +56,7 @@ const invalidHierarchyIncomeCategory = "42000000-0000-4000-8000-000000000028";
 const incomeFirst = "42000000-0000-4000-8000-000000000031";
 const incomeSecond = "42000000-0000-4000-8000-000000000032";
 const incomeThird = "42000000-0000-4000-8000-000000000033";
+const incomeOtherHousehold = "42000000-0000-4000-8000-000000000034";
 
 let authContextState = { kind: "valid", householdId: householdA };
 class FakeAuthenticatedContextError extends Error {
@@ -834,7 +835,12 @@ async function main() {
     console.log("PASS Income POST sanitizes context and persistence errors");
     incomes = [...baselineIncomes];
 
-    const updateRoute = createTypeScriptLoader()(updateRouteModule);
+    const updateRoute = createTypeScriptLoader(
+      new Map([
+        [authServiceModule, fakeAuthService],
+        [authTypesModule, fakeAuthTypes],
+      ]),
+    )(updateRouteModule);
     assert.deepEqual(Object.keys(updateRoute).sort(), ["DELETE", "PATCH"]);
     const updateRouteSource = fs.readFileSync(updateRouteModule, "utf8");
     for (const forbidden of [
@@ -990,6 +996,82 @@ async function main() {
     console.log(
       "PASS Income PATCH changes a valid Micro INCOME category without changing other fields",
     );
+
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdB;
+    const authenticatedPatch = await updateRoute.PATCH(
+      patchRequest(incomeFirst, { description: "Authenticated household update" }),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(authenticatedPatch.status, 200);
+    const authenticatedContext =
+      await fakeAuthService.resolveAuthenticatedContext();
+    assert.equal(authenticatedContext.memberId, memberA);
+    assert.notEqual(memberA, memberC);
+    assert.equal(
+      members.find(({ id }) => id === memberA).household_id,
+      householdA,
+    );
+    assert.equal(
+      members.find(({ id }) => id === memberC).household_id,
+      householdA,
+    );
+    const targetMemberPatch = await updateRoute.PATCH(
+      patchRequest(incomeFirst, { memberId: memberC }),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(targetMemberPatch.status, 200);
+    assert.equal((await readJson(targetMemberPatch)).data.memberId, memberC);
+    assert.equal(
+      incomes.find(({ id }) => id === incomeFirst).member_id,
+      memberC,
+    );
+    Object.assign(incomes[2], originalIncome);
+    console.log("PASS PATCH preserves a valid target member distinct from authenticated member");
+    authContextState = { kind: "UNAUTHENTICATED", householdId: householdA };
+    await expectPatchError(
+      updateRoute,
+      incomeFirst,
+      { amount: 77.77 },
+      401,
+      "UNAUTHENTICATED",
+      "Se requiere una sesión autenticada.",
+    );
+    authContextState = { kind: "APPLICATION_USER_NOT_FOUND", householdId: householdA };
+    await expectPatchError(
+      updateRoute,
+      incomeFirst,
+      { amount: 77.77 },
+      403,
+      "APPLICATION_USER_NOT_FOUND",
+      "La identidad autenticada no tiene acceso a la aplicación.",
+    );
+    authContextState = { kind: "NO_ACTIVE_MEMBERSHIP", householdId: householdA };
+    await expectPatchError(
+      updateRoute,
+      incomeFirst,
+      { amount: 77.77 },
+      403,
+      "NO_ACTIVE_MEMBERSHIP",
+      "La identidad autenticada no tiene un hogar activo.",
+    );
+    authContextState = { kind: "HOUSEHOLD_SELECTION_REQUIRED", householdId: householdA };
+    await expectPatchError(
+      updateRoute,
+      incomeFirst,
+      { amount: 77.77 },
+      409,
+      "HOUSEHOLD_SELECTION_REQUIRED",
+      "Debes seleccionar un hogar antes de continuar.",
+    );
+    authContextState = { kind: "valid", householdId: householdA };
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    const crossHouseholdPatch = await updateRoute.PATCH(
+      patchRequest(incomeOtherHousehold, { description: "Cross household attempt" }),
+      { params: Promise.resolve({ id: incomeOtherHousehold }) },
+    );
+    assert.equal(crossHouseholdPatch.status, 404);
+    assert.equal((await readJson(crossHouseholdPatch)).error.code, "NOT_FOUND");
+    console.log("PASS Income PATCH uses authenticated household and maps auth errors");
 
     const updated = await updateRoute.PATCH(
       patchRequest(incomeFirst, {
@@ -1188,25 +1270,13 @@ async function main() {
       "PASS PATCH query householdId cannot override context and performs one update",
     );
     Object.assign(incomes[2], originalIncome);
-    for (const configuredHousehold of [
-      undefined,
-      "invalid",
-      missingHousehold,
-    ]) {
-      if (configuredHousehold === undefined) {
-        delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-      } else {
-        process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = configuredHousehold;
-      }
-      await expectPatchError(
-        updateRoute,
-        incomeFirst,
-        { amount: 1 },
-        500,
-        "INTERNAL_ERROR",
-        "No fue posible completar la operaciÃ³n.",
-      );
-    }
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = missingHousehold;
+    const configuredHouseholdIgnored = await updateRoute.PATCH(
+      patchRequest(incomeFirst, { amount: 1 }),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(configuredHouseholdIgnored.status, 200);
+    Object.assign(incomes[2], originalIncome);
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
     failedTable = "tb_incomes";
     await expectPatchError(

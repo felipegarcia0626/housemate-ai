@@ -717,6 +717,12 @@ El DTO público contiene únicamente `id`, `createdBy`, `memberId`, `amount`, `i
 
 El backend validará nuevamente el monto, la fecha, la categoría opcional, la pertenencia del integrante y que el ingreso pertenezca al hogar actual. La operación actualizará `updated_at`.
 
+El household utilizado para actualizar el ingreso proviene exclusivamente del
+`AuthenticatedContext` asociado a la sesión de Supabase Auth. El endpoint no
+acepta `householdId` ni otro identificador de contexto desde la solicitud.
+Cuando la sesión, el usuario de aplicación o la membership no son válidos,
+responde respectivamente con `401`, `403` o `409` según el estado de contexto.
+
 ## 8.4 Eliminar ingreso
 
 DELETE /api/incomes/{id}
