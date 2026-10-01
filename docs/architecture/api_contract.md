@@ -415,6 +415,12 @@ Los resultados deberán corresponder únicamente a gastos `CONFIRMED` del hogar 
 
 GET /api/expenses/{id}
 
+El household utilizado para resolver el recurso proviene exclusivamente del
+`AuthenticatedContext` asociado a la sesión de Supabase Auth. El endpoint no
+acepta `householdId` ni otro identificador de contexto desde la solicitud. Los
+gastos inexistentes o pertenecientes a otro household mantienen la respuesta
+`404`.
+
 Response:
 
 {

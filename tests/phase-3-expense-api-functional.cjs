@@ -1478,7 +1478,12 @@ async function main() {
     assert.ok(!observedOperations.some(({ type }) => type === "rpc"));
     console.log("PASS Route exports GET and POST with list flow unchanged");
 
-    const detailRoute = createTypeScriptLoader()(detailRouteModule);
+    const detailRoute = createTypeScriptLoader(
+      new Map([
+        [authServiceModule, fakeAuthService],
+        [authTypesModule, fakeAuthTypes],
+      ]),
+    )(detailRouteModule);
     assert.deepEqual(Object.keys(detailRoute).sort(), [
       "DELETE",
       "GET",
@@ -1512,6 +1517,48 @@ async function main() {
       },
     });
     console.log("PASS GET expense detail returns the exact public DTO");
+
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdB;
+    const authenticatedHouseholdDetail = await detailRoute.GET(
+      detailRequest(expenseNewer),
+      { params: Promise.resolve({ id: expenseNewer }) },
+    );
+    assert.equal(authenticatedHouseholdDetail.status, 200);
+    authContextState = { kind: "UNAUTHENTICATED", householdId: householdA };
+    let authDetailResponse = await detailRoute.GET(detailRequest(expenseNewer), {
+      params: Promise.resolve({ id: expenseNewer }),
+    });
+    assert.equal(authDetailResponse.status, 401);
+    assert.deepEqual(await readJson(authDetailResponse), {
+      error: { code: "UNAUTHENTICATED", message: "Se requiere una sesión autenticada." },
+    });
+    authContextState = { kind: "APPLICATION_USER_NOT_FOUND", householdId: householdA };
+    authDetailResponse = await detailRoute.GET(detailRequest(expenseNewer), {
+      params: Promise.resolve({ id: expenseNewer }),
+    });
+    assert.equal(authDetailResponse.status, 403);
+    assert.deepEqual(await readJson(authDetailResponse), {
+      error: { code: "APPLICATION_USER_NOT_FOUND", message: "La identidad autenticada no tiene acceso a la aplicación." },
+    });
+    authContextState = { kind: "NO_ACTIVE_MEMBERSHIP", householdId: householdA };
+    authDetailResponse = await detailRoute.GET(detailRequest(expenseNewer), {
+      params: Promise.resolve({ id: expenseNewer }),
+    });
+    assert.equal(authDetailResponse.status, 403);
+    assert.deepEqual(await readJson(authDetailResponse), {
+      error: { code: "NO_ACTIVE_MEMBERSHIP", message: "La identidad autenticada no tiene un hogar activo." },
+    });
+    authContextState = { kind: "HOUSEHOLD_SELECTION_REQUIRED", householdId: householdA };
+    authDetailResponse = await detailRoute.GET(detailRequest(expenseNewer), {
+      params: Promise.resolve({ id: expenseNewer }),
+    });
+    assert.equal(authDetailResponse.status, 409);
+    assert.deepEqual(await readJson(authDetailResponse), {
+      error: { code: "HOUSEHOLD_SELECTION_REQUIRED", message: "Debes seleccionar un hogar antes de continuar." },
+    });
+    authContextState = { kind: "valid", householdId: householdA };
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    console.log("PASS detail uses authenticated household and maps auth errors");
 
     const cancelledDetail = await detailRoute.GET(
       detailRequest(expenseCancelled),
@@ -1547,6 +1594,16 @@ async function main() {
     assert.deepEqual(observedOperations, []);
     console.log("PASS detail query householdId cannot alter context");
 
+    const crossHouseholdDetail = await detailRoute.GET(
+      detailRequest(expenseOtherHousehold),
+      { params: Promise.resolve({ id: expenseOtherHousehold }) },
+    );
+    assert.equal(crossHouseholdDetail.status, 404);
+    assert.deepEqual(await readJson(crossHouseholdDetail), {
+      error: { code: "NOT_FOUND", message: "Recurso no encontrado." },
+    });
+    console.log("PASS detail isolates expenses from another household");
+
     for (const [expenseId, expectedMessage] of [
       ["invalid", "Solicitud inválida."],
       [missingHousehold, "Recurso no encontrado."],
@@ -1560,23 +1617,6 @@ async function main() {
       assert.equal(body.error.message, expectedMessage);
     }
     console.log("PASS detail not-found, invalid-id and isolation errors");
-
-    delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-    observedOperations.length = 0;
-    const unavailableDetail = await detailRoute.GET(
-      detailRequest(expenseNewer),
-      { params: Promise.resolve({ id: expenseNewer }) },
-    );
-    assert.equal(unavailableDetail.status, 500);
-    assert.deepEqual(await readJson(unavailableDetail), {
-      error: {
-        code: "INTERNAL_ERROR",
-        message: "No fue posible completar la operación.",
-      },
-    });
-    assert.deepEqual(observedOperations, []);
-    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
-    console.log("PASS detail unavailable context is sanitized");
 
     failedTable = "tb_expenses";
     const failedDetail = await detailRoute.GET(detailRequest(expenseNewer), {
