@@ -883,6 +883,7 @@ async function main() {
       );
     }
     observedOperations.length = 0;
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdB;
     const deleted = await updateRoute.DELETE(deleteRequest(incomeFirst), {
       params: Promise.resolve({ id: incomeFirst }),
     });
@@ -898,6 +899,41 @@ async function main() {
       ).length,
       1,
     );
+    incomes = [...baselineIncomes];
+    authContextState = { kind: "UNAUTHENTICATED", householdId: householdA };
+    const unauthenticatedDelete = await updateRoute.DELETE(
+      deleteRequest(incomeFirst),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(unauthenticatedDelete.status, 401);
+    assert.equal((await readJson(unauthenticatedDelete)).error.code, "UNAUTHENTICATED");
+    authContextState = { kind: "APPLICATION_USER_NOT_FOUND", householdId: householdA };
+    const unlinkedDelete = await updateRoute.DELETE(
+      deleteRequest(incomeFirst),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(unlinkedDelete.status, 403);
+    assert.equal((await readJson(unlinkedDelete)).error.code, "APPLICATION_USER_NOT_FOUND");
+    authContextState = { kind: "NO_ACTIVE_MEMBERSHIP", householdId: householdA };
+    const noMembershipDelete = await updateRoute.DELETE(
+      deleteRequest(incomeFirst),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(noMembershipDelete.status, 403);
+    assert.equal((await readJson(noMembershipDelete)).error.code, "NO_ACTIVE_MEMBERSHIP");
+    authContextState = { kind: "HOUSEHOLD_SELECTION_REQUIRED", householdId: householdA };
+    const selectionRequiredDelete = await updateRoute.DELETE(
+      deleteRequest(incomeFirst),
+      { params: Promise.resolve({ id: incomeFirst }) },
+    );
+    assert.equal(selectionRequiredDelete.status, 409);
+    assert.equal(
+      (await readJson(selectionRequiredDelete)).error.code,
+      "HOUSEHOLD_SELECTION_REQUIRED",
+    );
+    authContextState = { kind: "valid", householdId: householdA };
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    console.log("PASS Income DELETE uses authenticated household and maps auth errors");
 
     for (const [id, status, code] of [
       ["invalid", 422, "VALIDATION_ERROR"],
@@ -910,6 +946,10 @@ async function main() {
       assert.equal(response.status, status);
       assert.equal((await readJson(response)).error.code, code);
     }
+    assert.equal(
+      incomes.some(({ id }) => id === "42000000-0000-4000-8000-000000000034"),
+      true,
+    );
     for (const query of [
       `?householdId=${householdB}`,
       "?memberId=" + memberA,
@@ -923,16 +963,13 @@ async function main() {
       assert.equal((await readJson(response)).error.code, "VALIDATION_ERROR");
       assert.deepEqual(observedOperations, []);
     }
-    delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-    const unavailableDelete = await updateRoute.DELETE(
+    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = missingHousehold;
+    const configuredHouseholdIgnoredDelete = await updateRoute.DELETE(
       deleteRequest(incomeSecond),
       { params: Promise.resolve({ id: incomeSecond }) },
     );
-    assert.equal(unavailableDelete.status, 500);
-    assert.equal(
-      (await readJson(unavailableDelete)).error.code,
-      "INTERNAL_ERROR",
-    );
+    assert.equal(configuredHouseholdIgnoredDelete.status, 204);
+    incomes = [...baselineIncomes];
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
     failedTable = "tb_incomes";
     const persistenceDelete = await updateRoute.DELETE(

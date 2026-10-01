@@ -727,6 +727,14 @@ responde respectivamente con `401`, `403` o `409` según el estado de contexto.
 
 DELETE /api/incomes/{id}
 
+El household se obtiene exclusivamente del `AuthenticatedContext` asociado a
+la sesión de Supabase Auth; el cliente no puede seleccionar el household. La
+operación mantiene el aislamiento mediante `income.id + household_id`.
+Una eliminación exitosa responde `204`. La ausencia de sesión responde `401`,
+los estados inválidos de usuario o membership responden `403`, y la selección
+de household requerida responde `409`. Un income inexistente o perteneciente
+a otro household responde `404`.
+
 El backend validará que el ingreso pertenezca al hogar y contexto actual. La eliminación será física y devolverá:
 
 ```text
