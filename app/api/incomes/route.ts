@@ -220,20 +220,17 @@ export async function POST(request: Request): Promise<Response> {
   };
 
   try {
-    const [{ householdId }, actor] = await Promise.all([
-      getConfiguredHttpHouseholdContext(),
-      getConfiguredHttpActorContext(),
-    ]);
-    if (actor.householdId !== householdId) {
-      return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");
-    }
+    const context = await resolveAuthenticatedContext();
 
     const income = await createIncome(
-      { householdId, memberId: actor.memberId },
+      { householdId: context.householdId, memberId: context.memberId },
       input,
     );
     return Response.json({ data: publicIncome(income) }, { status: 201 });
   } catch (error) {
+    if (error instanceof AuthenticatedContextError) {
+      return contextErrorResponse(error);
+    }
     if (error instanceof IncomeDomainError) {
       if (error.code === "VALIDATION_ERROR") return invalidRequest(422);
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {

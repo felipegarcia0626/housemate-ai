@@ -38,6 +38,7 @@ const householdB = "42000000-0000-4000-8000-000000000002";
 const missingHousehold = "42000000-0000-4000-8000-000000000003";
 const memberA = "42000000-0000-4000-8000-000000000011";
 const memberB = "42000000-0000-4000-8000-000000000012";
+const memberC = "42000000-0000-4000-8000-000000000014";
 const missingMember = "42000000-0000-4000-8000-000000000013";
 const categoryA = "42000000-0000-4000-8000-000000000021";
 const incomeMacroCategory = "42000000-0000-4000-8000-000000000023";
@@ -83,6 +84,7 @@ const households = [{ id: householdA }, { id: householdB }];
 const members = [
   { id: memberA, household_id: householdA },
   { id: memberB, household_id: householdB },
+  { id: memberC, household_id: householdA },
 ];
 const baselineIncomes = [
   {
@@ -716,6 +718,15 @@ async function main() {
       "PASS Income POST creates the public DTO with controlled actor and household",
     );
 
+    const differentTarget = await route.POST(
+      postRequest({ ...createBody, memberId: memberC }),
+    );
+    assert.equal(differentTarget.status, 201);
+    const differentTargetBody = await readJson(differentTarget);
+    assert.equal(differentTargetBody.data.createdBy, memberA);
+    assert.equal(differentTargetBody.data.memberId, memberC);
+    console.log("PASS Income POST preserves actor and target member semantics");
+
     for (const [body, query] of [
       [{ ...createBody, householdId: householdB }, ""],
       [createBody, `?householdId=${householdB}`],
@@ -730,7 +741,7 @@ async function main() {
     }
     assert.equal(
       observedOperations.filter(({ type }) => type === "insert").length,
-      1,
+      2,
     );
     console.log(
       "PASS Income POST rejects external identity, protected and unknown fields",
@@ -779,6 +790,11 @@ async function main() {
       assert.equal(response.status, 404);
       assert.equal((await readJson(response)).error.code, "NOT_FOUND");
     }
+    const crossHouseholdMember = await route.POST(
+      postRequest({ ...createBody, memberId: memberB }),
+    );
+    assert.equal(crossHouseholdMember.status, 404);
+    assert.equal((await readJson(crossHouseholdMember)).error.code, "NOT_FOUND");
     const uncategorizedIncome = await route.POST(
       postRequest({ ...createBody, categoryId: null }),
     );
@@ -787,11 +803,26 @@ async function main() {
       "PASS Income POST validates JSON, amount, date, members and movement categories",
     );
 
-    delete process.env.HOUSEMATE_MVP_MEMBER_ID;
-    const missingActor = await route.POST(postRequest(createBody));
-    assert.equal(missingActor.status, 500);
-    assert.equal((await readJson(missingActor)).error.code, "INTERNAL_ERROR");
-    process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
+    authContextState = { kind: "UNAUTHENTICATED", householdId: householdA };
+    const unauthenticated = await route.POST(postRequest(createBody));
+    assert.equal(unauthenticated.status, 401);
+    assert.equal((await readJson(unauthenticated)).error.code, "UNAUTHENTICATED");
+    authContextState = { kind: "APPLICATION_USER_NOT_FOUND", householdId: householdA };
+    const unlinked = await route.POST(postRequest(createBody));
+    assert.equal(unlinked.status, 403);
+    assert.equal((await readJson(unlinked)).error.code, "APPLICATION_USER_NOT_FOUND");
+    authContextState = { kind: "NO_ACTIVE_MEMBERSHIP", householdId: householdA };
+    const noMembership = await route.POST(postRequest(createBody));
+    assert.equal(noMembership.status, 403);
+    assert.equal((await readJson(noMembership)).error.code, "NO_ACTIVE_MEMBERSHIP");
+    authContextState = { kind: "HOUSEHOLD_SELECTION_REQUIRED", householdId: householdA };
+    const multipleMemberships = await route.POST(postRequest(createBody));
+    assert.equal(multipleMemberships.status, 409);
+    assert.equal(
+      (await readJson(multipleMemberships)).error.code,
+      "HOUSEHOLD_SELECTION_REQUIRED",
+    );
+    authContextState = { kind: "valid", householdId: householdA };
 
     failedTable = "tb_incomes";
     const persistenceCreate = await route.POST(postRequest(createBody));

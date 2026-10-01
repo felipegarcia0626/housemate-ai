@@ -544,6 +544,13 @@ Response:
 
 POST /api/incomes
 
+El endpoint requiere una sesión autenticada y resuelve el contexto mediante
+`AuthenticatedContext`. `household_id` se deriva de `context.householdId` y
+`created_by` de `context.memberId`; el `memberId` del request continúa siendo
+el miembro objetivo del ingreso. El cliente no puede proporcionar
+`householdId` ni `createdBy`. Durante la migración gradual, este endpoint ya no
+utiliza el contexto MVP.
+
 Request:
 
 ```json
