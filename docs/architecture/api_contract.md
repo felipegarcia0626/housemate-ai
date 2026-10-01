@@ -46,8 +46,9 @@ Los demás endpoints descritos en este contrato son objetivos del MVP y permanec
 
 La autenticación Web se migra gradualmente. Los endpoints Web que todavía no
 han sido migrados continúan utilizando el contexto de usuario y hogar
-previamente configurado del MVP; `GET /api/balance` y
-`GET /api/household-members` requieren una sesión autenticada de Supabase.
+previamente configurado del MVP; `GET /api/balance`,
+`GET /api/household-members` y `GET /api/sharing-rules` requieren una sesión
+autenticada de Supabase.
 
 ---
 
@@ -100,7 +101,8 @@ para timestamps.
 Los endpoints Web todavía no migrados trabajan con un contexto de usuario
 determinado por la configuración de la aplicación. `GET /api/balance` requiere
 una sesión autenticada de Supabase y deriva el hogar exclusivamente mediante
-`AuthenticatedContext`.
+`AuthenticatedContext`. `GET /api/household-members` y
+`GET /api/sharing-rules` utilizan la misma frontera autenticada.
 
 Para WhatsApp, el identificador del remitente permitirá asociar la interacción con el usuario correspondiente.
 
@@ -115,8 +117,8 @@ Hogar configurado
 Operación
 
 En la aplicación Web/PWA, los endpoints no migrados utilizan el contexto
-configurado para el MVP. Balance y Household Members utilizan el contexto
-autenticado y no aceptan un hogar seleccionado por el cliente.
+configurado para el MVP. Balance, Household Members y Sharing Rules utilizan
+el contexto autenticado y no aceptan un hogar seleccionado por el cliente.
 
 El cliente no deberá enviar libremente un user_id para modificar el contexto de una operación.
 
@@ -127,8 +129,9 @@ El backend será responsable de determinar el contexto utilizado para ejecutar c
 Las operaciones financieras se ejecutarán dentro del contexto de un hogar.
 
 Los endpoints Web todavía no migrados utilizan el único hogar configurado del
-MVP. `GET /api/balance` ya constituye una excepción: deriva el hogar desde
-`AuthenticatedContext` y no utiliza ese valor configurado.
+MVP. `GET /api/balance`, `GET /api/household-members` y
+`GET /api/sharing-rules` derivan el hogar desde `AuthenticatedContext` y no
+utilizan ese valor configurado.
 
 El backend deberá validar que:
 
@@ -193,8 +196,10 @@ La API utilizará códigos HTTP convencionales.
 
 La autenticación Web se migra gradualmente. `GET /api/balance` ya requiere
 autenticación y puede responder `401 UNAUTHENTICATED` o `403` según el contexto
-autenticado. Los demás endpoints Web que todavía utilizan el contexto MVP
-conservan su comportamiento actual hasta ser migrados.
+autenticado. `GET /api/household-members` y `GET /api/sharing-rules` siguen el
+mismo mapping autenticado, incluyendo `409 HOUSEHOLD_SELECTION_REQUIRED`.
+Los demás endpoints Web que todavía utilizan el contexto MVP conservan su
+comportamiento actual hasta ser migrados.
 
 # 7. Expenses
 
@@ -791,6 +796,22 @@ Response:
 }
 ]
 }
+
+El hogar se deriva exclusivamente desde `AuthenticatedContext`, resuelto a
+partir de la sesión de Supabase Auth. El endpoint no acepta `householdId`,
+`memberId` ni otro contexto desde query, body, headers o cookies del cliente.
+
+Errores de contexto y proveedor:
+
+- `401 UNAUTHENTICATED` cuando no existe una sesión válida.
+- `403 APPLICATION_USER_NOT_FOUND` cuando la identidad Auth no está vinculada
+  a un usuario de la aplicación.
+- `403 NO_ACTIVE_MEMBERSHIP` cuando el usuario de la aplicación no tiene una
+  membership activa.
+- `409 HOUSEHOLD_SELECTION_REQUIRED` cuando la identidad tiene más de una
+  membership y aún no existe selección de hogar.
+- `500 INTERNAL_ERROR` para errores técnicos, de persistencia o del proveedor,
+  siempre con mensaje sanitizado.
 
 # 11. Balance
 
