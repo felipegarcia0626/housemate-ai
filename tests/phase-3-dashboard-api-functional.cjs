@@ -4,7 +4,6 @@ const path = require("node:path");
 const ts = require("typescript");
 
 const root = path.resolve(__dirname, "..");
-const clientModule = path.join(root, "infrastructure", "database", "client.ts");
 const routeModule = path.join(
   root,
   "app",
@@ -13,16 +12,66 @@ const routeModule = path.join(
   "summary",
   "route.ts",
 );
-const householdA = "54000000-0000-4000-8000-000000000001";
-const householdB = "54000000-0000-4000-8000-000000000002";
-const memberA = "54000000-0000-4000-8000-000000000011";
-const operations = [];
-let failedTable;
-const members = [
-  { id: memberA, household_id: householdA },
-  { id: "54000000-0000-4000-8000-000000000012", household_id: householdA },
+const dashboardServiceModule = path.join(
+  root,
+  "modules",
+  "dashboard",
+  "dashboard.service.ts",
+);
+
+const authUserA = "58000000-0000-4000-8000-000000000021";
+const authUserB = "58000000-0000-4000-8000-000000000022";
+const authUserWithoutApplicationUser = "58000000-0000-4000-8000-000000000023";
+const authUserWithoutMembership = "58000000-0000-4000-8000-000000000024";
+const authUserWithMultipleMemberships = "58000000-0000-4000-8000-000000000025";
+const authUserEmptyHousehold = "58000000-0000-4000-8000-000000000026";
+
+const userA = "58000000-0000-4000-8000-000000000031";
+const userB = "58000000-0000-4000-8000-000000000032";
+const userWithoutMembership = "58000000-0000-4000-8000-000000000034";
+const userWithMultipleMemberships = "58000000-0000-4000-8000-000000000035";
+const userEmptyHousehold = "58000000-0000-4000-8000-000000000036";
+
+const householdA = "58000000-0000-4000-8000-000000000001";
+const householdB = "58000000-0000-4000-8000-000000000002";
+const householdEmpty = "58000000-0000-4000-8000-000000000003";
+const householdMultipleA = "58000000-0000-4000-8000-000000000004";
+const householdMultipleB = "58000000-0000-4000-8000-000000000005";
+
+const memberA = "58000000-0000-4000-8000-000000000011";
+const memberB = "58000000-0000-4000-8000-000000000012";
+
+const users = [
+  { id: userA, auth_user_id: authUserA },
+  { id: userB, auth_user_id: authUserB },
+  { id: userWithoutMembership, auth_user_id: authUserWithoutMembership },
+  {
+    id: userWithMultipleMemberships,
+    auth_user_id: authUserWithMultipleMemberships,
+  },
+  { id: userEmptyHousehold, auth_user_id: authUserEmptyHousehold },
 ];
-const households = [{ id: householdA }, { id: householdB }];
+
+const members = [
+  { id: memberA, household_id: householdA, user_id: userA },
+  { id: memberB, household_id: householdB, user_id: userB },
+  {
+    id: "58000000-0000-4000-8000-000000000013",
+    household_id: householdMultipleA,
+    user_id: userWithMultipleMemberships,
+  },
+  {
+    id: "58000000-0000-4000-8000-000000000014",
+    household_id: householdMultipleB,
+    user_id: userWithMultipleMemberships,
+  },
+  {
+    id: "58000000-0000-4000-8000-000000000015",
+    household_id: householdEmpty,
+    user_id: userEmptyHousehold,
+  },
+];
+
 const incomes = [
   {
     member_id: memberA,
@@ -30,45 +79,129 @@ const incomes = [
     household_id: householdA,
     income_date: "2026-08-01",
   },
+  {
+    member_id: memberA,
+    amount: "20.50",
+    household_id: householdA,
+    income_date: "2026-08-15",
+  },
+  {
+    member_id: memberB,
+    amount: "700.00",
+    household_id: householdB,
+    income_date: "2026-08-01",
+  },
 ];
+
 const expenses = [
   {
     household_id: householdA,
     status: "CONFIRMED",
     total_amount: "500.00",
-    category_id: "54000000-0000-4000-8000-000000000021",
+    expense_date: "2026-08-02",
+    category_id: "58000000-0000-4000-8000-000000000021",
     category: {
-      id: "54000000-0000-4000-8000-000000000021",
+      id: "58000000-0000-4000-8000-000000000021",
       name: "Food",
     },
+    items: [],
+  },
+  {
+    household_id: householdA,
+    status: "PENDING",
+    total_amount: "900.00",
+    expense_date: "2026-08-02",
+    category_id: null,
+    category: null,
+    items: [],
+  },
+  {
+    household_id: householdB,
+    status: "CONFIRMED",
+    total_amount: "100.00",
+    expense_date: "2026-08-03",
+    category_id: null,
+    category: null,
     items: [],
   },
 ];
 
 class FakeQuery {
-  constructor(table) {
+  constructor(table, runtime) {
     this.table = table;
+    this.runtime = runtime;
     this.filters = [];
   }
+
   select(columns) {
-    operations.push({ type: "select", table: this.table, columns });
+    this.runtime.operations.push({ type: "select", table: this.table, columns });
     return this;
   }
+
   eq(column, value) {
-    this.filters.push({ op: "eq", column, value });
-    operations.push({ type: "filter", table: this.table, column, value });
+    this.filters.push({ operator: "eq", column, value });
+    this.runtime.operations.push({
+      type: "filter",
+      table: this.table,
+      operator: "eq",
+      column,
+      value,
+    });
     return this;
   }
+
   gte(column, value) {
-    this.filters.push({ op: "gte", column, value });
-    operations.push({ type: "filter", table: this.table, column, value });
+    this.filters.push({ operator: "gte", column, value });
+    this.runtime.operations.push({
+      type: "filter",
+      table: this.table,
+      operator: "gte",
+      column,
+      value,
+    });
     return this;
   }
+
   lte(column, value) {
-    this.filters.push({ op: "lte", column, value });
-    operations.push({ type: "filter", table: this.table, column, value });
+    this.filters.push({ operator: "lte", column, value });
+    this.runtime.operations.push({
+      type: "filter",
+      table: this.table,
+      operator: "lte",
+      column,
+      value,
+    });
     return this;
   }
+
+  execute() {
+    if (this.runtime.failedTable === this.table) {
+      return {
+        data: null,
+        error: { code: "42501", message: "private database detail" },
+      };
+    }
+
+    const source =
+      this.table === "tb_users"
+        ? users
+        : this.table === "tb_household_members"
+          ? members
+          : this.table === "tb_incomes"
+            ? incomes
+            : expenses;
+    return {
+      data: source.filter((row) =>
+        this.filters.every((filter) => {
+          if (filter.operator === "eq") return row[filter.column] === filter.value;
+          if (filter.operator === "gte") return row[filter.column] >= filter.value;
+          return row[filter.column] <= filter.value;
+        }),
+      ),
+      error: null,
+    };
+  }
+
   maybeSingle() {
     const result = this.execute();
     return Promise.resolve({
@@ -76,56 +209,22 @@ class FakeQuery {
       error: result.error,
     });
   }
-  execute() {
-    if (failedTable === this.table)
-      return {
-        data: null,
-        error: { code: "42501", message: "private detail" },
-      };
-    const source =
-      this.table === "tb_households"
-        ? households
-        : this.table === "tb_household_members"
-          ? members
-          : this.table === "tb_incomes"
-            ? incomes
-            : expenses;
-    const data = source.filter((row) =>
-      this.filters.every((f) =>
-        f.op === "eq"
-          ? row[f.column] === f.value
-          : f.op === "gte"
-            ? row[f.column] >= f.value
-            : row[f.column] <= f.value,
-      ),
-    );
-    return { data, error: null };
-  }
+
   then(resolve, reject) {
     return Promise.resolve(this.execute()).then(resolve, reject);
   }
 }
 
-const fakeClient = {
-  from(table) {
-    operations.push({ type: "from", table });
-    return new FakeQuery(table);
-  },
-  rpc() {
-    throw new Error("Unexpected RPC");
-  },
-};
+function createLoader(runtime, overrides = new Map()) {
+  const moduleCache = new Map();
 
-function loader(overrides = new Map()) {
-  const cache = new Map();
   function load(filename) {
     const resolved = path.resolve(filename);
     if (overrides.has(resolved)) return overrides.get(resolved);
-    if (resolved === clientModule)
-      return { getSupabaseAdminClient: () => fakeClient };
-    if (cache.has(resolved)) return cache.get(resolved).exports;
-    const loaded = { exports: {} };
-    cache.set(resolved, loaded);
+    if (moduleCache.has(resolved)) return moduleCache.get(resolved).exports;
+
+    const loadedModule = { exports: {} };
+    moduleCache.set(resolved, loadedModule);
     const output = ts.transpileModule(fs.readFileSync(resolved, "utf8"), {
       compilerOptions: {
         esModuleInterop: true,
@@ -134,59 +233,171 @@ function loader(overrides = new Map()) {
       },
       fileName: resolved,
     }).outputText;
-    const localRequire = (specifier) =>
-      specifier.startsWith("@/")
-        ? load(path.join(root, `${specifier.slice(2)}.ts`))
-        : specifier.startsWith(".")
-          ? load(path.resolve(path.dirname(resolved), `${specifier}.ts`))
-          : require(specifier);
+
+    const fakeClient = {
+      from(table) {
+        runtime.operations.push({ type: "from", table });
+        return new FakeQuery(table, runtime);
+      },
+      rpc(name) {
+        runtime.operations.push({ type: "rpc", name });
+        throw new Error("Unexpected RPC");
+      },
+    };
+
+    const localRequire = (specifier) => {
+      if (specifier === "@supabase/ssr") {
+        return {
+          createServerClient: () => ({
+            auth: { getUser: async () => runtime.authResponse },
+          }),
+        };
+      }
+      if (specifier === "next/headers") {
+        return {
+          cookies: async () => ({
+            getAll: () => [],
+            set: () => undefined,
+          }),
+        };
+      }
+      if (specifier === "@/infrastructure/database/client") {
+        return { getSupabaseAdminClient: () => fakeClient };
+      }
+      if (specifier.startsWith("@/")) {
+        return load(path.join(root, `${specifier.slice(2)}.ts`));
+      }
+      if (specifier.startsWith(".")) {
+        return load(path.resolve(path.dirname(resolved), `${specifier}.ts`));
+      }
+      return require(specifier);
+    };
+
     new Function("require", "module", "exports", output)(
       localRequire,
-      loaded,
-      loaded.exports,
+      loadedModule,
+      loadedModule.exports,
     );
-    return loaded.exports;
+    return loadedModule.exports;
   }
+
   return load;
 }
 
-async function json(response) {
+function authResponse(id) {
+  return { data: { user: { id } }, error: null };
+}
+
+async function readJson(response) {
   assert.equal(response.headers.get("content-type"), "application/json");
   return response.json();
 }
 
 async function main() {
-  const previous = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+  const { AuthApiError, AuthSessionMissingError } = require(
+    "@supabase/supabase-js",
+  );
+  const previousMvpHousehold = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+  const previousSupabaseUrl = process.env.SUPABASE_URL;
+  const previousSupabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+  process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdB;
+  process.env.SUPABASE_URL ??= "https://example.supabase.co";
+  process.env.SUPABASE_ANON_KEY ??= "test-anon-key";
+
+  const runtime = {
+    authResponse: {
+      data: { user: null },
+      error: new AuthSessionMissingError(),
+    },
+    failedTable: undefined,
+    operations: [],
+  };
+  const route = createLoader(runtime)(routeModule);
+
   try {
-    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
     const source = fs.readFileSync(routeModule, "utf8");
     for (const forbidden of [
-      "supabase",
+      "getConfiguredHttpHouseholdContext",
+      "HOUSEMATE_MVP_HOUSEHOLD_ID",
+      "process.env",
       "database/client",
       ".from(",
       ".rpc(",
       ".insert(",
       ".update(",
       ".delete",
-    ])
+    ]) {
       assert.ok(!source.includes(forbidden), `Route contains ${forbidden}`);
-    const route = loader()(routeModule);
+    }
     assert.deepEqual(Object.keys(route), ["GET"]);
-    operations.length = 0;
-    const response = await route.GET(
+
+    const noSession = await route.GET(
       new Request("http://localhost/api/dashboard/summary"),
     );
-    assert.equal(response.status, 200);
-    assert.deepEqual(await json(response), {
+    assert.equal(noSession.status, 401);
+    assert.equal((await readJson(noSession)).error.code, "UNAUTHENTICATED");
+    assert.equal(runtime.operations.length, 0);
+    console.log("PASS unauthenticated Dashboard requests return 401");
+
+    runtime.authResponse = {
+      data: { user: null },
+      error: new AuthApiError("token expired", 401, "invalid_token"),
+    };
+    runtime.operations.length = 0;
+    const expired = await route.GET(
+      new Request("http://localhost/api/dashboard/summary"),
+    );
+    assert.equal(expired.status, 401);
+    assert.equal((await readJson(expired)).error.code, "UNAUTHENTICATED");
+    assert.equal(runtime.operations.length, 0);
+    console.log("PASS expired Dashboard sessions return 401");
+
+    runtime.authResponse = authResponse(authUserWithoutApplicationUser);
+    runtime.operations.length = 0;
+    const unlinked = await route.GET(
+      new Request("http://localhost/api/dashboard/summary"),
+    );
+    assert.equal(unlinked.status, 403);
+    assert.equal((await readJson(unlinked)).error.code, "APPLICATION_USER_NOT_FOUND");
+    console.log("PASS unlinked Auth users return 403");
+
+    runtime.authResponse = authResponse(authUserWithoutMembership);
+    runtime.operations.length = 0;
+    const noMembership = await route.GET(
+      new Request("http://localhost/api/dashboard/summary"),
+    );
+    assert.equal(noMembership.status, 403);
+    assert.equal((await readJson(noMembership)).error.code, "NO_ACTIVE_MEMBERSHIP");
+    console.log("PASS users without active membership return 403");
+
+    runtime.authResponse = authResponse(authUserWithMultipleMemberships);
+    runtime.operations.length = 0;
+    const multipleMemberships = await route.GET(
+      new Request("http://localhost/api/dashboard/summary"),
+    );
+    assert.equal(multipleMemberships.status, 409);
+    assert.equal(
+      (await readJson(multipleMemberships)).error.code,
+      "HOUSEHOLD_SELECTION_REQUIRED",
+    );
+    console.log("PASS multiple memberships return 409");
+
+    runtime.authResponse = authResponse(authUserA);
+    runtime.operations.length = 0;
+    const householdAResponse = await route.GET(
+      new Request("http://localhost/api/dashboard/summary"),
+    );
+    assert.equal(householdAResponse.status, 200);
+    assert.deepEqual(await readJson(householdAResponse), {
       data: {
-        totalIncome: 1500,
+        totalIncome: 1520.5,
         totalSpent: 500,
-        netAmount: 1000,
+        netAmount: 1020.5,
         expenseCount: 1,
-        memberIncome: [{ memberId: memberA, amount: 1500 }],
+        memberIncome: [{ memberId: memberA, amount: 1520.5 }],
         byCategory: [
           {
-            categoryId: "54000000-0000-4000-8000-000000000021",
+            categoryId: "58000000-0000-4000-8000-000000000021",
             categoryName: "Food",
             amount: 500,
           },
@@ -194,146 +405,198 @@ async function main() {
       },
     });
     assert.ok(
-      operations.every((op) => op.type !== "rpc" && op.type !== "write"),
-    );
-    assert.ok(
-      operations.some(
-        (op) =>
-          op.type === "filter" &&
-          op.table === "tb_incomes" &&
-          op.column === "household_id" &&
-          op.value === householdA,
+      runtime.operations.some(
+        (operation) =>
+          operation.type === "filter" &&
+          operation.table === "tb_incomes" &&
+          operation.column === "household_id" &&
+          operation.value === householdA,
       ),
     );
-    console.log(
-      "PASS Dashboard GET returns public DTO, applies filters and ignores client household",
+    assert.ok(
+      runtime.operations.some(
+        (operation) =>
+          operation.type === "filter" &&
+          operation.table === "tb_expenses" &&
+          operation.column === "household_id" &&
+          operation.value === householdA,
+      ),
     );
+    assert.equal(
+      runtime.operations.some(
+        (operation) =>
+          operation.type === "filter" && operation.value === householdB,
+      ),
+      false,
+    );
+    assert.equal(
+      runtime.operations.some((operation) =>
+        ["insert", "update", "delete", "rpc"].includes(operation.type),
+      ),
+      false,
+    );
+    console.log("PASS authenticated Dashboard uses only household A");
 
-    operations.length = 0;
+    runtime.operations.length = 0;
+    const forbiddenHousehold = await route.GET(
+      new Request(
+        `http://localhost/api/dashboard/summary?householdId=${householdB}`,
+      ),
+    );
+    assert.equal(forbiddenHousehold.status, 422);
+    assert.equal((await readJson(forbiddenHousehold)).error.code, "VALIDATION_ERROR");
+    assert.equal(runtime.operations.length, 0);
+    console.log("PASS client householdId cannot change authenticated context");
+
+    runtime.authResponse = authResponse(authUserB);
+    runtime.operations.length = 0;
+    const householdBResponse = await route.GET(
+      new Request("http://localhost/api/dashboard/summary"),
+    );
+    assert.equal(householdBResponse.status, 200);
+    assert.deepEqual(await readJson(householdBResponse), {
+      data: {
+        totalIncome: 700,
+        totalSpent: 100,
+        netAmount: 600,
+        expenseCount: 1,
+        memberIncome: [{ memberId: memberB, amount: 700 }],
+        byCategory: [
+          { categoryId: null, categoryName: null, amount: 100 },
+        ],
+      },
+    });
+    assert.ok(
+      runtime.operations.some(
+        (operation) =>
+          operation.type === "filter" &&
+          operation.table === "tb_expenses" &&
+          operation.column === "household_id" &&
+          operation.value === householdB,
+      ),
+    );
+    console.log("PASS authenticated Dashboard isolates household B");
+
+    runtime.authResponse = authResponse(authUserEmptyHousehold);
+    runtime.operations.length = 0;
+    const empty = await route.GET(
+      new Request("http://localhost/api/dashboard/summary"),
+    );
+    assert.equal(empty.status, 200);
+    assert.deepEqual(await readJson(empty), {
+      data: {
+        totalIncome: 0,
+        totalSpent: 0,
+        netAmount: 0,
+        expenseCount: 0,
+        memberIncome: [],
+        byCategory: [],
+      },
+    });
+    console.log("PASS authenticated empty Dashboard preserves zero DTO");
+
+    runtime.authResponse = authResponse(authUserA);
+    runtime.operations.length = 0;
     const filtered = await route.GET(
       new Request(
-        "http://localhost/api/dashboard/summary?from=2026-01-01&to=2026-12-31",
+        "http://localhost/api/dashboard/summary?from=2026-08-01&to=2026-08-10",
       ),
     );
     assert.equal(filtered.status, 200);
     assert.ok(
-      operations.some(
-        (op) =>
-          op.type === "filter" &&
-          op.table === "tb_incomes" &&
-          op.column === "income_date" &&
-          op.value === "2026-01-01",
+      runtime.operations.some(
+        (operation) =>
+          operation.type === "filter" &&
+          operation.table === "tb_incomes" &&
+          operation.column === "income_date" &&
+          operation.operator === "gte" &&
+          operation.value === "2026-08-01",
       ),
     );
     assert.ok(
-      operations.some(
-        (op) =>
-          op.type === "filter" &&
-          op.table === "tb_expenses" &&
-          op.column === "expense_date" &&
-          op.value === "2026-12-31",
+      runtime.operations.some(
+        (operation) =>
+          operation.type === "filter" &&
+          operation.table === "tb_expenses" &&
+          operation.column === "expense_date" &&
+          operation.operator === "lte" &&
+          operation.value === "2026-08-10",
       ),
     );
-    console.log("PASS Dashboard forwards from/to filters as strings");
+    console.log("PASS Dashboard forwards inclusive from/to filters");
+
+    for (const url of ["?from=2026-08-01", "?to=2026-08-10"]) {
+      const partial = await route.GET(
+        new Request("http://localhost/api/dashboard/summary" + url),
+      );
+      assert.equal(partial.status, 200);
+    }
+    console.log("PASS Dashboard supports partial date filters");
 
     for (const url of [
-      "?householdId=" + householdB,
-      "?unknown=x",
-      "?from=2026-01-01&from=2026-02-01",
+      "?from=2026-02-30",
+      "?from=2026-12-31&to=2026-01-01",
     ]) {
-      operations.length = 0;
       const invalid = await route.GET(
         new Request("http://localhost/api/dashboard/summary" + url),
       );
       assert.equal(invalid.status, 422);
-      assert.deepEqual(await json(invalid), {
+      assert.equal((await readJson(invalid)).error.code, "VALIDATION_ERROR");
+    }
+    console.log("PASS Dashboard validates partial, invalid and inverted date filters");
+
+    for (const url of [
+      "?unknown=x",
+      "?householdId=" + householdB,
+      "?from=2026-01-01&from=2026-02-01",
+    ]) {
+      runtime.operations.length = 0;
+      const invalid = await route.GET(
+        new Request("http://localhost/api/dashboard/summary" + url),
+      );
+      assert.equal(invalid.status, 422);
+      assert.deepEqual(await readJson(invalid), {
         error: { code: "VALIDATION_ERROR", message: "Solicitud inválida." },
       });
-      assert.equal(operations.length, 0);
+      assert.equal(runtime.operations.length, 0);
     }
     console.log("PASS Dashboard rejects unknown and repeated parameters");
 
-    for (const url of ["?from=2026-02-30", "?from=2026-12-31&to=2026-01-01"]) {
-      const invalid = await route.GET(
-        new Request("http://localhost/api/dashboard/summary" + url),
-      );
-      assert.equal(invalid.status, 422);
-      assert.equal((await json(invalid)).error.code, "VALIDATION_ERROR");
-    }
-    console.log("PASS Dashboard validates dates and range");
-
-    failedTable = "tb_expenses";
-    const failed = await route.GET(
+    runtime.failedTable = "tb_expenses";
+    const persistence = await route.GET(
       new Request("http://localhost/api/dashboard/summary"),
     );
-    assert.equal(failed.status, 500);
-    assert.deepEqual(await json(failed), {
+    assert.equal(persistence.status, 500);
+    assert.deepEqual(await readJson(persistence), {
       error: {
         code: "INTERNAL_ERROR",
         message: "No fue posible completar la operación.",
       },
     });
-    console.log("PASS Dashboard errors are sanitized");
+    runtime.failedTable = undefined;
+    console.log("PASS Dashboard persistence errors remain sanitized");
 
-    const empty = loader(
-      new Map([
-        [
-          path.resolve(
-            path.join(root, "modules/dashboard/dashboard.service.ts"),
-          ),
-          {
-            getDashboard: async () => ({
-              totalIncome: 0,
-              totalSpent: 0,
-              netAmount: 0,
-              expenseCount: 0,
-              memberIncome: [],
-              byCategory: [],
-            }),
-          },
-        ],
-      ]),
-    )(routeModule);
-    assert.deepEqual(
-      await json(
-        await empty.GET(new Request("http://localhost/api/dashboard/summary")),
-      ),
-      {
-        data: {
-          totalIncome: 0,
-          totalSpent: 0,
-          netAmount: 0,
-          expenseCount: 0,
-          memberIncome: [],
-          byCategory: [],
-        },
-      },
+    runtime.authResponse = {
+      data: { user: null },
+      error: new AuthApiError("provider unavailable", 500, "server_error"),
+    };
+    const provider = await route.GET(
+      new Request("http://localhost/api/dashboard/summary"),
     );
-    console.log("PASS Dashboard empty result");
+    assert.equal(provider.status, 500);
+    assert.deepEqual(await readJson(provider), {
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "No fue posible completar la operación.",
+      },
+    });
+    console.log("PASS Dashboard provider errors remain sanitized");
 
-    for (const configured of [
-      undefined,
-      "invalid",
-      "54000000-0000-4000-8000-000000000099",
-    ]) {
-      if (configured === undefined)
-        delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-      else process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = configured;
-      const invalidContext = await route.GET(
-        new Request("http://localhost/api/dashboard/summary"),
-      );
-      assert.equal(invalidContext.status, 500);
-      assert.equal((await json(invalidContext)).error.code, "INTERNAL_ERROR");
-    }
-    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
-    console.log("PASS Dashboard sanitizes context errors");
-
-    const unexpected = loader(
+    const unexpected = createLoader(
+      runtime,
       new Map([
         [
-          path.resolve(
-            path.join(root, "modules/dashboard/dashboard.service.ts"),
-          ),
+          path.resolve(dashboardServiceModule),
           {
             getDashboard: async () => {
               throw new Error("secret internal detail");
@@ -342,21 +605,27 @@ async function main() {
         ],
       ]),
     )(routeModule);
+    runtime.authResponse = authResponse(authUserA);
     const unexpectedResponse = await unexpected.GET(
       new Request("http://localhost/api/dashboard/summary"),
     );
     assert.equal(unexpectedResponse.status, 500);
-    const unexpectedBody = await json(unexpectedResponse);
+    const unexpectedBody = await readJson(unexpectedResponse);
     assert.equal(unexpectedBody.error.code, "INTERNAL_ERROR");
-    assert.ok(
-      !JSON.stringify(unexpectedBody).includes("secret internal detail"),
-    );
-    console.log("PASS Dashboard sanitizes unexpected errors");
+    assert.ok(!JSON.stringify(unexpectedBody).includes("secret internal detail"));
+    console.log("PASS Dashboard unexpected errors remain sanitized");
   } finally {
-    if (previous === undefined) delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-    else process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = previous;
+    if (previousMvpHousehold === undefined)
+      delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+    else process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = previousMvpHousehold;
+    if (previousSupabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousSupabaseUrl;
+    if (previousSupabaseAnonKey === undefined)
+      delete process.env.SUPABASE_ANON_KEY;
+    else process.env.SUPABASE_ANON_KEY = previousSupabaseAnonKey;
   }
 }
+
 main().catch((error) => {
   console.error(error);
   process.exitCode = 1;

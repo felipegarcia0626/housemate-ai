@@ -99,10 +99,10 @@ para timestamps.
 # 3. Contexto del usuario
 
 Los endpoints Web todavía no migrados trabajan con un contexto de usuario
-determinado por la configuración de la aplicación. `GET /api/balance` requiere
-una sesión autenticada de Supabase y deriva el hogar exclusivamente mediante
-`AuthenticatedContext`. `GET /api/household-members` y
-`GET /api/sharing-rules` utilizan la misma frontera autenticada.
+determinado por la configuración de la aplicación. Los endpoints migrados
+`GET /api/balance`, `GET /api/household-members`, `GET /api/sharing-rules` y
+`GET /api/dashboard/summary` requieren una sesión autenticada de Supabase y
+derivan el hogar exclusivamente mediante `AuthenticatedContext`.
 
 Para WhatsApp, el identificador del remitente permitirá asociar la interacción con el usuario correspondiente.
 
@@ -117,8 +117,9 @@ Hogar configurado
 Operación
 
 En la aplicación Web/PWA, los endpoints no migrados utilizan el contexto
-configurado para el MVP. Balance, Household Members y Sharing Rules utilizan
-el contexto autenticado y no aceptan un hogar seleccionado por el cliente.
+configurado para el MVP. Balance, Household Members, Sharing Rules y Dashboard
+Summary utilizan el contexto autenticado y no aceptan un hogar seleccionado por
+el cliente.
 
 El cliente no deberá enviar libremente un user_id para modificar el contexto de una operación.
 
@@ -129,9 +130,9 @@ El backend será responsable de determinar el contexto utilizado para ejecutar c
 Las operaciones financieras se ejecutarán dentro del contexto de un hogar.
 
 Los endpoints Web todavía no migrados utilizan el único hogar configurado del
-MVP. `GET /api/balance`, `GET /api/household-members` y
-`GET /api/sharing-rules` derivan el hogar desde `AuthenticatedContext` y no
-utilizan ese valor configurado.
+MVP. Los endpoints migrados `GET /api/balance`, `GET /api/household-members`,
+`GET /api/sharing-rules` y `GET /api/dashboard/summary` derivan el hogar desde
+`AuthenticatedContext` y no utilizan ese valor configurado.
 
 El backend deberá validar que:
 
@@ -862,6 +863,15 @@ Web permanecen en migración gradual y pueden continuar usando el contexto MVP.
 hogar autenticado. Conserva el DTO `{ "data": [...] }`; no acepta IDs de
 contexto desde el cliente y utiliza el mismo mapping de errores de autenticación
 y persistencia descrito para Balance.
+
+`GET /api/sharing-rules` y `GET /api/dashboard/summary` también requieren una
+sesión autenticada. Ambos utilizan únicamente `AuthenticatedContext.householdId`
+y no aceptan un household proporcionado por el cliente. Dashboard conserva los
+filtros `from` y `to`, el DTO existente y el siguiente mapping HTTP: sesión
+ausente o inválida `401 UNAUTHENTICATED`; identidad sin usuario de aplicación o
+sin membership `403`; múltiples memberships sin selección `409
+HOUSEHOLD_SELECTION_REQUIRED`; errores técnicos `500 INTERNAL_ERROR` con mensaje
+sanitizado.
 
 # 12. Dashboard
 
