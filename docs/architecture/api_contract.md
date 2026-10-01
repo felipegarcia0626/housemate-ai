@@ -43,9 +43,10 @@ Los siguientes endpoints del contrato ya están implementados en el repositorio 
 
 Los demás endpoints descritos en este contrato son objetivos del MVP y permanecen pendientes de implementación HTTP hasta que exista un Route Handler correspondiente.
 
-Durante el MVP no se implementará un sistema formal de autenticación mediante login, sesiones, JWT u OAuth.
-
-El backend trabajará con un contexto de usuario y hogar previamente configurado.
+La autenticación Web se migra gradualmente. Los endpoints Web que todavía no
+han sido migrados continúan utilizando el contexto de usuario y hogar
+previamente configurado del MVP; `GET /api/balance` es la primera excepción y
+requiere una sesión autenticada de Supabase.
 
 ---
 
@@ -95,9 +96,10 @@ para timestamps.
 
 # 3. Contexto del usuario
 
-Durante el MVP no existirá autenticación formal.
-
-El backend trabajará con un contexto de usuario determinado por la configuración de la aplicación.
+Los endpoints Web todavía no migrados trabajan con un contexto de usuario
+determinado por la configuración de la aplicación. `GET /api/balance` requiere
+una sesión autenticada de Supabase y deriva el hogar exclusivamente mediante
+`AuthenticatedContext`.
 
 Para WhatsApp, el identificador del remitente permitirá asociar la interacción con el usuario correspondiente.
 
@@ -111,7 +113,9 @@ Hogar configurado
 ↓
 Operación
 
-En la aplicación Web/PWA se utilizará el contexto configurado para el MVP.
+En la aplicación Web/PWA, los endpoints no migrados utilizan el contexto
+configurado para el MVP. Balance utiliza el contexto autenticado y no acepta
+un hogar seleccionado por el cliente.
 
 El cliente no deberá enviar libremente un user_id para modificar el contexto de una operación.
 
@@ -121,7 +125,9 @@ El backend será responsable de determinar el contexto utilizado para ejecutar c
 
 Las operaciones financieras se ejecutarán dentro del contexto de un hogar.
 
-Durante el MVP existirá un único hogar configurado.
+Los endpoints Web todavía no migrados utilizan el único hogar configurado del
+MVP. `GET /api/balance` ya constituye una excepción: deriva el hogar desde
+`AuthenticatedContext` y no utiliza ese valor configurado.
 
 El backend deberá validar que:
 
@@ -129,6 +135,10 @@ el contexto del usuario sea válido;
 el hogar corresponda al contexto actual;
 los recursos utilizados pertenezcan al mismo hogar;
 los miembros utilizados en una operación pertenezcan al hogar correspondiente.
+
+La selección explícita de hogar para usuarios con múltiples memberships aún no
+está implementada. El cliente no puede seleccionar arbitrariamente un hogar;
+la ausencia de selección para múltiples memberships se rechaza en Balance.
 
 No se implementarán durante el MVP:
 
@@ -180,7 +190,10 @@ La API utilizará códigos HTTP convencionales.
 | 422    | Error de validación             |
 | 500    | Error interno                   |
 
-No se utilizarán 401 Unauthorized ni 403 Forbidden como parte de un flujo de autenticación formal durante el MVP.
+La autenticación Web se migra gradualmente. `GET /api/balance` ya requiere
+autenticación y puede responder `401 UNAUTHENTICATED` o `403` según el contexto
+autenticado. Los demás endpoints Web que todavía utilizan el contexto MVP
+conservan su comportamiento actual hasta ser migrados.
 
 # 7. Expenses
 
@@ -811,6 +824,17 @@ No deberán almacenarse como valores financieros independientes.
 
 Los ingresos no serán consultados ni incluidos por `GET /api/balance`. Este endpoint representa exclusivamente la compensación derivada de gastos compartidos y sus distribuciones.
 
+`GET /api/balance` requiere una sesión autenticada. El backend resuelve
+`AuthenticatedContext` mediante Supabase Auth, `tb_users.auth_user_id` y
+`tb_household_members`, y utiliza únicamente `AuthenticatedContext.householdId`
+para consultar el balance. No acepta `householdId`, `memberId` ni `userId` desde
+query string, body, headers o cookies arbitrarias. Una sesión ausente o inválida
+devuelve `401 UNAUTHENTICATED`; una identidad sin usuario de aplicación o sin
+membership devuelve `403`; múltiples memberships sin selección explícita
+devuelven `409 HOUSEHOLD_SELECTION_REQUIRED`. Los errores técnicos se
+responden como `500 INTERNAL_ERROR` sin detalles internos. Los demás endpoints
+Web permanecen en migración gradual y pueden continuar usando el contexto MVP.
+
 # 12. Dashboard
 
 ## 12.1 Obtener resumen
@@ -1141,9 +1165,12 @@ Las operaciones siempre se ejecutarán dentro del contexto de usuario y hogar de
 
 Web/PWA puede consumir estos contratos directamente para vistas y operaciones explícitas. El agente continúa siendo la interfaz conversacional principal y ambos canales reutilizan los mismos services del dominio.
 
-## 21.3 Sin autenticación formal en el MVP
+## 21.3 Migración gradual de autenticación
 
-No se implementarán login, JWT, OAuth, sesiones ni mecanismos equivalentes durante esta etapa.
+La foundation de identidad autenticada ya existe para Web. `GET /api/balance`
+es el primer endpoint migrado y requiere una sesión autenticada; los demás
+endpoints Web permanecen temporalmente bajo el contexto MVP hasta sus
+incrementos específicos.
 
 ## 21.4 El cliente no define libremente su contexto
 
@@ -1163,7 +1190,8 @@ La lógica financiera será independiente de si la solicitud proviene de WhatsAp
 
 # 22. Evolución futura
 
-Cuando el proyecto requiera autenticación formal, podrá incorporarse un mecanismo de autenticación sin modificar el contrato fundamental de las operaciones de negocio.
+La migración de autenticación podrá extenderse progresivamente a los demás
+endpoints sin modificar el contrato fundamental de las operaciones de negocio.
 
 La futura autenticación deberá encargarse de establecer de forma segura el contexto del usuario.
 
@@ -1188,15 +1216,21 @@ Hogar
    ↓
 Operación
 
-Ahora:
+Ahora, durante la migración gradual:
 
-Contexto configurado
+Endpoint Web aún no migrado
    ↓
-Usuario
+Contexto MVP/configurado
    ↓
-Hogar
+Hogar configurado
+
+GET /api/balance
    ↓
-Operación
+Supabase Auth
+   ↓
+AuthenticatedContext
+   ↓
+householdId autenticado
 
 Y para WhatsApp:
 
