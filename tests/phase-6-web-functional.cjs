@@ -24,25 +24,32 @@ const membersRouteModule = path.join(
 );
 const householdA = "56000000-0000-4000-8000-000000000001";
 const householdB = "56000000-0000-4000-8000-000000000002";
+const authUserA = "56000000-0000-4000-8000-000000000021";
+const userA = "56000000-0000-4000-8000-000000000031";
+const users = [{ id: userA, auth_user_id: authUserA }];
 const members = [
   {
     id: "56000000-0000-4000-8000-000000000011",
     household_id: householdA,
+    user_id: userA,
     display_name: "Felipe",
   },
   {
     id: "56000000-0000-4000-8000-000000000012",
     household_id: householdA,
+    user_id: "56000000-0000-4000-8000-000000000036",
     display_name: "Alejandra",
   },
   {
     id: "56000000-0000-4000-8000-000000000013",
     household_id: householdB,
+    user_id: "56000000-0000-4000-8000-000000000037",
     display_name: "Otra persona",
   },
 ];
 const operations = [];
 let failedTable;
+let authResponse = { data: { user: { id: authUserA } }, error: null };
 
 class FakeQuery {
   constructor(table) {
@@ -68,7 +75,9 @@ class FakeQuery {
     const source =
       this.table === "tb_households"
         ? [{ id: householdA }, { id: householdB }]
-        : members;
+        : this.table === "tb_users"
+          ? users
+          : members;
     return {
       data: source.filter((row) =>
         this.filters.every((filter) => row[filter.column] === filter.value),
@@ -118,6 +127,21 @@ function loadTypeScriptModule(filename, overrides = new Map()) {
       fileName: resolved,
     }).outputText;
     const localRequire = (specifier) => {
+      if (specifier === "@supabase/ssr") {
+        return {
+          createServerClient: () => ({
+            auth: { getUser: async () => authResponse },
+          }),
+        };
+      }
+      if (specifier === "next/headers") {
+        return {
+          cookies: async () => ({
+            getAll: () => [],
+            set: () => undefined,
+          }),
+        };
+      }
       if (specifier.startsWith("@/"))
         return load(path.join(__dirname, "..", specifier.slice(2) + ".ts"));
       if (specifier.startsWith("."))
@@ -887,8 +911,12 @@ if (page.includes("member.displayName === \"Pareja\""))
 
 async function main() {
   const previous = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
+  const previousSupabaseUrl = process.env.SUPABASE_URL;
+  const previousSupabaseAnonKey = process.env.SUPABASE_ANON_KEY;
   try {
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
+    process.env.SUPABASE_URL ??= "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY ??= "test-anon-key";
     const routeSource = fs.readFileSync(membersRouteModule, "utf8");
     for (const forbidden of [
       "getSupabaseAdminClient",
@@ -955,7 +983,7 @@ async function main() {
     assert.deepEqual(await readJson(failed), {
       error: {
         code: "INTERNAL_ERROR",
-        message: "No fue posible completar la operaciÃ³n.",
+        message: "No fue posible completar la operación.",
       },
     });
     console.log("PASS Household Members errors are sanitized");
@@ -963,6 +991,11 @@ async function main() {
     failedTable = undefined;
     if (previous === undefined) delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
     else process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = previous;
+    if (previousSupabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousSupabaseUrl;
+    if (previousSupabaseAnonKey === undefined)
+      delete process.env.SUPABASE_ANON_KEY;
+    else process.env.SUPABASE_ANON_KEY = previousSupabaseAnonKey;
   }
 
   console.log(

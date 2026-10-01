@@ -39,14 +39,15 @@ Los siguientes endpoints del contrato ya están implementados en el repositorio 
 - `DELETE /api/incomes/{id}`
 - `GET /api/sharing-rules`
 - `GET /api/balance`
+- `GET /api/household-members`
 - `GET /api/dashboard/summary`
 
 Los demás endpoints descritos en este contrato son objetivos del MVP y permanecen pendientes de implementación HTTP hasta que exista un Route Handler correspondiente.
 
 La autenticación Web se migra gradualmente. Los endpoints Web que todavía no
 han sido migrados continúan utilizando el contexto de usuario y hogar
-previamente configurado del MVP; `GET /api/balance` es la primera excepción y
-requiere una sesión autenticada de Supabase.
+previamente configurado del MVP; `GET /api/balance` y
+`GET /api/household-members` requieren una sesión autenticada de Supabase.
 
 ---
 
@@ -114,8 +115,8 @@ Hogar configurado
 Operación
 
 En la aplicación Web/PWA, los endpoints no migrados utilizan el contexto
-configurado para el MVP. Balance utiliza el contexto autenticado y no acepta
-un hogar seleccionado por el cliente.
+configurado para el MVP. Balance y Household Members utilizan el contexto
+autenticado y no aceptan un hogar seleccionado por el cliente.
 
 El cliente no deberá enviar libremente un user_id para modificar el contexto de una operación.
 
@@ -835,6 +836,12 @@ devuelven `409 HOUSEHOLD_SELECTION_REQUIRED`. Los errores técnicos se
 responden como `500 INTERNAL_ERROR` sin detalles internos. Los demás endpoints
 Web permanecen en migración gradual y pueden continuar usando el contexto MVP.
 
+`GET /api/household-members` también requiere una sesión autenticada y utiliza
+únicamente `AuthenticatedContext.householdId` para listar los integrantes del
+hogar autenticado. Conserva el DTO `{ "data": [...] }`; no acepta IDs de
+contexto desde el cliente y utiliza el mismo mapping de errores de autenticación
+y persistencia descrito para Balance.
+
 # 12. Dashboard
 
 ## 12.1 Obtener resumen
@@ -1168,9 +1175,9 @@ Web/PWA puede consumir estos contratos directamente para vistas y operaciones ex
 ## 21.3 Migración gradual de autenticación
 
 La foundation de identidad autenticada ya existe para Web. `GET /api/balance`
-es el primer endpoint migrado y requiere una sesión autenticada; los demás
-endpoints Web permanecen temporalmente bajo el contexto MVP hasta sus
-incrementos específicos.
+y `GET /api/household-members` son los primeros endpoints migrados y requieren
+una sesión autenticada; los demás endpoints Web permanecen temporalmente bajo
+el contexto MVP hasta sus incrementos específicos.
 
 ## 21.4 El cliente no define libremente su contexto
 
@@ -1224,7 +1231,7 @@ Contexto MVP/configurado
    ↓
 Hogar configurado
 
-GET /api/balance
+GET /api/balance o GET /api/household-members
    ↓
 Supabase Auth
    ↓
