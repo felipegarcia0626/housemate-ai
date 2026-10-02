@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
+import { PasswordRecoveryForm } from "@/components/auth/password-recovery-form";
 
 export function LoginForm({
   initialError = "",
@@ -16,6 +17,7 @@ export function LoginForm({
   const [error, setError] = useState(initialError);
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [confirmationPending, setConfirmationPending] = useState(false);
+  const [showRecovery, setShowRecovery] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -68,6 +70,15 @@ export function LoginForm({
           </button>
         </section>
       </main>
+    );
+  }
+
+  if (showRecovery) {
+    return (
+      <PasswordRecoveryForm
+        initialEmail={email}
+        onBack={() => setShowRecovery(false)}
+      />
     );
   }
 
@@ -131,6 +142,16 @@ export function LoginForm({
               ? mode === "signup" ? "Creando…" : "Iniciando…"
               : mode === "signup" ? "Crear cuenta" : "Iniciar sesión"}
           </button>
+          {mode === "login" && (
+            <button
+              className="refresh"
+              type="button"
+              onClick={() => setShowRecovery(true)}
+              disabled={busy}
+            >
+              ¿Olvidaste tu contraseña?
+            </button>
+          )}
           {mode === "login" && (
             <button
               className="primary"

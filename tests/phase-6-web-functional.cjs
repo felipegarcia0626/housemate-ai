@@ -19,6 +19,18 @@ const onboardingForm = fs.readFileSync(
   path.join(__dirname, "..", "components", "auth", "onboarding-form.tsx"),
   "utf8",
 );
+const recoveryForm = fs.readFileSync(
+  path.join(__dirname, "..", "components", "auth", "password-recovery-form.tsx"),
+  "utf8",
+);
+const recoveryPasswordForm = fs.readFileSync(
+  path.join(__dirname, "..", "components", "auth", "recovery-password-form.tsx"),
+  "utf8",
+);
+const recoveryRoute = fs.readFileSync(
+  path.join(__dirname, "..", "app", "auth", "recovery", "route.ts"),
+  "utf8",
+);
 const oauthCallback = fs.readFileSync(
   path.join(__dirname, "..", "app", "auth", "callback", "route.ts"),
   "utf8",
@@ -945,6 +957,26 @@ assert.match(loginForm, /signInWithOAuth/);
 assert.match(loginForm, /provider:\s*["']google["']/);
 assert.match(loginForm, /window\.location\.origin.*auth\/callback/);
 assert.match(loginForm, /Continuar con Google/);
+assert.match(loginForm, /¿Olvidaste tu contraseña\?/);
+assert.match(recoveryForm, /resetPasswordForEmail/);
+assert.match(recoveryForm, /redirectTo: recoveryRedirect/);
+assert.match(recoveryForm, /Si existe una cuenta asociada/);
+assert.match(recoveryForm, /disabled={busy}/);
+assert.match(recoveryRoute, /searchParams\.get\(["']code["']\)/);
+assert.match(recoveryRoute, /exchangeCodeForSession\(code\)/);
+assert.match(recoveryRoute, /createHash\("sha256"\)/);
+assert.match(recoveryRoute, /export async function DELETE/);
+assert.match(recoveryRoute, /maxAge: 0/);
+assert.match(recoveryRoute, /authError.*recovery|RECOVERY_ERROR/);
+assert.doesNotMatch(recoveryRoute, /searchParams\.get\(["'](?:next|redirect|redirectTo|returnTo)["']\)/);
+assert.match(recoveryPasswordForm, /PASSWORD_RECOVERY/);
+assert.match(recoveryPasswordForm, /updateUser\(\{ password \}\)/);
+assert.match(recoveryPasswordForm, /fetch\(["']\/auth\/recovery["'].*method: ["']DELETE["']/s);
+assert.match(recoveryPasswordForm, /signOut\(\)/);
+assert.doesNotMatch(recoveryPasswordForm, /setSuccess\(true\);\s*await .*signOut/s);
+assert.match(recoveryPasswordForm, /Las contraseñas no coinciden/);
+assert.doesNotMatch(recoveryForm, /SUPABASE_SERVICE_ROLE_KEY|access_token|refresh_token/);
+assert.doesNotMatch(recoveryPasswordForm, /SUPABASE_SERVICE_ROLE_KEY|access_token|refresh_token/);
 assert.doesNotMatch(loginForm, /SUPABASE_SERVICE_ROLE_KEY|GOOGLE_CLIENT_SECRET/);
 assert.match(oauthCallback, /searchParams\.get\(["']code["']\)/);
 assert.match(oauthCallback, /exchangeCodeForSession\(code\)/);
