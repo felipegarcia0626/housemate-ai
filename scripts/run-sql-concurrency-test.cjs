@@ -12,6 +12,9 @@ const incomeCategoryId = "00000000-0000-4000-8000-000000000033";
 const advisoryLockKey = 2718281828;
 const triggerName = "housemate_2l3_pause_proposal_update";
 const triggerFunction = "housemate_2l3_pause_proposal_update";
+const provisioningTriggerName = "housemate_test_pause_provisioning_user";
+const provisioningTriggerFunction = "housemate_test_pause_provisioning_user";
+const provisioningAdvisoryLockKey = 3141592653;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -128,6 +131,284 @@ async function dropPauseTrigger(controller) {
       ON public.tb_pending_proposals;
     DROP FUNCTION IF EXISTS public.${triggerFunction}();
   `);
+}
+
+async function createProvisioningPauseTrigger(controller) {
+  await controller.query(`
+    CREATE OR REPLACE FUNCTION public.${provisioningTriggerFunction}()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $trigger$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(${provisioningAdvisoryLockKey});
+      RETURN NEW;
+    END;
+    $trigger$;
+
+    CREATE TRIGGER ${provisioningTriggerName}
+    BEFORE INSERT ON public.tb_users
+    FOR EACH ROW
+    EXECUTE FUNCTION public.${provisioningTriggerFunction}();
+  `);
+}
+
+async function dropProvisioningPauseTrigger(controller) {
+  await controller.query(`
+    DROP TRIGGER IF EXISTS ${provisioningTriggerName}
+      ON public.tb_users;
+    DROP FUNCTION IF EXISTS public.${provisioningTriggerFunction}();
+  `);
+}
+
+async function startProvisionTransaction(
+  postgres,
+  authUserId,
+  displayName,
+  householdName,
+) {
+  const client = await connectClient(postgres);
+  try {
+    await client.query("BEGIN");
+    const resultPromise = client
+      .query(
+        `SELECT public.fn_provision_authenticated_user($1, $2, $3) AS result`,
+        [authUserId, displayName, householdName],
+      )
+      .then(({ rows }) => rows[0].result);
+    return { client, pid: client.processID, resultPromise };
+  } catch (error) {
+    try {
+      await client.end();
+    } catch (closeError) {
+      throw new AggregateError(
+        [error, closeError],
+        "Provisioning transaction startup cleanup failed.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function finishProvisionTransaction(transaction, commit) {
+  let transactionError;
+  try {
+    await transaction.client.query(commit ? "COMMIT" : "ROLLBACK");
+    transaction.finished = true;
+  } catch (error) {
+    transactionError = error;
+  } finally {
+    try {
+      await transaction.client.end();
+    } catch (closeError) {
+      if (transactionError) {
+        throw new AggregateError(
+          [transactionError, closeError],
+          "Provisioning transaction cleanup failed.",
+        );
+      }
+      throw closeError;
+    }
+  }
+  if (transactionError) {
+    throw transactionError;
+  }
+}
+
+async function waitForProvisioningLock(controller, pid, granted) {
+  await waitFor(async () => {
+    const { rows } = await controller.query(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_locks
+          WHERE pid = $1
+            AND locktype = 'advisory'
+            AND classid = 0
+            AND objid = $2
+            AND granted = $3
+       ) AS present`,
+      [pid, provisioningAdvisoryLockKey, granted],
+    );
+    return rows[0].present === true;
+  }, granted ? "first provisioning transaction did not acquire lock" : "second provisioning transaction did not wait for lock");
+}
+
+async function runProvisioningRace(
+  controller,
+  postgres,
+  authUserId,
+  firstName,
+  secondName,
+  householdName,
+) {
+  const first = await startProvisionTransaction(
+    postgres,
+    authUserId,
+    firstName,
+    householdName,
+  );
+  let second;
+  try {
+    await waitForProvisioningLock(controller, first.pid, true);
+    second = await startProvisionTransaction(
+      postgres,
+      authUserId,
+      secondName,
+      householdName,
+    );
+    await waitForProvisioningLock(controller, second.pid, false);
+    const firstResult = await first.resultPromise;
+    await finishProvisionTransaction(first, true);
+    const secondResult = await second.resultPromise;
+    await finishProvisionTransaction(second, true);
+    return [firstResult, secondResult];
+  } catch (error) {
+    const cleanupErrors = [];
+    try {
+    if (!first.finished) await finishProvisionTransaction(first, false);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (second) {
+      try {
+      if (!second.finished) await finishProvisionTransaction(second, false);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        "Provisioning race and cleanup failed.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function assertProvisioningState(controller, authUserId) {
+  const { rows } = await controller.query(
+    `SELECT
+       (SELECT count(*)::int FROM public.tb_users WHERE auth_user_id = $1) AS user_count,
+       (SELECT count(*)::int
+          FROM public.tb_household_members member
+          JOIN public.tb_users app_user ON app_user.id = member.user_id
+         WHERE app_user.auth_user_id = $1) AS membership_count,
+       (SELECT count(*)::int
+          FROM public.tb_households household
+          JOIN public.tb_household_members member
+            ON member.household_id = household.id
+          JOIN public.tb_users app_user ON app_user.id = member.user_id
+         WHERE app_user.auth_user_id = $1) AS household_count`,
+    [authUserId],
+  );
+  assert.deepEqual(rows[0], {
+    user_count: 1,
+    membership_count: 1,
+    household_count: 1,
+  });
+}
+
+async function cleanupProvisioningScenario(controller, authUserId, householdId) {
+  await controller.query(
+    `DELETE FROM public.tb_household_members
+      WHERE user_id IN (
+        SELECT id FROM public.tb_users WHERE auth_user_id = $1
+      )`,
+    [authUserId],
+  );
+  await controller.query(
+    `DELETE FROM public.tb_households
+      WHERE id = $1`,
+    [householdId],
+  );
+  await controller.query(
+    `DELETE FROM public.tb_users WHERE auth_user_id = $1`,
+    [authUserId],
+  );
+}
+
+async function runProvisioningConcurrencyScenarios({ controller, postgres }) {
+  const newAuthUserId = "b0000000-0000-4000-8000-000000000001";
+  const partialAuthUserId = "b0000000-0000-4000-8000-000000000002";
+  const partialExternalId = "e2e-provision-partial-0002";
+  const scenarioHouseholdName = "E2E Provisioning Household 0001";
+  const partialHouseholdName = "E2E Provisioning Household 0002";
+
+  try {
+    await createProvisioningPauseTrigger(controller);
+
+    const firstResults = await runProvisioningRace(
+      controller,
+      postgres,
+      newAuthUserId,
+      "Concurrent One",
+      "Concurrent Two",
+      scenarioHouseholdName,
+    );
+    assert.deepEqual(
+      firstResults.map((result) => result.status).sort(),
+      ["ALREADY_PROVISIONED", "PROVISIONING_COMPLETED"],
+    );
+    await assertProvisioningState(controller, newAuthUserId);
+    console.log("PASS provisioning new-user race: one completion, one idempotent result, one user/household/membership");
+
+    const { rows: partialRows } = await controller.query(
+      `INSERT INTO public.tb_users (display_name, external_identifier, auth_user_id)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      ["Partial User", partialExternalId, partialAuthUserId],
+    );
+    assert.equal(partialRows.length, 1);
+    const partialResults = await runProvisioningRace(
+      controller,
+      postgres,
+      partialAuthUserId,
+      "Partial One",
+      "Partial Two",
+      partialHouseholdName,
+    );
+    assert.deepEqual(
+      partialResults.map((result) => result.status).sort(),
+      ["ALREADY_PROVISIONED", "PROVISIONING_COMPLETED"],
+    );
+    await assertProvisioningState(controller, partialAuthUserId);
+    console.log("PASS provisioning partial-user race: one completion, one idempotent result, one user/household/membership");
+
+    const repeatClient = await connectClient(postgres);
+    let repeatResult;
+    try {
+      const { rows: repeatRows } = await repeatClient.query(
+        `SELECT public.fn_provision_authenticated_user($1, $2, $3) AS result`,
+        [newAuthUserId, "Repeat Name", "Repeat Household"],
+      );
+      repeatResult = repeatRows[0].result;
+    } finally {
+      await repeatClient.end();
+    }
+    assert.equal(repeatResult.status, "ALREADY_PROVISIONED");
+    await assertProvisioningState(controller, newAuthUserId);
+    console.log("PASS provisioning sequential repeat: idempotent result and stable relationship counts");
+  } finally {
+    await dropProvisioningPauseTrigger(controller);
+    const { rows: scenarioRows } = await controller.query(
+      `SELECT household_id FROM public.tb_household_members member
+        JOIN public.tb_users app_user ON app_user.id = member.user_id
+       WHERE app_user.auth_user_id = $1`,
+      [newAuthUserId],
+    );
+    const { rows: partialScenarioRows } = await controller.query(
+      `SELECT household_id FROM public.tb_household_members member
+        JOIN public.tb_users app_user ON app_user.id = member.user_id
+       WHERE app_user.auth_user_id = $1`,
+      [partialAuthUserId],
+    );
+    if (scenarioRows[0]) {
+      await cleanupProvisioningScenario(controller, newAuthUserId, scenarioRows[0].household_id);
+    }
+    if (partialScenarioRows[0]) {
+      await cleanupProvisioningScenario(controller, partialAuthUserId, partialScenarioRows[0].household_id);
+    }
+  }
 }
 
 async function waitForAdvisoryWait(controller, pid) {
@@ -529,6 +810,7 @@ async function main() {
       }
     }
 
+    await runProvisioningConcurrencyScenarios({ controller, postgres });
     await createPauseTrigger(controller);
     for (let round = 1; round <= 10; round += 1) {
       await runConcurrentRound({
