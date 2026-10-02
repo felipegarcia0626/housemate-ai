@@ -868,7 +868,6 @@ for (const forbidden of [
   "getSupabaseAdminClient",
   ".from(",
   ".rpc(",
-  "householdId",
   "openai",
   "OpenAI",
   "conversation.service",
@@ -877,6 +876,8 @@ for (const forbidden of [
   if (page.includes(forbidden))
     throw new Error(`UI must not contain ${forbidden}`);
 }
+assert.match(page, /\/api\/auth\/household-selection/);
+assert.match(page, /householdId/);
 
 for (const label of [
   "Dashboard",

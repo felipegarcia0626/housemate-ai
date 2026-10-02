@@ -13,6 +13,7 @@ import {
   AuthenticatedContextError,
   type AuthenticatedContext,
 } from "./authenticated-context.types";
+import { getSelectedWebHouseholdId } from "@/infrastructure/auth/web-household-selection";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -25,12 +26,14 @@ export interface AuthenticatedContextDependencies {
   findActiveMembershipsByUserId: (
     userId: string,
   ) => Promise<ActiveMembershipRecord[]>;
+  getSelectedHouseholdId?: () => Promise<string | null>;
 }
 
 const defaultDependencies: AuthenticatedContextDependencies = {
   getAuthenticatedAuthUser,
   findApplicationUserByAuthUserId,
   findActiveMembershipsByUserId,
+  getSelectedHouseholdId: getSelectedWebHouseholdId,
 };
 
 function contextError(
@@ -102,6 +105,19 @@ export async function resolveAuthenticatedContext(
   }
 
   if (memberships.length > 1) {
+    const selectedHouseholdId = await (dependencies.getSelectedHouseholdId ?? (() => Promise.resolve(null)))();
+    const selectedMembership = selectedHouseholdId
+      ? memberships.find((membership) => membership.householdId === selectedHouseholdId)
+      : undefined;
+    if (selectedMembership) {
+      return Object.freeze({
+        authUserId: authUser.id,
+        userId: applicationUser.id,
+        householdId: selectedMembership.householdId,
+        memberId: selectedMembership.memberId,
+        source: "web" as const,
+      });
+    }
     throw new AuthenticatedContextError(
       "HOUSEHOLD_SELECTION_REQUIRED",
       "The authenticated user must select a household.",

@@ -83,6 +83,7 @@ type IncomeCollection = {
 
 type Category = { id: string; name: string };
 type HouseholdMember = { id: string; displayName: string };
+type SelectableHousehold = { householdId: string; householdName: string };
 type SharingRule = {
   id: string;
   name: string;
@@ -690,6 +691,10 @@ export default function HomePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [authBoundaryError, setAuthBoundaryError] = useState("");
+  const [householdOptions, setHouseholdOptions] = useState<SelectableHousehold[]>([]);
+  const [householdSelectionBusy, setHouseholdSelectionBusy] = useState(false);
+  const [householdSelectionError, setHouseholdSelectionError] = useState("");
+  const [householdSelectionRequired, setHouseholdSelectionRequired] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.search.includes("authError=oauth_callback")) {
@@ -1187,6 +1192,17 @@ export default function HomePage() {
             ? "Tu usuario tiene más de un hogar. La selección de hogar estará disponible próximamente."
             : "Tu usuario todavía no tiene acceso a un hogar de HouseMate AI.",
         );
+        if (status === 409) {
+          authRefreshAborted = true;
+          setHouseholdSelectionRequired(true);
+          try {
+            const options = await api<SelectableHousehold[]>("/api/auth/households");
+            setHouseholdOptions(options);
+          } catch {
+            setHouseholdSelectionError("No fue posible cargar tus hogares.");
+          }
+          return;
+        }
       }
       const nextErrors: Partial<Record<ResourceKey, string>> = {};
       const failed = (key: ResourceKey) => {
@@ -1252,9 +1268,35 @@ export default function HomePage() {
 
   async function signOut(): Promise<void> {
     if (!supabase) return;
+    await fetch("/api/auth/household-selection", { method: "DELETE" }).catch(() => undefined);
     await supabase.auth.signOut();
     setSession(null);
     setAuthBoundaryError("");
+    setHouseholdSelectionRequired(false);
+    setHouseholdOptions([]);
+  }
+
+  async function selectHousehold(householdId: string): Promise<void> {
+    setHouseholdSelectionBusy(true);
+    setHouseholdSelectionError("");
+    try {
+      await requestJson("/api/auth/household-selection", {
+        method: "POST",
+        body: JSON.stringify({ householdId }),
+      });
+      setHouseholdSelectionRequired(false);
+      setHouseholdOptions([]);
+      setAuthBoundaryError("");
+      setDashboard(null);
+      setBalance(null);
+      setExpenses([]);
+      setIncomes([]);
+      await refresh();
+    } catch {
+      setHouseholdSelectionError("No fue posible seleccionar ese hogar.");
+    } finally {
+      setHouseholdSelectionBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -2389,6 +2431,35 @@ export default function HomePage() {
     return <LoginForm initialError={authError} onError={setAuthError} />;
   }
 
+  if (householdSelectionRequired) {
+    return (
+      <main className="shell">
+        <section className="panel auth-panel" aria-labelledby="household-selection-title">
+          <p className="eyebrow">HOUSEMATE AI</p>
+          <h1 id="household-selection-title">Selecciona tu hogar</h1>
+          <p className="muted">Elige el hogar que quieres utilizar en esta sesión.</p>
+          {householdSelectionError && <p className="alert" role="alert">{householdSelectionError}</p>}
+          <div className="form">
+            {householdOptions.map((household) => (
+              <button
+                className="primary"
+                key={household.householdId}
+                type="button"
+                disabled={householdSelectionBusy}
+                onClick={() => void selectHousehold(household.householdId)}
+              >
+                {household.householdName}
+              </button>
+            ))}
+          </div>
+          <button className="refresh" type="button" onClick={() => void signOut()} disabled={householdSelectionBusy}>
+            Cerrar sesión
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   if (authBoundaryError) {
     return (
       <main className="shell">
@@ -2418,6 +2489,12 @@ export default function HomePage() {
         </button>
         <button className="refresh" type="button" onClick={() => void signOut()}>
           Cerrar sesión
+        </button>
+        <button className="refresh" type="button" onClick={() => {
+          setHouseholdSelectionRequired(true);
+          void api<SelectableHousehold[]>("/api/auth/households").then(setHouseholdOptions).catch(() => setHouseholdSelectionError("No fue posible cargar tus hogares."));
+        }}>
+          Cambiar household
         </button>
       </header>
       <nav className="nav" aria-label="Navegación principal">

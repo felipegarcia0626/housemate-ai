@@ -10,6 +10,12 @@ export interface ActiveMembershipRecord {
   memberId: string;
 }
 
+export interface SelectableHouseholdRecord {
+  householdId: string;
+  householdName: string;
+  memberId: string;
+}
+
 export class AuthenticatedContextRepositoryError extends Error {
   constructor(cause: unknown) {
     super("Unable to resolve the authenticated application context.", {
@@ -60,4 +66,24 @@ export async function findActiveMembershipsByUserId(
     householdId: membership.household_id,
     memberId: membership.id,
   }));
+}
+
+export async function findSelectableHouseholdsByUserId(
+  userId: string,
+): Promise<SelectableHouseholdRecord[]> {
+  const memberships = await findActiveMembershipsByUserId(userId);
+  if (memberships.length === 0) return [];
+  const { data, error } = await getSupabaseAdminClient()
+    .from("tb_households")
+    .select("id, name")
+    .in("id", memberships.map((membership) => membership.householdId));
+  if (error) throw new AuthenticatedContextRepositoryError(error);
+  const names = new Map((data ?? []).map((household) => [household.id, household.name]));
+  return memberships
+    .filter((membership) => names.has(membership.householdId))
+    .map((membership) => ({
+      householdId: membership.householdId,
+      householdName: names.get(membership.householdId) as string,
+      memberId: membership.memberId,
+    }));
 }

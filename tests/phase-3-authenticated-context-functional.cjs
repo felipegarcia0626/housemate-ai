@@ -355,6 +355,19 @@ async function main() {
   );
   console.log("PASS users without memberships are rejected");
 
+  const selected = await resolveAuthenticatedContext({
+    getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+    findApplicationUserByAuthUserId: async () => applicationUser,
+    findActiveMembershipsByUserId: async () => [
+      ...oneMembership,
+      { householdId: householdB, memberId: memberB },
+    ],
+    getSelectedHouseholdId: async () => householdB,
+  });
+  assert.equal(selected.householdId, householdB);
+  assert.equal(selected.memberId, memberB);
+  console.log("PASS valid household selection resolves matching member");
+
   await assert.rejects(
     () =>
       resolveAuthenticatedContext({
