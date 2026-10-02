@@ -7,6 +7,14 @@ const page = fs.readFileSync(
   path.join(__dirname, "..", "app", "page.tsx"),
   "utf8",
 );
+const browserAuthModule = fs.readFileSync(
+  path.join(__dirname, "..", "infrastructure", "auth", "supabase-browser.client.ts"),
+  "utf8",
+);
+const loginForm = fs.readFileSync(
+  path.join(__dirname, "..", "components", "auth", "login-form.tsx"),
+  "utf8",
+);
 const clientModule = path.join(
   __dirname,
   "..",
@@ -908,6 +916,21 @@ assert.deepEqual(
 );
 if (page.includes("member.displayName === \"Pareja\""))
   throw new Error("UI must not rename members with a hardcoded alias");
+assert.match(browserAuthModule, /createBrowserClient/);
+assert.match(browserAuthModule, /NEXT_PUBLIC_SUPABASE_URL/);
+assert.match(browserAuthModule, /NEXT_PUBLIC_SUPABASE_ANON_KEY/);
+assert.doesNotMatch(browserAuthModule, /SUPABASE_SERVICE_ROLE_KEY/);
+assert.match(loginForm, /signInWithPassword/);
+assert.match(page, /auth\.getSession\(\)/);
+assert.match(page, /auth\.onAuthStateChange\(/);
+assert.match(page, /subscription\.unsubscribe\(\)/);
+assert.match(page, /auth\.signOut\(\)/);
+assert.match(page, /UNAUTHENTICATED|sesión ya no es válida/);
+assert.match(page, /más de un hogar/);
+assert.match(page, /authRefreshAborted/);
+assert.match(page, /if \(!authRefreshAborted\)/);
+assert.match(page, /if \(!expenseListReady \|\| !session\) return/);
+assert.match(page, /if \(!incomeListReady \|\| !session\) return/);
 
 async function main() {
   const previous = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;

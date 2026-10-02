@@ -39,6 +39,14 @@ textarea:focus-visible {
   margin: 0 auto;
   padding: 2rem 1.25rem 3rem;
 }
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+}
+.auth-panel {
+  width: min(100%, 28rem);
+}
 .topbar {
   display: flex;
   justify-content: space-between;

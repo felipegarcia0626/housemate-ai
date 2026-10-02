@@ -2,6 +2,9 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { HierarchicalCategory } from "@/modules/categories/category.types";
+import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
+import { LoginForm } from "@/components/auth/login-form";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
 type ResourceKey =
@@ -554,6 +557,12 @@ function paginationItems(current: number, total: number): (number | "ellipsis")[
 }
 
 export default function HomePage() {
+  const [supabase] = useState<SupabaseClient | null>(() =>
+    typeof window === "undefined" ? null : createSupabaseBrowserClient(),
+  );
+  const [authReady, setAuthReady] = useState(false);
+  const [session, setSession] = useState<unknown>(null);
+  const [authError, setAuthError] = useState("");
   const [section, setSection] = useState<Section>("dashboard");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [balance, setBalance] = useState<Balance | null>(null);
@@ -675,6 +684,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [authBoundaryError, setAuthBoundaryError] = useState("");
   const [resourceErrors, setResourceErrors] = useState<
     Partial<Record<ResourceKey, string>>
   >({});
@@ -1075,9 +1085,40 @@ export default function HomePage() {
     setAgentError("");
   }
 
+  useEffect(() => {
+    if (!supabase) return;
+    let mounted = true;
+    void supabase.auth.getSession().then(({ data, error: sessionError }) => {
+      if (!mounted) return;
+      if (sessionError) setAuthError("No fue posible recuperar la sesión.");
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!mounted) return;
+      setSession(nextSession);
+      setAuthReady(true);
+      if (!nextSession) {
+        setLoading(false);
+        setExpenseListReady(false);
+        setIncomeListReady(false);
+        setAuthBoundaryError("");
+      }
+    });
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [supabase]);
+
   async function refresh() {
+    if (!session || !supabase) return;
     setLoading(true);
     setError("");
+    setAuthBoundaryError("");
+    let authRefreshAborted = false;
     try {
       const [
         dashboardResult,
@@ -1100,6 +1141,42 @@ export default function HomePage() {
         api<SharingRule[]>("/api/sharing-rules"),
         api<Balance>("/api/balance"),
       ]);
+      const rejectionStatus = (
+        result: PromiseSettledResult<unknown>,
+      ): number | undefined =>
+        result.status === "rejected" && result.reason instanceof Error
+          ? (result.reason as Error & { status?: number }).status
+          : undefined;
+      const authFailure = [
+        dashboardResult,
+        memberResult,
+        ruleResult,
+        balanceResult,
+      ].find(
+        (result) => rejectionStatus(result) === 401,
+      );
+      if (authFailure) {
+        authRefreshAborted = true;
+        setSession(null);
+        setAuthBoundaryError("Tu sesión ya no es válida. Inicia sesión nuevamente.");
+        return;
+      }
+      const contextFailure = [
+        dashboardResult,
+        memberResult,
+        ruleResult,
+        balanceResult,
+      ].find(
+        (result) => [403, 409].includes(rejectionStatus(result) ?? 0),
+      );
+      if (contextFailure) {
+        const status = rejectionStatus(contextFailure);
+        setAuthBoundaryError(
+          status === 409
+            ? "Tu usuario tiene más de un hogar. La selección de hogar estará disponible próximamente."
+            : "Tu usuario todavía no tiene acceso a un hogar de HouseMate AI.",
+        );
+      }
       const nextErrors: Partial<Record<ResourceKey, string>> = {};
       const failed = (key: ResourceKey) => {
         nextErrors[key] = "No fue posible cargar esta secciÃ³n.";
@@ -1153,22 +1230,34 @@ export default function HomePage() {
       );
     } finally {
       setLoading(false);
-      setExpenseListReady(true);
-      setExpenseListRefreshToken((value) => value + 1);
-      setIncomeListReady(true);
-      setIncomeListRefreshToken((value) => value + 1);
+      if (!authRefreshAborted) {
+        setExpenseListReady(true);
+        setExpenseListRefreshToken((value) => value + 1);
+        setIncomeListReady(true);
+        setIncomeListRefreshToken((value) => value + 1);
+      }
     }
   }
 
+  async function signOut(): Promise<void> {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setSession(null);
+    setAuthBoundaryError("");
+  }
+
   useEffect(() => {
+    if (!authReady || !session) {
+      return;
+    }
     const timer = window.setTimeout(() => {
       void refresh();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [authReady, session]);
 
   useEffect(() => {
-    if (!expenseListReady) return;
+    if (!expenseListReady || !session) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams({
@@ -1260,10 +1349,11 @@ export default function HomePage() {
     expenseListSort,
     expenseListSortDirection,
     expenseListTo,
+    session,
   ]);
 
   useEffect(() => {
-    if (!incomeListReady) return;
+    if (!incomeListReady || !session) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams({
@@ -1330,6 +1420,7 @@ export default function HomePage() {
     incomeListSort,
     incomeListSortOrder,
     incomeListTo,
+    session,
   ]);
 
   async function submitExpense(event: FormEvent) {
@@ -2275,6 +2366,31 @@ export default function HomePage() {
     );
   }
 
+  if (!authReady) {
+    return (
+      <main className="shell">
+        <p className="loading">Comprobando sesión…</p>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return <LoginForm initialError={authError} onError={setAuthError} />;
+  }
+
+  if (authBoundaryError) {
+    return (
+      <main className="shell">
+        <section className="panel auth-panel" role="alert">
+          <p className="alert">{authBoundaryError}</p>
+          <button className="primary" type="button" onClick={() => void signOut()}>
+            Cerrar sesión
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -2288,6 +2404,9 @@ export default function HomePage() {
           disabled={loading}
         >
           Actualizar
+        </button>
+        <button className="refresh" type="button" onClick={() => void signOut()}>
+          Cerrar sesión
         </button>
       </header>
       <nav className="nav" aria-label="Navegación principal">
