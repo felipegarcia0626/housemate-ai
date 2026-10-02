@@ -83,7 +83,7 @@ type IncomeCollection = {
 
 type Category = { id: string; name: string };
 type HouseholdMember = { id: string; displayName: string };
-type SelectableHousehold = { householdId: string; householdName: string };
+type SelectableHousehold = { householdId: string; householdName: string; selected?: boolean };
 type SharingRule = {
   id: string;
   name: string;
@@ -692,9 +692,61 @@ export default function HomePage() {
   const [error, setError] = useState("");
   const [authBoundaryError, setAuthBoundaryError] = useState("");
   const [householdOptions, setHouseholdOptions] = useState<SelectableHousehold[]>([]);
+  const [householdOptionsLoading, setHouseholdOptionsLoading] = useState(false);
   const [householdSelectionBusy, setHouseholdSelectionBusy] = useState(false);
   const [householdSelectionError, setHouseholdSelectionError] = useState("");
   const [householdSelectionRequired, setHouseholdSelectionRequired] = useState(false);
+
+  function clearHouseholdData(): void {
+    setDashboard(null);
+    setBalance(null);
+    setExpenses([]);
+    setIncomes([]);
+    setCategories([]);
+    setExpenseCategories([]);
+    setIncomeCategories([]);
+    setMembers([]);
+    setRules([]);
+    setAgentResult(null);
+    setAgentMessage("");
+    setAgentError("");
+    setExpenseListPagination({ page: 1, pageSize: 25, total: 0, totalPages: 0 });
+    setExpenseListSummary({ totalCount: 0, totalAmount: 0 });
+    setIncomeListPagination({ page: 1, pageSize: 25, total: 0, totalPages: 0 });
+    setIncomeListSummary({ totalIncome: 0 });
+    setExpenseListSearch("");
+    setExpenseListFrom("");
+    setExpenseListTo("");
+    setExpenseListMacroId("");
+    setExpenseListMicroId("");
+    setExpenseListMinAmount("");
+    setExpenseListMaxAmount("");
+    setIncomeListSearch("");
+    setIncomeListFrom("");
+    setIncomeListTo("");
+    setIncomeListMemberId("");
+    setIncomeListMacroId("");
+    setIncomeListMicroId("");
+    setIncomeListMinAmount("");
+    setIncomeListMaxAmount("");
+    setExpenseListPage(1);
+    setIncomeListPage(1);
+    setExpenseListReady(false);
+    setIncomeListReady(false);
+  }
+
+  async function loadHouseholdOptions(): Promise<void> {
+    setHouseholdOptionsLoading(true);
+    setHouseholdSelectionError("");
+    try {
+      const options = await api<SelectableHousehold[]>("/api/auth/households");
+      setHouseholdOptions(options);
+    } catch {
+      setHouseholdSelectionError("No fue posible cargar tus hogares.");
+    } finally {
+      setHouseholdOptionsLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.search.includes("authError=oauth_callback")) {
@@ -910,6 +962,8 @@ export default function HomePage() {
       current.amount > top.amount ? current : top,
     );
   }, [dashboard]);
+  const activeHousehold = householdOptions.find((household) => household.selected)
+    ?? (householdOptions.length === 1 ? householdOptions[0] : undefined);
 
   const maxCategoryAmount = useMemo(
     () =>
@@ -1196,8 +1250,7 @@ export default function HomePage() {
           authRefreshAborted = true;
           setHouseholdSelectionRequired(true);
           try {
-            const options = await api<SelectableHousehold[]>("/api/auth/households");
-            setHouseholdOptions(options);
+            await loadHouseholdOptions();
           } catch {
             setHouseholdSelectionError("No fue posible cargar tus hogares.");
           }
@@ -1249,6 +1302,7 @@ export default function HomePage() {
       if (balanceResult.status === "fulfilled") setBalance(balanceResult.value);
       else failed("balance");
       setResourceErrors(nextErrors);
+      await loadHouseholdOptions();
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -1287,10 +1341,7 @@ export default function HomePage() {
       setHouseholdSelectionRequired(false);
       setHouseholdOptions([]);
       setAuthBoundaryError("");
-      setDashboard(null);
-      setBalance(null);
-      setExpenses([]);
-      setIncomes([]);
+      clearHouseholdData();
       await refresh();
     } catch {
       setHouseholdSelectionError("No fue posible seleccionar ese hogar.");
@@ -2439,6 +2490,14 @@ export default function HomePage() {
           <h1 id="household-selection-title">Selecciona tu hogar</h1>
           <p className="muted">Elige el hogar que quieres utilizar en esta sesión.</p>
           {householdSelectionError && <p className="alert" role="alert">{householdSelectionError}</p>}
+          {householdOptionsLoading ? (
+            <p className="loading" role="status">Cargando tus hogares…</p>
+          ) : householdOptions.length === 0 ? (
+            <div className="form">
+              <p className="muted">No hay hogares disponibles para esta cuenta.</p>
+              <button className="refresh" type="button" onClick={() => void loadHouseholdOptions()}>Reintentar</button>
+            </div>
+          ) : (
           <div className="form">
             {householdOptions.map((household) => (
               <button
@@ -2452,6 +2511,7 @@ export default function HomePage() {
               </button>
             ))}
           </div>
+          )}
           <button className="refresh" type="button" onClick={() => void signOut()} disabled={householdSelectionBusy}>
             Cerrar sesión
           </button>
@@ -2480,6 +2540,11 @@ export default function HomePage() {
           <p className="eyebrow">HOUSEMATE AI</p>
           <h1>Finanzas del hogar</h1>
         </div>
+        {activeHousehold && (
+          <span className="active-household" aria-live="polite">
+            {activeHousehold.householdName}
+          </span>
+        )}
         <button
           className="refresh"
           onClick={() => void refresh()}
@@ -2492,7 +2557,8 @@ export default function HomePage() {
         </button>
         <button className="refresh" type="button" onClick={() => {
           setHouseholdSelectionRequired(true);
-          void api<SelectableHousehold[]>("/api/auth/households").then(setHouseholdOptions).catch(() => setHouseholdSelectionError("No fue posible cargar tus hogares."));
+          clearHouseholdData();
+          void loadHouseholdOptions();
         }}>
           Cambiar household
         </button>

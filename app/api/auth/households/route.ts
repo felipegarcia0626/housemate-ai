@@ -4,6 +4,7 @@ import {
   findApplicationUserByAuthUserId,
   findSelectableHouseholdsByUserId,
 } from "@/modules/context/authenticated-context.repository";
+import { getSelectedWebHouseholdId } from "@/infrastructure/auth/web-household-selection";
 
 export async function GET(): Promise<Response> {
   try {
@@ -11,7 +12,8 @@ export async function GET(): Promise<Response> {
     const user = await findApplicationUserByAuthUserId(authUser.id);
     if (!user) return Response.json({ error: { code: "APPLICATION_USER_NOT_FOUND", message: "La identidad autenticada no tiene acceso a la aplicación." } }, { status: 403 });
     const memberships = await findSelectableHouseholdsByUserId(user.id);
-    return Response.json({ data: memberships.map(({ householdId, householdName }) => ({ householdId, householdName })) });
+    const selectedHouseholdId = await getSelectedWebHouseholdId();
+    return Response.json({ data: memberships.map(({ householdId, householdName }) => ({ householdId, householdName, selected: householdId === selectedHouseholdId })) });
   } catch (error) {
     if (error instanceof SupabaseAuthError && error.code === "UNAUTHENTICATED")
       return Response.json({ error: { code: "UNAUTHENTICATED", message: "Se requiere una sesión autenticada." } }, { status: 401 });

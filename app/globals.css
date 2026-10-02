@@ -49,10 +49,16 @@ textarea:focus-visible {
 }
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
   margin-bottom: 1.5rem;
+}
+.active-household {
+  margin-left: auto;
+  color: #155d49;
+  font-weight: 700;
 }
 .eyebrow {
   margin: 0 0 0.25rem;
@@ -891,6 +897,10 @@ footer {
   }
   .topbar {
     align-items: flex-start;
+  }
+  .active-household {
+    width: 100%;
+    margin-left: 0;
   }
   .cards {
     gap: 0.6rem;
