@@ -15,6 +15,10 @@ const loginForm = fs.readFileSync(
   path.join(__dirname, "..", "components", "auth", "login-form.tsx"),
   "utf8",
 );
+const onboardingForm = fs.readFileSync(
+  path.join(__dirname, "..", "components", "auth", "onboarding-form.tsx"),
+  "utf8",
+);
 const oauthCallback = fs.readFileSync(
   path.join(__dirname, "..", "app", "auth", "callback", "route.ts"),
   "utf8",
@@ -934,6 +938,9 @@ assert.match(browserAuthModule, /NEXT_PUBLIC_SUPABASE_URL/);
 assert.match(browserAuthModule, /NEXT_PUBLIC_SUPABASE_ANON_KEY/);
 assert.doesNotMatch(browserAuthModule, /SUPABASE_SERVICE_ROLE_KEY/);
 assert.match(loginForm, /signInWithPassword/);
+assert.match(loginForm, /signUp\(\{ email, password \}\)/);
+assert.match(loginForm, /!data\.session/);
+assert.match(loginForm, /Revisa tu correo electrónico/);
 assert.match(loginForm, /signInWithOAuth/);
 assert.match(loginForm, /provider:\s*["']google["']/);
 assert.match(loginForm, /window\.location\.origin.*auth\/callback/);
@@ -954,6 +961,15 @@ assert.match(page, /authRefreshAborted/);
 assert.match(page, /if \(!authRefreshAborted\)/);
 assert.match(page, /if \(!expenseListReady \|\| !session\) return/);
 assert.match(page, /if \(!incomeListReady \|\| !session\) return/);
+assert.match(page, /prepareAuthenticatedSession/);
+assert.match(page, /APPLICATION_USER_NOT_FOUND/);
+assert.match(page, /setOnboardingRequired\(true\)/);
+assert.match(page, /<OnboardingForm/);
+assert.doesNotMatch(page, /onboardingRequired.*refresh\(\)/);
+assert.match(onboardingForm, /\/api\/auth\/onboarding/);
+assert.match(onboardingForm, /displayName/);
+assert.match(onboardingForm, /householdName/);
+assert.doesNotMatch(onboardingForm, /auth_user_id|userId|householdId/);
 
 async function main() {
   const previous = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;

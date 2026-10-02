@@ -14,6 +14,8 @@ export function LoginForm({
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(initialError);
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [confirmationPending, setConfirmationPending] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -21,14 +23,18 @@ export function LoginForm({
     setError("");
     onError("");
     try {
-      const { error } = await createSupabaseBrowserClient().auth.signInWithPassword({
-        email,
-        password,
-      });
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = mode === "signup"
+        ? await supabase.auth.signUp({ email, password })
+        : await supabase.auth.signInWithPassword({ email, password });
       if (error) {
-        const message = "No se pudo iniciar sesión. Verifica tus credenciales.";
+        const message = mode === "signup"
+          ? "No se pudo crear la cuenta. Revisa los datos e inténtalo de nuevo."
+          : "No se pudo iniciar sesión. Verifica tus credenciales.";
         setError(message);
         onError(message);
+      } else if (mode === "signup" && !data.session) {
+        setConfirmationPending(true);
       }
     } catch {
       const message = "No se pudo iniciar sesión. Inténtalo de nuevo.";
@@ -37,6 +43,32 @@ export function LoginForm({
     } finally {
       setBusy(false);
     }
+  }
+
+  if (confirmationPending) {
+    return (
+      <main className="shell auth-shell">
+        <section className="panel auth-panel">
+          <p className="eyebrow">HOUSEMATE AI</p>
+          <h1>Confirma tu correo</h1>
+          <p className="muted">
+            Cuenta creada. Revisa tu correo electrónico para confirmar tu cuenta y luego inicia sesión.
+          </p>
+          <button
+            className="primary"
+            type="button"
+            onClick={() => {
+              setConfirmationPending(false);
+              setMode("login");
+              setError("");
+              onError("");
+            }}
+          >
+            Volver a iniciar sesión
+          </button>
+        </section>
+      </main>
+    );
   }
 
   async function continueWithGoogle() {
@@ -68,7 +100,7 @@ export function LoginForm({
     <main className="shell auth-shell">
       <section className="panel auth-panel">
         <p className="eyebrow">HOUSEMATE AI</p>
-        <h1>Iniciar sesión</h1>
+        <h1>{mode === "signup" ? "Crear cuenta" : "Iniciar sesión"}</h1>
         <p className="muted">Accede a las finanzas de tu hogar.</p>
         {error && <p className="alert" role="alert">{error}</p>}
         <form className="form" onSubmit={submit}>
@@ -95,15 +127,31 @@ export function LoginForm({
             />
           </label>
           <button className="primary" type="submit" disabled={busy}>
-            {busy ? "Iniciando…" : "Iniciar sesión"}
+            {busy
+              ? mode === "signup" ? "Creando…" : "Iniciando…"
+              : mode === "signup" ? "Crear cuenta" : "Iniciar sesión"}
           </button>
+          {mode === "login" && (
+            <button
+              className="primary"
+              type="button"
+              onClick={() => void continueWithGoogle()}
+              disabled={busy}
+            >
+              Continuar con Google
+            </button>
+          )}
           <button
-            className="primary"
+            className="refresh"
             type="button"
-            onClick={() => void continueWithGoogle()}
             disabled={busy}
+            onClick={() => {
+              setMode((current) => current === "login" ? "signup" : "login");
+              setError("");
+              onError("");
+            }}
           >
-            Continuar con Google
+            {mode === "signup" ? "Ya tengo una cuenta" : "Crear una cuenta"}
           </button>
         </form>
       </section>

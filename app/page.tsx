@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { HierarchicalCategory } from "@/modules/categories/category.types";
 import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
 import { LoginForm } from "@/components/auth/login-form";
+import { OnboardingForm } from "@/components/auth/onboarding-form";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
@@ -696,6 +697,7 @@ export default function HomePage() {
   const [householdSelectionBusy, setHouseholdSelectionBusy] = useState(false);
   const [householdSelectionError, setHouseholdSelectionError] = useState("");
   const [householdSelectionRequired, setHouseholdSelectionRequired] = useState(false);
+  const [onboardingRequired, setOnboardingRequired] = useState(false);
   const householdGeneration = useRef(0);
 
   function invalidateHouseholdOperations(): number {
@@ -1191,6 +1193,7 @@ export default function HomePage() {
         setExpenseListReady(false);
         setIncomeListReady(false);
         setAuthBoundaryError("");
+        setOnboardingRequired(false);
       }
     });
     return () => {
@@ -1340,6 +1343,46 @@ export default function HomePage() {
     }
   }
 
+  async function prepareAuthenticatedSession(): Promise<void> {
+    if (!session) return;
+    const generation = householdGeneration.current;
+    setLoading(true);
+    setAuthBoundaryError("");
+    try {
+      await requestJson("/api/auth/households");
+      if (generation !== householdGeneration.current) return;
+      setOnboardingRequired(false);
+      await refresh();
+    } catch (cause) {
+      if (generation !== householdGeneration.current) return;
+      const status = cause instanceof Error
+        ? (cause as Error & { status?: number }).status
+        : undefined;
+      const code = cause instanceof Error
+        ? (cause as Error & { code?: string }).code
+        : undefined;
+      if (status === 401 || code === "UNAUTHENTICATED") {
+        setSession(null);
+        setAuthError("Tu sesión ya no es válida. Inicia sesión nuevamente.");
+      } else if (status === 403 && code === "APPLICATION_USER_NOT_FOUND") {
+        setOnboardingRequired(true);
+        setExpenseListReady(false);
+        setIncomeListReady(false);
+      } else {
+        setError("No fue posible verificar el estado de tu cuenta.");
+      }
+    } finally {
+      if (generation === householdGeneration.current) setLoading(false);
+    }
+  }
+
+  async function completeOnboarding(): Promise<void> {
+    invalidateHouseholdOperations();
+    setOnboardingRequired(false);
+    clearHouseholdData();
+    await prepareAuthenticatedSession();
+  }
+
   async function signOut(): Promise<void> {
     if (!supabase) return;
     invalidateHouseholdOperations();
@@ -1379,7 +1422,7 @@ export default function HomePage() {
       return;
     }
     const timer = window.setTimeout(() => {
-      void refresh();
+      void prepareAuthenticatedSession();
     }, 0);
     return () => window.clearTimeout(timer);
   }, [authReady, session]);
@@ -2536,6 +2579,15 @@ export default function HomePage() {
 
   if (!session) {
     return <LoginForm initialError={authError} onError={setAuthError} />;
+  }
+
+  if (onboardingRequired) {
+    return (
+      <OnboardingForm
+        onComplete={completeOnboarding}
+        onLogout={signOut}
+      />
+    );
   }
 
   if (householdSelectionRequired) {
