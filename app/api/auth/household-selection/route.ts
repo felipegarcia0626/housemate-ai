@@ -27,6 +27,13 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 export async function DELETE(): Promise<Response> {
-  await clearSelectedWebHouseholdId();
-  return new Response(null, { status: 204 });
+  try {
+    await getAuthenticatedAuthUser();
+    await clearSelectedWebHouseholdId();
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    if (error instanceof SupabaseAuthError && error.code === "UNAUTHENTICATED")
+      return errorResponse(401, "UNAUTHENTICATED", "Se requiere una sesión autenticada.");
+    return errorResponse(500, "INTERNAL_ERROR", "No fue posible completar la operación.");
+  }
 }

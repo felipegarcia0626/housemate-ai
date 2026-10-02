@@ -19,6 +19,10 @@ const oauthCallback = fs.readFileSync(
   path.join(__dirname, "..", "app", "auth", "callback", "route.ts"),
   "utf8",
 );
+const householdSelectionRoute = fs.readFileSync(
+  path.join(__dirname, "..", "app", "api", "auth", "household-selection", "route.ts"),
+  "utf8",
+);
 const clientModule = path.join(
   __dirname,
   "..",
@@ -878,6 +882,10 @@ for (const forbidden of [
 }
 assert.match(page, /\/api\/auth\/household-selection/);
 assert.match(page, /householdId/);
+assert.match(householdSelectionRoute, /export async function DELETE/);
+assert.match(householdSelectionRoute, /await getAuthenticatedAuthUser\(\)/);
+assert.match(householdSelectionRoute, /errorResponse\(401, ["']UNAUTHENTICATED["']/);
+assert.match(householdSelectionRoute, /await clearSelectedWebHouseholdId\(\)/);
 
 for (const label of [
   "Dashboard",
