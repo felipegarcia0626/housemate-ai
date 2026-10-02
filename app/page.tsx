@@ -696,6 +696,12 @@ export default function HomePage() {
   const [householdSelectionBusy, setHouseholdSelectionBusy] = useState(false);
   const [householdSelectionError, setHouseholdSelectionError] = useState("");
   const [householdSelectionRequired, setHouseholdSelectionRequired] = useState(false);
+  const householdGeneration = useRef(0);
+
+  function invalidateHouseholdOperations(): number {
+    householdGeneration.current += 1;
+    return householdGeneration.current;
+  }
 
   function clearHouseholdData(): void {
     setDashboard(null);
@@ -710,6 +716,13 @@ export default function HomePage() {
     setAgentResult(null);
     setAgentMessage("");
     setAgentError("");
+    setBusy(false);
+    setEditLoading(false);
+    setAgentBusy(false);
+    setEditingExpense(null);
+    setEditingIncome(null);
+    setEditExpenseForm(initialExpenseEdit);
+    setEditIncomeForm(initialIncomeEdit);
     setExpenseListPagination({ page: 1, pageSize: 25, total: 0, totalPages: 0 });
     setExpenseListSummary({ totalCount: 0, totalAmount: 0 });
     setIncomeListPagination({ page: 1, pageSize: 25, total: 0, totalPages: 0 });
@@ -735,16 +748,19 @@ export default function HomePage() {
     setIncomeListReady(false);
   }
 
-  async function loadHouseholdOptions(): Promise<void> {
+  async function loadHouseholdOptions(generation = householdGeneration.current): Promise<void> {
+    if (generation !== householdGeneration.current) return;
     setHouseholdOptionsLoading(true);
     setHouseholdSelectionError("");
     try {
       const options = await api<SelectableHousehold[]>("/api/auth/households");
+      if (generation !== householdGeneration.current) return;
       setHouseholdOptions(options);
     } catch {
+      if (generation !== householdGeneration.current) return;
       setHouseholdSelectionError("No fue posible cargar tus hogares.");
     } finally {
-      setHouseholdOptionsLoading(false);
+      if (generation === householdGeneration.current) setHouseholdOptionsLoading(false);
     }
   }
 
@@ -1185,6 +1201,7 @@ export default function HomePage() {
 
   async function refresh() {
     if (!session || !supabase) return;
+    const generation = householdGeneration.current;
     setLoading(true);
     setError("");
     setAuthBoundaryError("");
@@ -1211,6 +1228,7 @@ export default function HomePage() {
         api<SharingRule[]>("/api/sharing-rules"),
         api<Balance>("/api/balance"),
       ]);
+      if (generation !== householdGeneration.current) return;
       const rejectionStatus = (
         result: PromiseSettledResult<unknown>,
       ): number | undefined =>
@@ -1250,7 +1268,7 @@ export default function HomePage() {
           authRefreshAborted = true;
           setHouseholdSelectionRequired(true);
           try {
-            await loadHouseholdOptions();
+            await loadHouseholdOptions(generation);
           } catch {
             setHouseholdSelectionError("No fue posible cargar tus hogares.");
           }
@@ -1302,14 +1320,16 @@ export default function HomePage() {
       if (balanceResult.status === "fulfilled") setBalance(balanceResult.value);
       else failed("balance");
       setResourceErrors(nextErrors);
-      await loadHouseholdOptions();
+      await loadHouseholdOptions(generation);
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       setError(
         cause instanceof Error
           ? cause.message
           : "No fue posible cargar la información.",
       );
     } finally {
+      if (generation !== householdGeneration.current) return;
       setLoading(false);
       if (!authRefreshAborted) {
         setExpenseListReady(true);
@@ -1322,6 +1342,7 @@ export default function HomePage() {
 
   async function signOut(): Promise<void> {
     if (!supabase) return;
+    invalidateHouseholdOperations();
     await fetch("/api/auth/household-selection", { method: "DELETE" }).catch(() => undefined);
     await supabase.auth.signOut();
     setSession(null);
@@ -1331,6 +1352,7 @@ export default function HomePage() {
   }
 
   async function selectHousehold(householdId: string): Promise<void> {
+    const generation = invalidateHouseholdOperations();
     setHouseholdSelectionBusy(true);
     setHouseholdSelectionError("");
     try {
@@ -1338,15 +1360,17 @@ export default function HomePage() {
         method: "POST",
         body: JSON.stringify({ householdId }),
       });
+      if (generation !== householdGeneration.current) return;
       setHouseholdSelectionRequired(false);
       setHouseholdOptions([]);
       setAuthBoundaryError("");
       clearHouseholdData();
       await refresh();
     } catch {
+      if (generation !== householdGeneration.current) return;
       setHouseholdSelectionError("No fue posible seleccionar ese hogar.");
     } finally {
-      setHouseholdSelectionBusy(false);
+      if (generation === householdGeneration.current) setHouseholdSelectionBusy(false);
     }
   }
 
@@ -1363,6 +1387,7 @@ export default function HomePage() {
   useEffect(() => {
     if (!expenseListReady || !session) return;
     const controller = new AbortController();
+    const generation = householdGeneration.current;
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams({
         page: String(expenseListPage),
@@ -1413,6 +1438,7 @@ export default function HomePage() {
           : undefined,
       )
         .then((result) => {
+          if (generation !== householdGeneration.current) return;
           const nextPage =
             result.pagination.totalPages === 0
               ? 1
@@ -1423,6 +1449,7 @@ export default function HomePage() {
           if (nextPage !== expenseListPage) setExpenseListPage(nextPage);
         })
         .catch((cause: unknown) => {
+          if (generation !== householdGeneration.current) return;
           if (cause instanceof DOMException && cause.name === "AbortError")
             return;
           setExpenseListError(
@@ -1432,7 +1459,8 @@ export default function HomePage() {
           );
         })
         .finally(() => {
-          if (!controller.signal.aborted) setExpenseListLoading(false);
+          if (!controller.signal.aborted && generation === householdGeneration.current)
+            setExpenseListLoading(false);
         });
     }, 250);
     return () => {
@@ -1459,6 +1487,7 @@ export default function HomePage() {
   useEffect(() => {
     if (!incomeListReady || !session) return;
     const controller = new AbortController();
+    const generation = householdGeneration.current;
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams({
         page: String(incomeListPage),
@@ -1483,6 +1512,7 @@ export default function HomePage() {
         { signal: controller.signal },
       )
         .then((result) => {
+          if (generation !== householdGeneration.current) return;
           const nextPage =
             result.pagination.totalPages === 0
               ? 1
@@ -1493,6 +1523,7 @@ export default function HomePage() {
           if (nextPage !== incomeListPage) setIncomeListPage(nextPage);
         })
         .catch((cause: unknown) => {
+          if (generation !== householdGeneration.current) return;
           if (cause instanceof DOMException && cause.name === "AbortError")
             return;
           setIncomeListError(
@@ -1502,7 +1533,8 @@ export default function HomePage() {
           );
         })
         .finally(() => {
-          if (!controller.signal.aborted) setIncomeListLoading(false);
+          if (!controller.signal.aborted && generation === householdGeneration.current)
+            setIncomeListLoading(false);
         });
     }, 250);
     return () => {
@@ -1536,6 +1568,7 @@ export default function HomePage() {
     }
     setBusy(true);
     setError("");
+    const generation = householdGeneration.current;
     try {
       await api<Expense>("/api/expenses", {
         method: "POST",
@@ -1550,28 +1583,32 @@ export default function HomePage() {
           splits: rule.splits,
         }),
       });
+      if (generation !== householdGeneration.current) return;
       setExpenseForm(initialExpense);
       setExpenseMacroId("");
       setShowExpenseForm(false);
       await refresh();
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       setError(
         cause instanceof Error
           ? cause.message
           : "No fue posible crear el gasto.",
       );
     } finally {
-      setBusy(false);
+      if (generation === householdGeneration.current) setBusy(false);
     }
   }
 
   async function startExpenseEdit(expenseId: string) {
+    const generation = householdGeneration.current;
     setEditingExpense(expenseId);
     setEditExpenseForm(initialExpenseEdit);
     setEditLoading(true);
     setError("");
     try {
       const expense = await api<ExpenseDetail>(`/api/expenses/${expenseId}`);
+      if (generation !== householdGeneration.current) return;
       const hierarchicalCategory = expense.category
         ? expenseCategories.find(
             (category) => category.id === expense.category?.id,
@@ -1596,6 +1633,7 @@ export default function HomePage() {
         })),
       });
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       setEditingExpense(null);
       setEditExpenseMacroId("");
       setEditExpenseLegacyCategoryName(null);
@@ -1605,7 +1643,7 @@ export default function HomePage() {
           : "No fue posible cargar el gasto.",
       );
     } finally {
-      setEditLoading(false);
+      if (generation === householdGeneration.current) setEditLoading(false);
     }
   }
 
@@ -1620,6 +1658,7 @@ export default function HomePage() {
 
     setBusy(true);
     setError("");
+    const generation = householdGeneration.current;
     expenseEditTargetId.current = expenseId;
     try {
       const payload = {
@@ -1655,11 +1694,13 @@ export default function HomePage() {
       logExpenseEditDiagnostic("[ExpenseEdit] Refresh triggered", {
         expenseId,
       });
+      if (generation !== householdGeneration.current) return;
       await refresh();
       logExpenseEditDiagnostic("[ExpenseEdit] Refresh completed", {
         expenseId,
       });
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       if (isUpdatedNotHydratedError(cause)) {
         setError(
           "El gasto pudo haberse actualizado, pero no se pudo confirmar la recarga. No lo envíes de nuevo para evitar repetir la operación.",
@@ -1672,7 +1713,7 @@ export default function HomePage() {
         );
       }
     } finally {
-      setBusy(false);
+      if (generation === householdGeneration.current) setBusy(false);
     }
   }
 
@@ -1689,17 +1730,20 @@ export default function HomePage() {
     if (!window.confirm("¿Eliminar este gasto?")) return;
     setBusy(true);
     setError("");
+    const generation = householdGeneration.current;
     try {
       await api<unknown>(`/api/expenses/${expenseId}`, { method: "DELETE" });
+      if (generation !== householdGeneration.current) return;
       await refresh();
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       setError(
         cause instanceof Error
           ? cause.message
           : "No fue posible eliminar el gasto.",
       );
     } finally {
-      setBusy(false);
+      if (generation === householdGeneration.current) setBusy(false);
     }
   }
 
@@ -1711,6 +1755,7 @@ export default function HomePage() {
     }
     setBusy(true);
     setError("");
+    const generation = householdGeneration.current;
     try {
       await api<Income>("/api/incomes", {
         method: "POST",
@@ -1722,18 +1767,20 @@ export default function HomePage() {
           categoryId: incomeForm.categoryId || null,
         }),
       });
+      if (generation !== householdGeneration.current) return;
       setIncomeForm(initialIncome);
       setIncomeMacroId("");
       setShowIncomeForm(false);
       await refresh();
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       setError(
         cause instanceof Error
           ? cause.message
           : "No fue posible crear el ingreso.",
       );
     } finally {
-      setBusy(false);
+      if (generation === householdGeneration.current) setBusy(false);
     }
   }
 
@@ -1771,6 +1818,7 @@ export default function HomePage() {
     }
     setBusy(true);
     setError("");
+    const generation = householdGeneration.current;
     try {
       await api<Income>(`/api/incomes/${incomeId}`, {
         method: "PATCH",
@@ -1782,19 +1830,21 @@ export default function HomePage() {
           categoryId: editIncomeForm.categoryId || null,
         }),
       });
+      if (generation !== householdGeneration.current) return;
       setEditingIncome(null);
       setEditIncomeForm(initialIncomeEdit);
       setEditIncomeMacroId("");
       setEditIncomeLegacyCategoryName(null);
       await refresh();
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       setError(
         cause instanceof Error
           ? cause.message
           : "No fue posible actualizar el ingreso.",
       );
     } finally {
-      setBusy(false);
+      if (generation === householdGeneration.current) setBusy(false);
     }
   }
 
@@ -1814,17 +1864,20 @@ export default function HomePage() {
     if (!window.confirm(`¿Eliminar el ingreso${label}${amount}?`)) return;
     setBusy(true);
     setError("");
+    const generation = householdGeneration.current;
     try {
       await api<unknown>(`/api/incomes/${incomeId}`, { method: "DELETE" });
+      if (generation !== householdGeneration.current) return;
       await refresh();
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       setError(
         cause instanceof Error
           ? cause.message
           : "No fue posible eliminar el ingreso.",
       );
     } finally {
-      setBusy(false);
+      if (generation === householdGeneration.current) setBusy(false);
     }
   }
 
@@ -1833,22 +1886,25 @@ export default function HomePage() {
     if (!agentMessage.trim()) return;
     setAgentBusy(true);
     setAgentError("");
+    const generation = householdGeneration.current;
     try {
       const result = await api<AgentResult>("/api/agent", {
         method: "POST",
         body: JSON.stringify({ message: agentMessage }),
       });
+      if (generation !== householdGeneration.current) return;
       setAgentResult(result);
       setAgentMessage("");
       if (result.type === "CONFIRMED") await refresh();
     } catch (cause) {
+      if (generation !== householdGeneration.current) return;
       setAgentError(
         cause instanceof Error
           ? cause.message
           : "No fue posible consultar HouseMate AI.",
       );
     } finally {
-      setAgentBusy(false);
+      if (generation === householdGeneration.current) setAgentBusy(false);
     }
   }
 
@@ -2556,6 +2612,7 @@ export default function HomePage() {
           Cerrar sesión
         </button>
         <button className="refresh" type="button" onClick={() => {
+          invalidateHouseholdOperations();
           setHouseholdSelectionRequired(true);
           clearHouseholdData();
           void loadHouseholdOptions();
