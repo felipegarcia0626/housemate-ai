@@ -1,7 +1,7 @@
 import {
-  getConfiguredHttpActorContext,
-  getConfiguredHttpConversationKey,
-} from "@/app/api/_lib/http-context";
+  resolveAuthenticatedContext,
+} from "@/modules/context/authenticated-context.service";
+import { AuthenticatedContextError } from "@/modules/context/authenticated-context.types";
 import { processAgentMessage } from "@/modules/agent/conversation.service";
 import { AgentDomainError } from "@/modules/agent/agent.types";
 
@@ -29,6 +29,33 @@ function internalError(): Response {
   );
 }
 
+function contextErrorResponse(error: AuthenticatedContextError): Response {
+  switch (error.code) {
+    case "UNAUTHENTICATED":
+      return Response.json(
+        { error: { code: "UNAUTHENTICATED", message: "Se requiere una sesión autenticada." } },
+        { status: 401 },
+      );
+    case "APPLICATION_USER_NOT_FOUND":
+      return Response.json(
+        { error: { code: "APPLICATION_USER_NOT_FOUND", message: "La identidad autenticada no tiene acceso a la aplicación." } },
+        { status: 403 },
+      );
+    case "NO_ACTIVE_MEMBERSHIP":
+      return Response.json(
+        { error: { code: "NO_ACTIVE_MEMBERSHIP", message: "La identidad autenticada no tiene un hogar activo." } },
+        { status: 403 },
+      );
+    case "HOUSEHOLD_SELECTION_REQUIRED":
+      return Response.json(
+        { error: { code: "HOUSEHOLD_SELECTION_REQUIRED", message: "Debes seleccionar un hogar antes de continuar." } },
+        { status: 409 },
+      );
+    default:
+      return internalError();
+  }
+}
+
 export async function POST(request: Request): Promise<Response> {
   let body: unknown;
   try {
@@ -48,11 +75,11 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    const actor = await getConfiguredHttpActorContext();
+    const authenticated = await resolveAuthenticatedContext();
     const context = {
-      householdId: actor.householdId,
-      actorMemberId: actor.memberId,
-      conversationKey: getConfiguredHttpConversationKey(),
+      householdId: authenticated.householdId,
+      actorMemberId: authenticated.memberId,
+      conversationKey: `web:${authenticated.householdId}:${authenticated.memberId}`,
       source: "WEB" as const,
     };
     const result = await processAgentMessage(context, {
@@ -60,6 +87,9 @@ export async function POST(request: Request): Promise<Response> {
     });
     return Response.json({ data: result });
   } catch (error) {
+    if (error instanceof AuthenticatedContextError) {
+      return contextErrorResponse(error);
+    }
     if (error instanceof AgentDomainError) return internalError();
     return internalError();
   }

@@ -5,7 +5,18 @@ const ts = require("typescript");
 
 const root = path.resolve(__dirname, "..");
 const routeModule = path.join(root, "app", "api", "agent", "route.ts");
-const contextModule = path.join(root, "app", "api", "_lib", "http-context.ts");
+const authServiceModule = path.join(
+  root,
+  "modules",
+  "context",
+  "authenticated-context.service.ts",
+);
+const authTypesModule = path.join(
+  root,
+  "modules",
+  "context",
+  "authenticated-context.types.ts",
+);
 const conversationModule = path.join(
   root,
   "modules",
@@ -15,7 +26,7 @@ const conversationModule = path.join(
 const context = {
   householdId: "57000000-0000-4000-8000-000000000001",
   actorMemberId: "57000000-0000-4000-8000-000000000011",
-  conversationKey: "web-agent-test",
+  conversationKey: "web:57000000-0000-4000-8000-000000000001:57000000-0000-4000-8000-000000000011",
   source: "WEB",
 };
 const calls = [];
@@ -25,6 +36,14 @@ let conversationResult = {
   data: [],
 };
 let conversationError = null;
+let authError = null;
+let authenticated = {
+  authUserId: "67000000-0000-4000-8000-000000000001",
+  userId: "67000000-0000-4000-8000-000000000002",
+  householdId: context.householdId,
+  memberId: context.actorMemberId,
+  source: "web",
+};
 
 function loader(overrides = new Map()) {
   const cache = new Map();
@@ -61,13 +80,23 @@ function loader(overrides = new Map()) {
 
 const overrides = new Map([
   [
-    path.resolve(contextModule),
+    path.resolve(authTypesModule),
     {
-      getConfiguredHttpActorContext: async () => ({
-        householdId: context.householdId,
-        memberId: context.actorMemberId,
-      }),
-      getConfiguredHttpConversationKey: () => context.conversationKey,
+      AuthenticatedContextError: class AuthenticatedContextError extends Error {
+        constructor(code) {
+          super(code);
+          this.code = code;
+        }
+      },
+    },
+  ],
+  [
+    path.resolve(authServiceModule),
+    {
+      resolveAuthenticatedContext: async () => {
+        if (authError) throw authError;
+        return authenticated;
+      },
     },
   ],
   [
@@ -124,7 +153,12 @@ async function main() {
   assert.equal(valid.status, 200);
   assert.deepEqual(await json(valid), { data: conversationResult });
   assert.deepEqual(calls[0], {
-    context,
+    context: {
+      householdId: context.householdId,
+      actorMemberId: context.actorMemberId,
+      conversationKey: context.conversationKey,
+      source: "WEB",
+    },
     input: { message: "¿Cuánto gastamos?" },
   });
   console.log(
@@ -170,6 +204,55 @@ async function main() {
     message: "Registra 50000 de supermercado",
   });
   console.log("PASS client context fields are ignored");
+
+  const repeated = await route.POST(
+    jsonRequest(JSON.stringify({ message: "Otra consulta" })),
+  );
+  assert.equal(repeated.status, 200);
+  assert.equal(calls.at(-1).context.conversationKey, context.conversationKey);
+  console.log("PASS same authenticated member and household reuse the Web conversation key");
+
+  authenticated = {
+    ...authenticated,
+    memberId: "57000000-0000-4000-8000-000000000012",
+  };
+  await route.POST(jsonRequest(JSON.stringify({ message: "Otro miembro" })));
+  assert.notEqual(calls.at(-1).context.conversationKey, context.conversationKey);
+  assert.equal(
+    calls.at(-1).context.conversationKey,
+    `web:${context.householdId}:57000000-0000-4000-8000-000000000012`,
+  );
+  authenticated = { ...authenticated, householdId: "57000000-0000-4000-8000-000000000099" };
+  await route.POST(jsonRequest(JSON.stringify({ message: "Otro hogar" })));
+  assert.equal(
+    calls.at(-1).context.conversationKey,
+    "web:57000000-0000-4000-8000-000000000099:57000000-0000-4000-8000-000000000012",
+  );
+  console.log("PASS Web conversation keys isolate members and households");
+
+  authenticated = {
+    ...authenticated,
+    householdId: context.householdId,
+    memberId: context.actorMemberId,
+  };
+  for (const [code, status] of [
+    ["UNAUTHENTICATED", 401],
+    ["AUTH_PROVIDER_ERROR", 500],
+    ["APPLICATION_USER_NOT_FOUND", 403],
+    ["NO_ACTIVE_MEMBERSHIP", 403],
+    ["HOUSEHOLD_SELECTION_REQUIRED", 409],
+    ["PERSISTENCE_ERROR", 500],
+  ]) {
+    calls.length = 0;
+    authError = new (overrides.get(path.resolve(authTypesModule)).AuthenticatedContextError)(code);
+    const response = await route.POST(
+      jsonRequest(JSON.stringify({ message: "No debe procesarse" })),
+    );
+    assert.equal(response.status, status);
+    assert.equal(calls.length, 0);
+  }
+  authError = null;
+  console.log("PASS authenticated context errors are mapped and stop Agent processing");
 
   conversationResult = {
     type: "CONFIRMED",
