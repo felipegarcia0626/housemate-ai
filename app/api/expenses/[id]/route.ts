@@ -287,10 +287,13 @@ export async function DELETE(
   if (!UUID_PATTERN.test(id)) return invalidRequest();
 
   try {
-    const { householdId } = await getConfiguredHttpHouseholdContext();
-    await deleteExpense({ householdId }, id);
+    const context = await resolveAuthenticatedContext();
+    await deleteExpense({ householdId: context.householdId }, id);
     return new Response(null, { status: 204 });
   } catch (error) {
+    if (error instanceof AuthenticatedContextError) {
+      return contextErrorResponse(error);
+    }
     if (error instanceof ExpenseDomainError) {
       if (error.code === "VALIDATION_ERROR") return invalidRequest();
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {

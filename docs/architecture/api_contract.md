@@ -532,6 +532,8 @@ Si PostgreSQL confirma la actualización y devuelve el UUID, pero la lectura pos
 
 DELETE /api/expenses/{id}
 
+El household se obtiene exclusivamente desde `AuthenticatedContext` (`context.householdId`). DELETE no utiliza el contexto MVP ni persiste actor, `deletedBy` o `updatedBy`. Requiere autenticación y aplica `401 UNAUTHENTICATED`, `403` para identidad sin usuario de aplicación o membership activa y `409 HOUSEHOLD_SELECTION_REQUIRED`; los errores técnicos responden como `500 INTERNAL_ERROR` sanitizado.
+
 La eliminación deberá requerir una confirmación previa cuando la operación sea ejecutada mediante el agente.
 
 Si el gasto está `PENDING`, el backend podrá eliminarlo físicamente. Si está `CONFIRMED`, cambiará su estado a `CANCELLED`. Si ya está `CANCELLED`, la operación será idempotente. Solo los gastos `CONFIRMED` participarán en balances, dashboard y consultas financieras. El flujo actual no crea Expense `PENDING`; esa rama queda reservada y no es un caso obligatorio del MVP.

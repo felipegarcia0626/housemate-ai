@@ -1825,11 +1825,67 @@ async function main() {
 
     process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
     process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
+    authContextState = { kind: "valid", householdId: householdB };
     const deleteRequest = (expenseId, query = "") =>
       new Request(`http://localhost/api/expenses/${expenseId}${query}`, {
         method: "DELETE",
       });
 
+    observedOperations.length = 0;
+    const authenticatedHouseholdDelete = await detailRoute.DELETE(
+      deleteRequest(expenseOtherHousehold),
+      { params: Promise.resolve({ id: expenseOtherHousehold }) },
+    );
+    assert.equal(authenticatedHouseholdDelete.status, 204);
+    assert.deepEqual(
+      observedOperations.filter(({ type, name }) => type === "rpc"),
+      [
+        {
+          type: "rpc",
+          name: "fn_delete_expense",
+          args: {
+            p_household_id: householdB,
+            p_expense_id: expenseOtherHousehold,
+          },
+        },
+      ],
+    );
+    console.log("PASS DELETE uses authenticated household instead of MVP");
+
+    observedOperations.length = 0;
+    const authenticatedIsolationDelete = await detailRoute.DELETE(
+      deleteRequest(expenseOlder),
+      { params: Promise.resolve({ id: expenseOlder }) },
+    );
+    assert.equal(authenticatedIsolationDelete.status, 404);
+    assert.deepEqual(await readJson(authenticatedIsolationDelete), {
+      error: { code: "NOT_FOUND", message: "Recurso no encontrado." },
+    });
+    assert.deepEqual(observedOperations, [
+      { type: "rpc", name: "fn_delete_expense", args: {
+        p_household_id: householdB,
+        p_expense_id: expenseOlder,
+      } },
+    ]);
+
+    for (const [authError, status] of [
+      ["UNAUTHENTICATED", 401],
+      ["APPLICATION_USER_NOT_FOUND", 403],
+      ["NO_ACTIVE_MEMBERSHIP", 403],
+      ["HOUSEHOLD_SELECTION_REQUIRED", 409],
+    ]) {
+      authContextState = { kind: authError, householdId: householdB };
+      observedOperations.length = 0;
+      const response = await detailRoute.DELETE(
+        deleteRequest(expenseOlder),
+        { params: Promise.resolve({ id: expenseOlder }) },
+      );
+      assert.equal(response.status, status);
+      assert.equal((await readJson(response)).error.code, authError);
+      assert.deepEqual(observedOperations, []);
+    }
+
+    authContextState = { kind: "valid", householdId: householdA };
     observedOperations.length = 0;
     const pendingDelete = await detailRoute.DELETE(
       deleteRequest(expensePending),
@@ -1919,22 +1975,6 @@ async function main() {
     console.log(
       "PASS DELETE enforces UUID, household isolation and query allowlist",
     );
-
-    delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-    observedOperations.length = 0;
-    const unavailableDelete = await detailRoute.DELETE(
-      deleteRequest(expenseOlder),
-      { params: Promise.resolve({ id: expenseOlder }) },
-    );
-    assert.equal(unavailableDelete.status, 500);
-    assert.deepEqual(await readJson(unavailableDelete), {
-      error: {
-        code: "INTERNAL_ERROR",
-        message: "No fue posible completar la operaci\u00f3n.",
-      },
-    });
-    assert.deepEqual(observedOperations, []);
-    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdA;
 
     rpcError = { code: "42501", message: "private persistence detail" };
     const persistenceDelete = await detailRoute.DELETE(
