@@ -562,7 +562,12 @@ export default function HomePage() {
   );
   const [authReady, setAuthReady] = useState(false);
   const [session, setSession] = useState<unknown>(null);
-  const [authError, setAuthError] = useState("");
+  const [authError, setAuthError] = useState(() =>
+    typeof window !== "undefined" &&
+    window.location.search.includes("authError=oauth_callback")
+      ? "No fue posible completar el inicio de sesión con Google. Intenta nuevamente."
+      : "",
+  );
   const [section, setSection] = useState<Section>("dashboard");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [balance, setBalance] = useState<Balance | null>(null);
@@ -685,6 +690,12 @@ export default function HomePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [authBoundaryError, setAuthBoundaryError] = useState("");
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.search.includes("authError=oauth_callback")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
   const [resourceErrors, setResourceErrors] = useState<
     Partial<Record<ResourceKey, string>>
   >({});

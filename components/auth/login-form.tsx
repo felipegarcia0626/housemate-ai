@@ -39,6 +39,31 @@ export function LoginForm({
     }
   }
 
+  async function continueWithGoogle() {
+    setBusy(true);
+    setError("");
+    onError("");
+    try {
+      const { error } = await createSupabaseBrowserClient().auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
+      if (error) {
+        const message = "No se pudo iniciar sesión con Google. Inténtalo de nuevo.";
+        setError(message);
+        onError(message);
+        setBusy(false);
+      }
+    } catch {
+      const message = "No se pudo iniciar sesión con Google. Inténtalo de nuevo.";
+      setError(message);
+      onError(message);
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="shell auth-shell">
       <section className="panel auth-panel">
@@ -71,6 +96,14 @@ export function LoginForm({
           </label>
           <button className="primary" type="submit" disabled={busy}>
             {busy ? "Iniciando…" : "Iniciar sesión"}
+          </button>
+          <button
+            className="primary"
+            type="button"
+            onClick={() => void continueWithGoogle()}
+            disabled={busy}
+          >
+            Continuar con Google
           </button>
         </form>
       </section>

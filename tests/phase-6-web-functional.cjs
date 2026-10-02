@@ -15,6 +15,10 @@ const loginForm = fs.readFileSync(
   path.join(__dirname, "..", "components", "auth", "login-form.tsx"),
   "utf8",
 );
+const oauthCallback = fs.readFileSync(
+  path.join(__dirname, "..", "app", "auth", "callback", "route.ts"),
+  "utf8",
+);
 const clientModule = path.join(
   __dirname,
   "..",
@@ -921,6 +925,16 @@ assert.match(browserAuthModule, /NEXT_PUBLIC_SUPABASE_URL/);
 assert.match(browserAuthModule, /NEXT_PUBLIC_SUPABASE_ANON_KEY/);
 assert.doesNotMatch(browserAuthModule, /SUPABASE_SERVICE_ROLE_KEY/);
 assert.match(loginForm, /signInWithPassword/);
+assert.match(loginForm, /signInWithOAuth/);
+assert.match(loginForm, /provider:\s*["']google["']/);
+assert.match(loginForm, /window\.location\.origin.*auth\/callback/);
+assert.match(loginForm, /Continuar con Google/);
+assert.doesNotMatch(loginForm, /SUPABASE_SERVICE_ROLE_KEY|GOOGLE_CLIENT_SECRET/);
+assert.match(oauthCallback, /searchParams\.get\(["']code["']\)/);
+assert.match(oauthCallback, /exchangeCodeForSession\(code\)/);
+assert.match(oauthCallback, /new URL\(["']\/["']/);
+assert.doesNotMatch(oauthCallback, /searchParams\.get\(["'](?:next|redirect|redirectTo|returnTo)["']\)/);
+assert.doesNotMatch(oauthCallback, /SUPABASE_SERVICE_ROLE_KEY|GOOGLE_CLIENT_SECRET|console\.(log|error)/);
 assert.match(page, /auth\.getSession\(\)/);
 assert.match(page, /auth\.onAuthStateChange\(/);
 assert.match(page, /subscription\.unsubscribe\(\)/);
