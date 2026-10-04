@@ -565,6 +565,9 @@ for (const marker of [
   "setExpenseMacroId(e.target.value)",
   "categoryId: \"\"",
   "expenseMacroId === \"\"",
+  "¿Cómo se reparte este gasto?",
+  "Repartir por partes iguales",
+  "expenseForm.splits",
 ]) {
   if (!creationFormSource.includes(marker))
     throw new Error(`Missing Expense creation description marker: ${marker}`);
@@ -582,13 +585,40 @@ for (const marker of [
   'method: "POST"',
   "body: JSON.stringify({",
   "description: expenseForm.description || null",
+  "normalizeExpenseSplits(expenseForm.splits)",
+  "setExpenseFormError",
+  "percentage: event.target.value",
+  "normalizeExpenseSplits(expenseForm.splits)",
 ]) {
   if (!submitExpenseSource.includes(marker))
     throw new Error(`Missing Expense creation payload marker: ${marker}`);
 }
+if (submitExpenseSource.includes("expenseForm.ruleId") || submitExpenseSource.includes("rules.find"))
+  throw new Error("Expense creation must not require a sharing rule");
 console.log(
   "PASS Expense creation UI initializes, edits, and submits optional description",
 );
+
+const expenseEditSource = page.slice(
+  page.indexOf("function renderExpenseEditForm()"),
+  page.indexOf("function renderIncomeEditForm()"),
+);
+for (const marker of [
+  "¿Cómo se reparte este gasto?",
+  "Repartir por partes iguales",
+  "editExpenseForm.splits",
+  "Porcentaje de ${member.displayName}",
+  "setEditExpenseFormError",
+  'role="alert"',
+  "percentage: event.target.value",
+  "normalizeExpenseSplits(editExpenseForm.splits)",
+]) {
+  if (!expenseEditSource.includes(marker))
+    throw new Error(`Missing direct Expense split editor marker: ${marker}`);
+}
+if (expenseEditSource.includes("selectedEditSharingRule") || expenseEditSource.includes("editableSharingRules"))
+  throw new Error("Expense edit must not depend on sharing rules");
+console.log("PASS Expense creation and edit use direct household-member splits");
 
 const incomeCreationFormStart = page.indexOf(
   '<form className="panel form" onSubmit={submitIncome}>',

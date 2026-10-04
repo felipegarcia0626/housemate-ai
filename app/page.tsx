@@ -86,6 +86,7 @@ type IncomeCollection = {
 
 type Category = { id: string; name: string };
 type HouseholdMember = { id: string; displayName: string };
+type ExpenseSplitDraft = { memberId: string; percentage: number | string };
 type SelectableHousehold = { householdId: string; householdName: string; selected?: boolean };
 type SharingRule = {
   id: string;
@@ -149,7 +150,7 @@ const initialExpense = {
   expenseDate: new Date().toISOString().slice(0, 10),
   paidByMemberId: "",
   categoryId: "",
-  ruleId: "",
+  splits: [] as ExpenseSplitDraft[],
 };
 const initialIncome = {
   memberId: "",
@@ -165,7 +166,7 @@ const initialExpenseEdit = {
   expenseDate: "",
   categoryId: "",
   paidByMemberId: "",
-  splits: [] as { memberId: string; percentage: number }[],
+  splits: [] as ExpenseSplitDraft[],
 };
 const initialIncomeEdit = {
   memberId: "",
@@ -180,6 +181,48 @@ type JsonResponseObserver = (response: {
   ok: boolean;
   body: unknown;
 }) => void;
+
+function percentageBasisPoints(value: unknown): bigint | null {
+  const text = typeof value === "number" ? String(value) : String(value ?? "").trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(text)) return null;
+  const [whole, fraction = ""] = text.split(".");
+  const basisPoints = BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, "0"));
+  return basisPoints <= BigInt(10000) ? basisPoints : null;
+}
+
+function splitTotalMessage(
+  splits: readonly ExpenseSplitDraft[],
+): string {
+  const total = splits.reduce(
+    (sum, split) => sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)),
+    BigInt(0),
+  );
+  if (total === BigInt(10000)) return "Total: 100.00% ✓";
+  const difference = total > BigInt(10000) ? total - BigInt(10000) : BigInt(10000) - total;
+  const amount = `${difference / BigInt(100)}.${String(difference % BigInt(100)).padStart(2, "0")}`;
+  return total > BigInt(10000)
+    ? `Total: ${Number(total) / 100}% — Hay ${amount}% de más`
+    : `Total: ${Number(total) / 100}% — Faltan ${amount}%`;
+}
+
+function normalizeExpenseSplits(splits: readonly ExpenseSplitDraft[]) {
+  return splits.map((split) => ({
+    memberId: split.memberId,
+    percentage: Number(split.percentage),
+  }));
+}
+
+function equalSplits(memberIds: readonly string[]): { memberId: string; percentage: number }[] {
+  if (memberIds.length === 0) return [];
+  const base = Math.floor(10000 / memberIds.length);
+  const remainder = 10000 - base * memberIds.length;
+  const bonusIds = [...memberIds].sort((left, right) => left.localeCompare(right));
+  const bonuses = new Set(bonusIds.slice(0, remainder));
+  return memberIds.map((memberId) => ({
+    memberId,
+    percentage: (base + (bonuses.has(memberId) ? 1 : 0)) / 100,
+  }));
+}
 
 function logExpenseEditDiagnostic(
   label: string,
@@ -693,6 +736,8 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [expenseFormError, setExpenseFormError] = useState("");
+  const [editExpenseFormError, setEditExpenseFormError] = useState("");
   const [authBoundaryError, setAuthBoundaryError] = useState("");
   const [householdOptions, setHouseholdOptions] = useState<SelectableHousehold[]>([]);
   const [householdOptionsLoading, setHouseholdOptionsLoading] = useState(false);
@@ -789,16 +834,6 @@ export default function HomePage() {
     );
     return [...ids];
   }, [members, rules]);
-
-  const editableSharingRules = useMemo(
-    () => rules.filter((rule) => rule.splits.length > 0 && rule.splits.length <= 2),
-    [rules],
-  );
-  const selectedEditSharingRule = useMemo(
-    () =>
-      findSharingRuleForSplits(editableSharingRules, editExpenseForm.splits),
-    [editableSharingRules, editExpenseForm.splits],
-  );
 
   const memberNames = useMemo(
     () =>
@@ -1314,6 +1349,9 @@ export default function HomePage() {
         setExpenseForm((current) => ({
           ...current,
           paidByMemberId: current.paidByMemberId || firstMemberId,
+          splits: current.splits.length > 0
+            ? current.splits
+            : equalSplits(memberResult.value.map((member) => member.id)),
         }));
       } else failed("members");
       if (ruleResult.status === "fulfilled") {
@@ -1327,7 +1365,6 @@ export default function HomePage() {
         setExpenseForm((current) => ({
           ...current,
           paidByMemberId: current.paidByMemberId || firstMemberId,
-          ruleId: current.ruleId || ruleData[0]?.id || "",
         }));
       } else failed("sharingRules");
       if (balanceResult.status === "fulfilled") setBalance(balanceResult.value);
@@ -1654,12 +1691,20 @@ export default function HomePage() {
 
   async function submitExpense(event: FormEvent) {
     event.preventDefault();
-    const rule = rules.find((item) => item.id === expenseForm.ruleId);
-    if (!rule || !expenseForm.paidByMemberId) {
-      setError("Selecciona una regla de reparto y un pagador.");
+    if (!expenseForm.paidByMemberId) {
+      setExpenseFormError("Selecciona un pagador.");
+      return;
+    }
+    if (expenseForm.splits.length === 0 || expenseForm.splits.some((split) => percentageBasisPoints(split.percentage) === null)) {
+      setExpenseFormError("Ingresa porcentajes válidos entre 0 y 100.");
+      return;
+    }
+    if (expenseForm.splits.reduce((sum, split) => sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)), BigInt(0)) !== BigInt(10000)) {
+      setExpenseFormError("El reparto debe sumar exactamente 100.00%.");
       return;
     }
     setBusy(true);
+    setExpenseFormError("");
     setError("");
     const generation = householdGeneration.current;
     try {
@@ -1673,11 +1718,12 @@ export default function HomePage() {
           paidByMemberId: expenseForm.paidByMemberId,
           categoryId: expenseForm.categoryId || null,
           items: [],
-          splits: rule.splits,
+          splits: normalizeExpenseSplits(expenseForm.splits),
         }),
       });
       if (generation !== householdGeneration.current) return;
       setExpenseForm(initialExpense);
+      setExpenseFormError("");
       setExpenseMacroId("");
       setShowExpenseForm(false);
       await refresh();
@@ -1696,6 +1742,7 @@ export default function HomePage() {
   async function startExpenseEdit(expenseId: string) {
     const generation = householdGeneration.current;
     setEditingExpense(expenseId);
+    setEditExpenseFormError("");
     setEditExpenseForm(initialExpenseEdit);
     setEditLoading(true);
     setError("");
@@ -1748,8 +1795,17 @@ export default function HomePage() {
       setError("Usa una fecha válida con el formato DD/MM/AAAA.");
       return;
     }
+    if (editExpenseForm.splits.length === 0 || editExpenseForm.splits.some((split) => percentageBasisPoints(split.percentage) === null)) {
+      setEditExpenseFormError("Ingresa porcentajes válidos entre 0 y 100.");
+      return;
+    }
+    if (editExpenseForm.splits.reduce((sum, split) => sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)), BigInt(0)) !== BigInt(10000)) {
+      setEditExpenseFormError("El reparto debe sumar exactamente 100.00%.");
+      return;
+    }
 
     setBusy(true);
+    setEditExpenseFormError("");
     setError("");
     const generation = householdGeneration.current;
     expenseEditTargetId.current = expenseId;
@@ -1762,7 +1818,7 @@ export default function HomePage() {
         categoryId: editExpenseForm.categoryId || null,
         paidByMemberId: editExpenseForm.paidByMemberId,
         ...(editExpenseForm.splits.length > 0
-          ? { splits: editExpenseForm.splits }
+          ? { splits: normalizeExpenseSplits(editExpenseForm.splits) }
           : {}),
       };
       const expenseEditUrl = `/api/expenses/${expenseId}`;
@@ -1782,6 +1838,7 @@ export default function HomePage() {
       }));
       setEditingExpense(null);
       setEditExpenseForm(initialExpenseEdit);
+      setEditExpenseFormError("");
       setEditExpenseMacroId("");
       setEditExpenseLegacyCategoryName(null);
       logExpenseEditDiagnostic("[ExpenseEdit] Refresh triggered", {
@@ -1817,6 +1874,7 @@ export default function HomePage() {
     setEditExpenseLegacyCategoryName(null);
     setEditLoading(false);
     setError("");
+    setEditExpenseFormError("");
   }
 
   async function removeExpense(expenseId: string) {
@@ -2336,39 +2394,39 @@ export default function HomePage() {
                 ))}
               </select>
             </label>
-            {editExpenseForm.splits.length > 0 && (
-              <label>
-                Regla de reparto
-                <select
-                  aria-label="Regla de reparto"
-                  value={selectedEditSharingRule?.id ?? ""}
-                  onChange={(event) => {
-                    const selectedRule = editableSharingRules.find(
-                      (rule) => rule.id === event.target.value,
-                    );
-                    if (!selectedRule) return;
-                    setEditExpenseForm({
-                      ...editExpenseForm,
-                      splits: selectedRule.splits.map(({ memberId, percentage }) => ({
-                        memberId,
-                        percentage,
-                      })),
-                    });
-                  }}
-                >
-                  <option value="">
-                    {selectedEditSharingRule
-                      ? "Seleccionar"
-                      : "Regla guardada no disponible"}
-                  </option>
-                  {editableSharingRules.map((rule) => (
-                    <option key={rule.id} value={rule.id}>
-                      {formatExpenseSplitRule(rule.splits)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+            <fieldset className="expense-split-editor">
+              <legend>¿Cómo se reparte este gasto?</legend>
+              {members.map((member) => {
+                const split = editExpenseForm.splits.find((item) => item.memberId === member.id);
+                return (
+                  <label key={member.id}>
+                    {member.displayName}
+                    <input
+                      aria-label={`Porcentaje de ${member.displayName}`}
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      value={split?.percentage ?? 0}
+                      onChange={(event) => {
+                        setEditExpenseFormError("");
+                        setEditExpenseForm((current) => ({
+                          ...current,
+                          splits: current.splits.some((item) => item.memberId === member.id)
+                            ? current.splits.map((item) => item.memberId === member.id ? { ...item, percentage: event.target.value } : item)
+                            : [...current.splits, { memberId: member.id, percentage: event.target.value }],
+                        }));
+                      }}
+                    /> %
+                  </label>
+                );
+              })}
+              <p className={editExpenseFormError ? "alert" : "muted"}>{splitTotalMessage(editExpenseForm.splits)}</p>
+              {editExpenseFormError && <p className="alert" role="alert">{editExpenseFormError}</p>}
+              <button type="button" onClick={() => setEditExpenseForm((current) => ({ ...current, splits: equalSplits(members.map((member) => member.id)) }))} disabled={busy || members.length === 0}>
+                Repartir por partes iguales
+              </button>
+            </fieldset>
             <label>
               Categoría principal
               <select
@@ -2855,7 +2913,7 @@ export default function HomePage() {
             <button
               className="primary expenses-create-button"
               type="button"
-              onClick={() => setShowExpenseForm(true)}
+              onClick={() => { setExpenseFormError(""); setShowExpenseForm(true); }}
             >
               + Registrar gasto
             </button>
@@ -3079,23 +3137,39 @@ export default function HomePage() {
                   ))}
                 </select>
               </label>
-              <label>
-                Regla de reparto
-                <select
-                  required
-                  value={expenseForm.ruleId}
-                  onChange={(e) =>
-                    setExpenseForm({ ...expenseForm, ruleId: e.target.value })
-                  }
-                >
-                  <option value="">Seleccionar</option>
-                  {rules.map((rule) => (
-                    <option key={rule.id} value={rule.id}>
-                      {rule.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <fieldset className="expense-split-editor">
+                <legend>¿Cómo se reparte este gasto?</legend>
+                {members.map((member) => {
+                  const split = expenseForm.splits.find((item) => item.memberId === member.id);
+                  return (
+                    <label key={member.id}>
+                      {member.displayName}
+                      <input
+                        aria-label={`Porcentaje de ${member.displayName}`}
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        value={split?.percentage ?? 0}
+                        onChange={(event) => {
+                          setExpenseFormError("");
+                          setExpenseForm((current) => ({
+                            ...current,
+                            splits: current.splits.some((item) => item.memberId === member.id)
+                              ? current.splits.map((item) => item.memberId === member.id ? { ...item, percentage: event.target.value } : item)
+                              : [...current.splits, { memberId: member.id, percentage: event.target.value }],
+                          }));
+                        }}
+                      /> %
+                    </label>
+                  );
+                })}
+                <p className={expenseFormError ? "alert" : "muted"}>{splitTotalMessage(expenseForm.splits)}</p>
+                {expenseFormError && <p className="alert" role="alert">{expenseFormError}</p>}
+                <button type="button" onClick={() => setExpenseForm((current) => ({ ...current, splits: equalSplits(members.map((member) => member.id)) }))} disabled={busy || members.length === 0}>
+                  Repartir por partes iguales
+                </button>
+              </fieldset>
               <label>
                 Categoría principal
                 <select
