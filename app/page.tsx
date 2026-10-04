@@ -5,7 +5,7 @@ import type { HierarchicalCategory } from "@/modules/categories/category.types";
 import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
 import { LoginForm } from "@/components/auth/login-form";
 import { OnboardingForm } from "@/components/auth/onboarding-form";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
 type ResourceKey =
@@ -563,7 +563,7 @@ export default function HomePage() {
     typeof window === "undefined" ? null : createSupabaseBrowserClient(),
   );
   const [authReady, setAuthReady] = useState(false);
-  const [session, setSession] = useState<unknown>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [authError, setAuthError] = useState(() =>
     typeof window !== "undefined" &&
     window.location.search.includes("authError=oauth_callback")
@@ -699,6 +699,7 @@ export default function HomePage() {
   const [householdSelectionRequired, setHouseholdSelectionRequired] = useState(false);
   const [onboardingRequired, setOnboardingRequired] = useState(false);
   const householdGeneration = useRef(0);
+  const preparedAuthUserId = useRef<string | null>(null);
 
   function invalidateHouseholdOperations(): number {
     householdGeneration.current += 1;
@@ -1189,6 +1190,7 @@ export default function HomePage() {
       setSession(nextSession);
       setAuthReady(true);
       if (!nextSession) {
+        preparedAuthUserId.current = null;
         setLoading(false);
         setExpenseListReady(false);
         setIncomeListReady(false);
@@ -1202,7 +1204,9 @@ export default function HomePage() {
     };
   }, [supabase]);
 
-  async function refresh() {
+  async function refresh(
+    householdOptionsOverride?: SelectableHousehold[],
+  ) {
     if (!session || !supabase) return;
     const generation = householdGeneration.current;
     setLoading(true);
@@ -1323,7 +1327,12 @@ export default function HomePage() {
       if (balanceResult.status === "fulfilled") setBalance(balanceResult.value);
       else failed("balance");
       setResourceErrors(nextErrors);
-      await loadHouseholdOptions(generation);
+      if (householdOptionsOverride) {
+        if (generation === householdGeneration.current)
+          setHouseholdOptions(householdOptionsOverride);
+      } else {
+        await loadHouseholdOptions(generation);
+      }
     } catch (cause) {
       if (generation !== householdGeneration.current) return;
       setError(
@@ -1349,10 +1358,13 @@ export default function HomePage() {
     setLoading(true);
     setAuthBoundaryError("");
     try {
-      await requestJson("/api/auth/households");
+      const householdOptions = await api<SelectableHousehold[]>(
+        "/api/auth/households",
+      );
       if (generation !== householdGeneration.current) return;
       setOnboardingRequired(false);
-      await refresh();
+      setHouseholdOptions(householdOptions);
+      await refresh(householdOptions);
     } catch (cause) {
       if (generation !== householdGeneration.current) return;
       const status = cause instanceof Error
@@ -1419,13 +1431,14 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!authReady || !session) {
+      if (!session) preparedAuthUserId.current = null;
       return;
     }
-    const timer = window.setTimeout(() => {
-      void prepareAuthenticatedSession();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [authReady, session]);
+    const authUserId = session.user.id;
+    if (preparedAuthUserId.current === authUserId) return;
+    preparedAuthUserId.current = authUserId;
+    void prepareAuthenticatedSession();
+  }, [authReady, session?.user.id]);
 
   useEffect(() => {
     if (!expenseListReady || !session) return;
@@ -1524,7 +1537,7 @@ export default function HomePage() {
     expenseListSort,
     expenseListSortDirection,
     expenseListTo,
-    session,
+    session?.user.id,
   ]);
 
   useEffect(() => {
@@ -1599,7 +1612,7 @@ export default function HomePage() {
     incomeListSort,
     incomeListSortOrder,
     incomeListTo,
-    session,
+    session?.user.id,
   ]);
 
   async function submitExpense(event: FormEvent) {

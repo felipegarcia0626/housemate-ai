@@ -985,6 +985,13 @@ assert.doesNotMatch(oauthCallback, /searchParams\.get\(["'](?:next|redirect|redi
 assert.doesNotMatch(oauthCallback, /SUPABASE_SERVICE_ROLE_KEY|GOOGLE_CLIENT_SECRET|console\.(log|error)/);
 assert.match(page, /auth\.getSession\(\)/);
 assert.match(page, /auth\.onAuthStateChange\(/);
+assert.match(page, /session\?\.user\.id/);
+assert.match(page, /preparedAuthUserId/);
+assert.match(
+  page,
+  /if \(!nextSession\) \{[\s\S]*preparedAuthUserId\.current = null;/,
+);
+assert.match(page, /householdOptionsOverride/);
 assert.match(page, /subscription\.unsubscribe\(\)/);
 assert.match(page, /auth\.signOut\(\)/);
 assert.match(page, /UNAUTHENTICATED|sesión ya no es válida/);
