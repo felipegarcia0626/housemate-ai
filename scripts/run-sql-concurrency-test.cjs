@@ -15,6 +15,9 @@ const triggerFunction = "housemate_2l3_pause_proposal_update";
 const provisioningTriggerName = "housemate_test_pause_provisioning_user";
 const provisioningTriggerFunction = "housemate_test_pause_provisioning_user";
 const provisioningAdvisoryLockKey = 3141592653;
+const householdCreationTriggerName = "housemate_test_pause_household_creation";
+const householdCreationTriggerFunction = "housemate_test_pause_household_creation";
+const householdCreationAdvisoryLockKey = 1618033988;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -158,6 +161,116 @@ async function dropProvisioningPauseTrigger(controller) {
       ON public.tb_users;
     DROP FUNCTION IF EXISTS public.${provisioningTriggerFunction}();
   `);
+}
+
+async function createHouseholdCreationPauseTrigger(controller) {
+  await controller.query(`
+    CREATE OR REPLACE FUNCTION public.${householdCreationTriggerFunction}()
+    RETURNS trigger LANGUAGE plpgsql AS $trigger$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(${householdCreationAdvisoryLockKey});
+      RETURN NEW;
+    END;
+    $trigger$;
+    CREATE TRIGGER ${householdCreationTriggerName}
+    BEFORE INSERT ON public.tb_household_creation_idempotency
+    FOR EACH ROW EXECUTE FUNCTION public.${householdCreationTriggerFunction}();
+  `);
+}
+
+async function dropHouseholdCreationPauseTrigger(controller) {
+  await controller.query(`
+    DROP TRIGGER IF EXISTS ${householdCreationTriggerName} ON public.tb_household_creation_idempotency;
+    DROP FUNCTION IF EXISTS public.${householdCreationTriggerFunction}();
+  `);
+}
+
+async function runHouseholdCreationConcurrencyScenario({ controller, postgres }) {
+  const authUserId = "c0000000-0000-4000-8000-000000000001";
+  const idempotencyKey = "c0000000-0000-4000-8000-000000000011";
+  const externalIdentifier = "test-household-creation-concurrency";
+  let householdId;
+  let memberId;
+  await controller.query(
+    `INSERT INTO public.tb_users (display_name, external_identifier, auth_user_id)
+     VALUES ('Concurrent creator', $1, $2)`,
+    [externalIdentifier, authUserId],
+  );
+  const first = await connectClient(postgres);
+  const second = await connectClient(postgres);
+  try {
+    await first.query("BEGIN");
+    const firstPromise = first.query(
+      `SELECT public.fn_create_household_for_authenticated_user($1, $2, $3) AS result`,
+      [authUserId, "Concurrent household", idempotencyKey],
+    ).then(({ rows }) => rows[0].result);
+    await waitFor(async () => {
+      const { rows } = await controller.query(
+        `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted) AS locked`,
+        [first.processID],
+      );
+      return rows[0].locked === true;
+    }, "first household creation did not acquire the advisory lock");
+    await second.query("BEGIN");
+    const secondPromise = second.query(
+      `SELECT public.fn_create_household_for_authenticated_user($1, $2, $3) AS result`,
+      [authUserId, "Concurrent household retry", idempotencyKey],
+    ).then(({ rows }) => rows[0].result);
+    await waitFor(async () => {
+      const { rows } = await controller.query(
+        `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted = false) AS waiting`,
+        [second.processID],
+      );
+      return rows[0].waiting === true;
+    }, "second household creation did not wait for the first transaction");
+    const firstResult = await firstPromise;
+    householdId = firstResult.householdId;
+    memberId = firstResult.memberId;
+    await first.query("COMMIT");
+    const secondResult = await secondPromise;
+    await second.query("COMMIT");
+    assert.equal(firstResult.idempotent, false);
+    assert.equal(secondResult.idempotent, true);
+    assert.equal(secondResult.householdId, firstResult.householdId);
+    const { rows } = await controller.query(
+      `SELECT
+         (SELECT count(*) FROM public.tb_households WHERE id = $1) AS households,
+         (SELECT count(*) FROM public.tb_household_members WHERE household_id = $1 AND user_id = (SELECT id FROM public.tb_users WHERE auth_user_id = $2)) AS memberships,
+         (SELECT count(*) FROM public.tb_household_creation_idempotency WHERE auth_user_id = $2 AND idempotency_key = $3) AS idempotency`,
+      [firstResult.householdId, authUserId, idempotencyKey],
+    );
+    assert.equal(Number(rows[0].households), 1);
+    assert.equal(Number(rows[0].memberships), 1);
+    assert.equal(Number(rows[0].idempotency), 1);
+    console.log("PASS household creation concurrency: one household, one membership, one idempotency result");
+  } finally {
+    await first.query("ROLLBACK").catch(() => {});
+    await second.query("ROLLBACK").catch(() => {});
+    await first.end().catch(() => {});
+    await second.end().catch(() => {});
+    const cleanupErrors = [];
+    const cleanup = async (statement, values) => {
+      try { await controller.query(statement, values); }
+      catch (error) { cleanupErrors.push(error); }
+    };
+    await cleanup(
+      "DELETE FROM public.tb_household_creation_idempotency WHERE auth_user_id = $1 AND idempotency_key = $2",
+      [authUserId, idempotencyKey],
+    );
+    if (householdId && memberId) {
+      await cleanup(
+        "DELETE FROM public.tb_household_members WHERE household_id = $1 AND id = $2",
+        [householdId, memberId],
+      );
+    }
+    if (householdId) {
+      await cleanup("DELETE FROM public.tb_households WHERE id = $1", [householdId]);
+    }
+    await cleanup("DELETE FROM public.tb_users WHERE auth_user_id = $1", [authUserId]);
+    if (cleanupErrors.length > 0) {
+      console.error("Household creation concurrency cleanup failed", cleanupErrors[0]);
+    }
+  }
 }
 
 async function startProvisionTransaction(
@@ -811,6 +924,12 @@ async function main() {
     }
 
     await runProvisioningConcurrencyScenarios({ controller, postgres });
+    await createHouseholdCreationPauseTrigger(controller);
+    try {
+      await runHouseholdCreationConcurrencyScenario({ controller, postgres });
+    } finally {
+      await dropHouseholdCreationPauseTrigger(controller);
+    }
     await createPauseTrigger(controller);
     for (let round = 1; round <= 10; round += 1) {
       await runConcurrentRound({

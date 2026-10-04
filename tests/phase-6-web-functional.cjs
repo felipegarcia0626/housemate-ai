@@ -7,6 +7,18 @@ const page = fs.readFileSync(
   path.join(__dirname, "..", "app", "page.tsx"),
   "utf8",
 );
+const householdPage = fs.readFileSync(
+  path.join(__dirname, "..", "app", "household", "page.tsx"),
+  "utf8",
+);
+const householdComponent = fs.readFileSync(
+  path.join(__dirname, "..", "components", "household", "household-page.tsx"),
+  "utf8",
+);
+const householdClient = fs.readFileSync(
+  path.join(__dirname, "..", "components", "household", "household-client.ts"),
+  "utf8",
+);
 const browserAuthModule = fs.readFileSync(
   path.join(__dirname, "..", "infrastructure", "auth", "supabase-browser.client.ts"),
   "utf8",
@@ -37,6 +49,10 @@ const oauthCallback = fs.readFileSync(
 );
 const householdSelectionRoute = fs.readFileSync(
   path.join(__dirname, "..", "app", "api", "auth", "household-selection", "route.ts"),
+  "utf8",
+);
+const householdsRoute = fs.readFileSync(
+  path.join(__dirname, "..", "app", "api", "auth", "households", "route.ts"),
   "utf8",
 );
 const clientModule = path.join(
@@ -992,6 +1008,20 @@ assert.match(
   /if \(!nextSession\) \{[\s\S]*preparedAuthUserId\.current = null;/,
 );
 assert.match(page, /householdOptionsOverride/);
+assert.match(page, /href="\/household"/);
+assert.doesNotMatch(page, /Cambiar household/);
+assert.match(householdPage, /HouseholdPage/);
+assert.match(householdComponent, /role="dialog"/);
+assert.match(householdComponent, /\/api\/auth\/households/);
+assert.match(householdClient, /idempotencyKey/);
+assert.match(householdComponent, /household-selection/);
+assert.match(page, /\+ Crear household/);
+assert.match(householdClient, /\/api\/auth\/households/);
+assert.match(householdClient, /idempotencyKey/);
+assert.match(page, /\/api\/auth\/household-selection/);
+assert.match(page, /await refresh\(options\)/);
+assert.match(householdsRoute, /export async function POST/);
+assert.match(householdsRoute, /createHouseholdForAuthenticatedUser/);
 assert.match(page, /subscription\.unsubscribe\(\)/);
 assert.match(page, /auth\.signOut\(\)/);
 assert.match(page, /UNAUTHENTICATED|sesión ya no es válida/);

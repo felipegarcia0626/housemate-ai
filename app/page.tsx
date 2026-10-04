@@ -6,6 +6,8 @@ import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-brow
 import { LoginForm } from "@/components/auth/login-form";
 import { OnboardingForm } from "@/components/auth/onboarding-form";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import Link from "next/link";
+import { createHouseholdRequest } from "@/components/household/household-client";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
 type ResourceKey =
@@ -697,6 +699,10 @@ export default function HomePage() {
   const [householdSelectionBusy, setHouseholdSelectionBusy] = useState(false);
   const [householdSelectionError, setHouseholdSelectionError] = useState("");
   const [householdSelectionRequired, setHouseholdSelectionRequired] = useState(false);
+  const [householdCreateOpen, setHouseholdCreateOpen] = useState(false);
+  const [householdModuleOpen, setHouseholdModuleOpen] = useState(false);
+  const [householdCreateName, setHouseholdCreateName] = useState("");
+  const [householdCreateError, setHouseholdCreateError] = useState("");
   const [onboardingRequired, setOnboardingRequired] = useState(false);
   const householdGeneration = useRef(0);
   const preparedAuthUserId = useRef<string | null>(null);
@@ -1424,6 +1430,37 @@ export default function HomePage() {
     } catch {
       if (generation !== householdGeneration.current) return;
       setHouseholdSelectionError("No fue posible seleccionar ese hogar.");
+    } finally {
+      if (generation === householdGeneration.current) setHouseholdSelectionBusy(false);
+    }
+  }
+
+  async function createHousehold(): Promise<void> {
+    if (householdSelectionBusy || !householdCreateName.trim()) {
+      setHouseholdCreateError("Ingresa el nombre del hogar.");
+      return;
+    }
+    const generation = invalidateHouseholdOperations();
+    setHouseholdSelectionBusy(true);
+    setHouseholdCreateError("");
+    try {
+      const created = await createHouseholdRequest(householdCreateName);
+      if (generation !== householdGeneration.current) return;
+      const options = await api<SelectableHousehold[]>("/api/auth/households");
+      if (generation !== householdGeneration.current) return;
+      setHouseholdOptions(options);
+      await requestJson("/api/auth/household-selection", {
+        method: "POST",
+        body: JSON.stringify({ householdId: created.householdId }),
+      });
+      if (generation !== householdGeneration.current) return;
+      setHouseholdCreateOpen(false);
+      setHouseholdCreateName("");
+      setHouseholdSelectionRequired(false);
+      clearHouseholdData();
+      await refresh(options);
+    } catch {
+      if (generation === householdGeneration.current) setHouseholdCreateError("No fue posible crear el hogar.");
     } finally {
       if (generation === householdGeneration.current) setHouseholdSelectionBusy(false);
     }
@@ -2633,6 +2670,16 @@ export default function HomePage() {
             ))}
           </div>
           )}
+          <button className="refresh" type="button" onClick={() => { setHouseholdCreateOpen(true); setHouseholdCreateError(""); }} disabled={householdSelectionBusy}>
+            + Crear household
+          </button>
+          {householdCreateOpen && (
+            <div className="form" aria-label="Crear household">
+              {householdCreateError && <p className="alert" role="alert">{householdCreateError}</p>}
+              <label>Nombre del household<input value={householdCreateName} onChange={(event) => setHouseholdCreateName(event.target.value)} disabled={householdSelectionBusy} /></label>
+              <button className="primary" type="button" onClick={() => void createHousehold()} disabled={householdSelectionBusy}>Crear</button>
+            </div>
+          )}
           <button className="refresh" type="button" onClick={() => void signOut()} disabled={householdSelectionBusy}>
             Cerrar sesión
           </button>
@@ -2676,14 +2723,7 @@ export default function HomePage() {
         <button className="refresh" type="button" onClick={() => void signOut()}>
           Cerrar sesión
         </button>
-        <button className="refresh" type="button" onClick={() => {
-          invalidateHouseholdOperations();
-          setHouseholdSelectionRequired(true);
-          clearHouseholdData();
-          void loadHouseholdOptions();
-        }}>
-          Cambiar household
-        </button>
+        <Link className="refresh" href="/household">Household</Link>
       </header>
       <nav className="nav" aria-label="Navegación principal">
         {(
