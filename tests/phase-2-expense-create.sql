@@ -89,6 +89,18 @@ VALUES
     'Phase 2 Expense Test User Three',
     'phase-2-expense-test-user-three',
     '2000-01-01 00:00:00+00'
+  ),
+  (
+    '20000000-0000-4000-8000-000000000014',
+    'Phase 2 Expense Test User Four',
+    'phase-2-expense-test-user-four',
+    '2000-01-01 00:00:00+00'
+  ),
+  (
+    '20000000-0000-4000-8000-000000000015',
+    'Phase 2 Expense Test User Five',
+    'phase-2-expense-test-user-five',
+    '2000-01-01 00:00:00+00'
   );
 
 INSERT INTO public.tb_household_members (
@@ -118,6 +130,20 @@ VALUES
     '20000000-0000-4000-8000-000000000002',
     '20000000-0000-4000-8000-000000000013',
     'Phase 2 Other Household Member',
+    '2000-01-01 00:00:00+00'
+  ),
+  (
+    '20000000-0000-4000-8000-000000000024',
+    '20000000-0000-4000-8000-000000000001',
+    '20000000-0000-4000-8000-000000000014',
+    'Phase 2 Member Three',
+    '2000-01-01 00:00:00+00'
+  ),
+  (
+    '20000000-0000-4000-8000-000000000025',
+    '20000000-0000-4000-8000-000000000001',
+    '20000000-0000-4000-8000-000000000015',
+    'Phase 2 Member Four',
     '2000-01-01 00:00:00+00'
   );
 
@@ -376,6 +402,99 @@ BEGIN
 END;
 $$;
 
+-- Direct split matrix: one member, equal shares, zero share, residual cents and decimals.
+INSERT INTO phase_2_created_expenses (test_name, expense_id)
+SELECT 'one-member-100', public.fn_create_expense(
+  '20000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000021',
+  '20000000-0000-4000-8000-000000000021', NULL, NULL, 'One Member', 10.00,
+  '2026-08-09', 'one member direct split', 'WEB', '[]'::JSONB,
+  '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":10.00,"percentage":100.00}]'::JSONB
+)
+UNION ALL
+SELECT 'two-member-50-50', public.fn_create_expense(
+  '20000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000021',
+  '20000000-0000-4000-8000-000000000021', NULL, NULL, 'Equal Shares', 100.00,
+  '2026-08-09', 'two member equal split', 'WEB', '[]'::JSONB,
+  '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":50.00,"percentage":50.00},{"householdMemberId":"20000000-0000-4000-8000-000000000022","amount":50.00,"percentage":50.00}]'::JSONB
+)
+UNION ALL
+SELECT 'two-member-100-0', public.fn_create_expense(
+  '20000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000021',
+  '20000000-0000-4000-8000-000000000021', NULL, NULL, 'Zero Share', 100.00,
+  '2026-08-09', 'zero percentage is preserved', 'WEB', '[]'::JSONB,
+  '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":100.00,"percentage":100.00},{"householdMemberId":"20000000-0000-4000-8000-000000000022","amount":0.00,"percentage":0.00}]'::JSONB
+)
+UNION ALL
+SELECT 'three-member-residual', public.fn_create_expense(
+  '20000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000021',
+  '20000000-0000-4000-8000-000000000021', NULL, NULL, 'Residual', 999.99,
+  '2026-08-09', 'largest remainder split', 'WEB', '[]'::JSONB,
+  '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":333.30,"percentage":33.33},{"householdMemberId":"20000000-0000-4000-8000-000000000022","amount":333.30,"percentage":33.33},{"householdMemberId":"20000000-0000-4000-8000-000000000024","amount":333.39,"percentage":33.34}]'::JSONB
+)
+UNION ALL
+SELECT 'four-member-decimals', public.fn_create_expense(
+  '20000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000021',
+  '20000000-0000-4000-8000-000000000021', NULL, NULL, 'Decimal Shares', 100.00,
+  '2026-08-09', 'four member decimal split', 'WEB', '[]'::JSONB,
+  '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":10.25,"percentage":10.25},{"householdMemberId":"20000000-0000-4000-8000-000000000022","amount":20.25,"percentage":20.25},{"householdMemberId":"20000000-0000-4000-8000-000000000024","amount":30.25,"percentage":30.25},{"householdMemberId":"20000000-0000-4000-8000-000000000025","amount":39.25,"percentage":39.25}]'::JSONB
+);
+
+DO $$
+DECLARE
+  residual_id UUID;
+  one_id UUID;
+  equal_id UUID;
+  zero_id UUID;
+  four_id UUID;
+BEGIN
+  SELECT expense_id INTO residual_id FROM phase_2_created_expenses WHERE test_name = 'three-member-residual';
+  SELECT expense_id INTO one_id FROM phase_2_created_expenses WHERE test_name = 'one-member-100';
+  SELECT expense_id INTO equal_id FROM phase_2_created_expenses WHERE test_name = 'two-member-50-50';
+  SELECT expense_id INTO zero_id FROM phase_2_created_expenses WHERE test_name = 'two-member-100-0';
+  SELECT expense_id INTO four_id FROM phase_2_created_expenses WHERE test_name = 'four-member-decimals';
+  IF (SELECT COUNT(*) FROM public.tb_expense_distributions WHERE expense_id = one_id) <> 1
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = one_id AND household_member_id = '20000000-0000-4000-8000-000000000021' AND percentage = 100.00 AND amount = 10.00)
+     OR (SELECT SUM(amount) FROM public.tb_expense_distributions WHERE expense_id = one_id) <> (SELECT total_amount FROM public.tb_expenses WHERE id = one_id) THEN
+    RAISE EXCEPTION 'FAIL one-member 100 percent distribution';
+  END IF;
+  IF (SELECT COUNT(*) FROM public.tb_expense_distributions WHERE expense_id = equal_id) <> 2
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = equal_id AND household_member_id = '20000000-0000-4000-8000-000000000021' AND percentage = 50.00 AND amount = 50.00)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = equal_id AND household_member_id = '20000000-0000-4000-8000-000000000022' AND percentage = 50.00 AND amount = 50.00)
+     OR (SELECT SUM(amount) FROM public.tb_expense_distributions WHERE expense_id = equal_id) <> (SELECT total_amount FROM public.tb_expenses WHERE id = equal_id) THEN
+    RAISE EXCEPTION 'FAIL two-member 50/50 distribution';
+  END IF;
+  IF (SELECT COUNT(*) FROM public.tb_expense_distributions WHERE expense_id = zero_id) <> 2
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = zero_id AND household_member_id = '20000000-0000-4000-8000-000000000021' AND percentage = 100.00 AND amount = 100.00)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = zero_id AND household_member_id = '20000000-0000-4000-8000-000000000022' AND percentage = 0.00 AND amount = 0.00)
+     OR (SELECT SUM(percentage) FROM public.tb_expense_distributions WHERE expense_id = zero_id) <> 100.00
+     OR (SELECT SUM(amount) FROM public.tb_expense_distributions WHERE expense_id = zero_id) <> (SELECT total_amount FROM public.tb_expenses WHERE id = zero_id) THEN
+    RAISE EXCEPTION 'FAIL 100/0 distribution preservation';
+  END IF;
+  IF (SELECT COUNT(*) FROM public.tb_expense_distributions WHERE expense_id = four_id) <> 4
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = four_id AND household_member_id = '20000000-0000-4000-8000-000000000021' AND percentage = 10.25 AND amount = 10.25)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = four_id AND household_member_id = '20000000-0000-4000-8000-000000000022' AND percentage = 20.25 AND amount = 20.25)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = four_id AND household_member_id = '20000000-0000-4000-8000-000000000024' AND percentage = 30.25 AND amount = 30.25)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = four_id AND household_member_id = '20000000-0000-4000-8000-000000000025' AND percentage = 39.25 AND amount = 39.25)
+     OR (SELECT SUM(percentage) FROM public.tb_expense_distributions WHERE expense_id = four_id) <> 100.00
+     OR (SELECT SUM(amount) FROM public.tb_expense_distributions WHERE expense_id = four_id) <> (SELECT total_amount FROM public.tb_expenses WHERE id = four_id) THEN
+    RAISE EXCEPTION 'FAIL four-member decimal distribution';
+  END IF;
+  IF (SELECT COUNT(*) FROM public.tb_expense_distributions WHERE expense_id = residual_id) <> 3
+     OR (SELECT SUM(amount) FROM public.tb_expense_distributions WHERE expense_id = residual_id) <> 999.99
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = residual_id AND household_member_id = '20000000-0000-4000-8000-000000000021' AND amount = 333.30)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = residual_id AND household_member_id = '20000000-0000-4000-8000-000000000022' AND amount = 333.30)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = residual_id AND household_member_id = '20000000-0000-4000-8000-000000000024' AND amount = 333.39) THEN
+    RAISE EXCEPTION 'FAIL deterministic largest-remainder distribution';
+  END IF;
+  IF (SELECT COUNT(*) FROM public.tb_expense_distributions WHERE expense_id = (SELECT expense_id FROM phase_2_created_expenses WHERE test_name = 'two-member-100-0')) <> 2
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = (SELECT expense_id FROM phase_2_created_expenses WHERE test_name = 'two-member-100-0') AND percentage = 0.00 AND amount = 0.00)
+     OR EXISTS (SELECT 1 FROM public.tb_sharing_rules WHERE household_id = '20000000-0000-4000-8000-000000000001') THEN
+    RAISE EXCEPTION 'FAIL zero-percentage preservation or direct split without sharing rules';
+  END IF;
+  RAISE NOTICE 'PASS direct split matrix and no-sharing-rule creation';
+END;
+$$;
+
 -- Function-level validation failures.
 SELECT pg_temp.expect_sqlstate(
   'distribution percentages must sum to 100.00',
@@ -401,6 +520,46 @@ SELECT pg_temp.expect_sqlstate(
     '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":9.99,"percentage":100.00}]'::JSONB
   )$sql$,
   '23514'
+);
+
+SELECT pg_temp.expect_sqlstate(
+  'negative distribution percentage is rejected',
+  $sql$SELECT public.fn_create_expense(
+    '20000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000021','20000000-0000-4000-8000-000000000021',
+    NULL,NULL,NULL,10.00,'2026-08-09','negative percentage','WEB','[]'::JSONB,
+    '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":10.00,"percentage":-1.00},{"householdMemberId":"20000000-0000-4000-8000-000000000022","amount":0.00,"percentage":101.00}]'::JSONB
+  )$sql$,
+  '23514', TRUE
+);
+
+SELECT pg_temp.expect_sqlstate(
+  'distribution percentage above 100 is rejected',
+  $sql$SELECT public.fn_create_expense(
+    '20000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000021','20000000-0000-4000-8000-000000000021',
+    NULL,NULL,NULL,10.00,'2026-08-09','high percentage','WEB','[]'::JSONB,
+    '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":10.00,"percentage":101.00},{"householdMemberId":"20000000-0000-4000-8000-000000000022","amount":0.00,"percentage":-1.00}]'::JSONB
+  )$sql$,
+  '23514', TRUE
+);
+
+SELECT pg_temp.expect_sqlstate(
+  'duplicate distribution member is rejected',
+  $sql$SELECT public.fn_create_expense(
+    '20000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000021','20000000-0000-4000-8000-000000000021',
+    NULL,NULL,NULL,10.00,'2026-08-09','duplicate member','WEB','[]'::JSONB,
+    '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":5.00,"percentage":50.00},{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":5.00,"percentage":50.00}]'::JSONB
+  )$sql$,
+  '23505', TRUE
+);
+
+SELECT pg_temp.expect_sqlstate(
+  'null distribution field is rejected',
+  $sql$SELECT public.fn_create_expense(
+    '20000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000021','20000000-0000-4000-8000-000000000021',
+    NULL,NULL,NULL,10.00,'2026-08-09','null percentage','WEB','[]'::JSONB,
+    '[{"householdMemberId":"20000000-0000-4000-8000-000000000021","amount":10.00,"percentage":null}]'::JSONB
+  )$sql$,
+  '22023'
 );
 
 -- Household, category and deferred trigger failures.

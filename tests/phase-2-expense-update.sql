@@ -56,7 +56,8 @@ INSERT INTO public.tb_users (id, display_name, external_identifier, created_at)
 VALUES
   ('40000000-0000-4000-8000-000000000011', 'Update Member One', 'phase-2-update-user-1', '2000-01-01 00:00:00+00'),
   ('40000000-0000-4000-8000-000000000012', 'Update Member Two', 'phase-2-update-user-2', '2000-01-01 00:00:00+00'),
-  ('40000000-0000-4000-8000-000000000013', 'Update Member Three', 'phase-2-update-user-3', '2000-01-01 00:00:00+00');
+  ('40000000-0000-4000-8000-000000000013', 'Update Member Three', 'phase-2-update-user-3', '2000-01-01 00:00:00+00'),
+  ('40000000-0000-4000-8000-000000000014', 'Update Member Four', 'phase-2-update-user-4', '2000-01-01 00:00:00+00');
 
 INSERT INTO public.tb_household_members (
   id, household_id, user_id, display_name, created_at
@@ -64,7 +65,8 @@ INSERT INTO public.tb_household_members (
 VALUES
   ('40000000-0000-4000-8000-000000000021', '40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000011', 'Update Member One', '2000-01-01 00:00:00+00'),
   ('40000000-0000-4000-8000-000000000022', '40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000012', 'Update Member Two', '2000-01-01 00:00:00+00'),
-  ('40000000-0000-4000-8000-000000000023', '40000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-000000000013', 'Update Member Three', '2000-01-01 00:00:00+00');
+  ('40000000-0000-4000-8000-000000000023', '40000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-000000000013', 'Update Member Three', '2000-01-01 00:00:00+00'),
+  ('40000000-0000-4000-8000-000000000024', '40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000014', 'Update Member Four', '2000-01-01 00:00:00+00');
 
 INSERT INTO public.tb_categories (id, name, description, created_at)
 VALUES
@@ -244,6 +246,71 @@ BEGIN
 END;
 $$;
 
+-- Direct split update matrix: rebalance, preserve, simultaneous total change and replacement.
+SELECT public.fn_update_expense(
+  '40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000103',
+  FALSE, NULL, FALSE, NULL, 100.00, NULL, NULL, FALSE, NULL, NULL,
+  '[{"householdMemberId":"40000000-0000-4000-8000-000000000021","amount":70.00,"percentage":70.00},{"householdMemberId":"40000000-0000-4000-8000-000000000022","amount":30.00,"percentage":30.00}]'::JSONB
+);
+
+DO $$
+BEGIN
+  IF (SELECT total_amount FROM public.tb_expenses WHERE id = '40000000-0000-4000-8000-000000000103') <> 100.00
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000103' AND household_member_id = '40000000-0000-4000-8000-000000000021' AND amount = 70.00 AND percentage = 70.00)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000103' AND household_member_id = '40000000-0000-4000-8000-000000000022' AND amount = 30.00 AND percentage = 30.00) THEN
+    RAISE EXCEPTION 'FAIL 50/50 to 70/30 update';
+  END IF;
+  RAISE NOTICE 'PASS 50/50 to 70/30 update';
+END;
+$$;
+
+SELECT public.fn_update_expense(
+  '40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000101',
+  FALSE, NULL, FALSE, NULL, 200.00, NULL, NULL, FALSE, NULL, NULL,
+  '[{"householdMemberId":"40000000-0000-4000-8000-000000000021","amount":100.00,"percentage":50.00},{"householdMemberId":"40000000-0000-4000-8000-000000000022","amount":100.00,"percentage":50.00}]'::JSONB
+);
+
+DO $$
+BEGIN
+  IF (SELECT total_amount FROM public.tb_expenses WHERE id = '40000000-0000-4000-8000-000000000101') <> 200.00
+     OR (SELECT COUNT(*) FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000101') <> 2
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000101' AND household_member_id = '40000000-0000-4000-8000-000000000021' AND percentage = 50.00 AND amount = 100.00)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000101' AND household_member_id = '40000000-0000-4000-8000-000000000022' AND percentage = 50.00 AND amount = 100.00)
+     OR (SELECT SUM(percentage) FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000101') <> 100.00
+     OR (SELECT SUM(amount) FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000101') <> 200.00
+     OR EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000101' AND amount <> 100.00) THEN
+    RAISE EXCEPTION 'FAIL 100 to 200 preserved explicit 50/50 distributions';
+  END IF;
+  RAISE NOTICE 'PASS 100 to 200 explicit 50/50 distributions';
+END;
+$$;
+
+SELECT public.fn_update_expense(
+  '40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000103',
+  FALSE, NULL, FALSE, NULL, 250.00, NULL, NULL, FALSE, NULL, NULL,
+  '[{"householdMemberId":"40000000-0000-4000-8000-000000000021","amount":75.00,"percentage":30.00},{"householdMemberId":"40000000-0000-4000-8000-000000000022","amount":175.00,"percentage":70.00}]'::JSONB
+);
+
+SELECT public.fn_update_expense(
+  '40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000101',
+  FALSE, NULL, FALSE, NULL, NULL, NULL, NULL, FALSE, NULL, NULL,
+  '[{"householdMemberId":"40000000-0000-4000-8000-000000000021","amount":100.00,"percentage":50.00},{"householdMemberId":"40000000-0000-4000-8000-000000000024","amount":100.00,"percentage":50.00}]'::JSONB
+);
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000101' AND household_member_id = '40000000-0000-4000-8000-000000000022')
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000101' AND household_member_id = '40000000-0000-4000-8000-000000000024' AND amount = 100.00 AND percentage = 50.00)
+     OR (SELECT SUM(amount) FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000103') <> 250.00
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000103' AND household_member_id = '40000000-0000-4000-8000-000000000021' AND percentage = 30.00 AND amount = 75.00)
+     OR NOT EXISTS (SELECT 1 FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000103' AND household_member_id = '40000000-0000-4000-8000-000000000022' AND percentage = 70.00 AND amount = 175.00)
+     OR (SELECT SUM(percentage) FROM public.tb_expense_distributions WHERE expense_id = '40000000-0000-4000-8000-000000000103') <> 100.00 THEN
+    RAISE EXCEPTION 'FAIL direct split update matrix';
+  END IF;
+  RAISE NOTICE 'PASS total preservation, simultaneous update and participant replacement';
+END;
+$$;
+
 -- Function-level negative cases.
 SELECT pg_temp.expect_sqlstate(
   'Expense must exist in current household',
@@ -289,7 +356,7 @@ SELECT pg_temp.expect_sqlstate(
 
 SELECT pg_temp.expect_sqlstate(
   'Item total cannot exceed Expense total',
-  $sql$SELECT public.fn_update_expense('40000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000101',FALSE,NULL,FALSE,NULL,NULL,NULL,NULL,FALSE,NULL,'[{"name":"Too Much","totalAmount":100.01}]'::JSONB,NULL)$sql$,
+  $sql$SELECT public.fn_update_expense('40000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000101',FALSE,NULL,FALSE,NULL,NULL,NULL,NULL,FALSE,NULL,'[{"name":"Too Much","totalAmount":200.01}]'::JSONB,NULL)$sql$,
   '23514'
 );
 

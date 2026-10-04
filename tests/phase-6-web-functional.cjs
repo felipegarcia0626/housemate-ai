@@ -568,6 +568,7 @@ for (const marker of [
   "¿Cómo se reparte este gasto?",
   "Repartir por partes iguales",
   "expenseForm.splits",
+  "percentage: event.target.value",
 ]) {
   if (!creationFormSource.includes(marker))
     throw new Error(`Missing Expense creation description marker: ${marker}`);
@@ -587,8 +588,6 @@ for (const marker of [
   "description: expenseForm.description || null",
   "normalizeExpenseSplits(expenseForm.splits)",
   "setExpenseFormError",
-  "percentage: event.target.value",
-  "normalizeExpenseSplits(expenseForm.splits)",
 ]) {
   if (!submitExpenseSource.includes(marker))
     throw new Error(`Missing Expense creation payload marker: ${marker}`);
@@ -611,13 +610,19 @@ for (const marker of [
   "setEditExpenseFormError",
   'role="alert"',
   "percentage: event.target.value",
-  "normalizeExpenseSplits(editExpenseForm.splits)",
 ]) {
   if (!expenseEditSource.includes(marker))
     throw new Error(`Missing direct Expense split editor marker: ${marker}`);
 }
 if (expenseEditSource.includes("selectedEditSharingRule") || expenseEditSource.includes("editableSharingRules"))
   throw new Error("Expense edit must not depend on sharing rules");
+const saveExpenseStart = page.indexOf("async function saveExpense");
+const saveExpenseEnd = page.indexOf("async function removeExpense", saveExpenseStart);
+if (saveExpenseStart < 0 || saveExpenseEnd < saveExpenseStart)
+  throw new Error("Missing Expense edit submit handler");
+const saveExpenseSource = page.slice(saveExpenseStart, saveExpenseEnd);
+if (!saveExpenseSource.includes("normalizeExpenseSplits(editExpenseForm.splits)"))
+  throw new Error("Expense edit submit must normalize direct splits");
 console.log("PASS Expense creation and edit use direct household-member splits");
 
 const incomeCreationFormStart = page.indexOf(
@@ -755,7 +760,7 @@ for (const marker of [
   "expenseDate: normalizedExpenseDate",
   "categoryId: editExpenseForm.categoryId || null",
   "paidByMemberId: editExpenseForm.paidByMemberId",
-  "splits: editExpenseForm.splits",
+  "splits: normalizeExpenseSplits(editExpenseForm.splits)",
   "await refresh()",
 ]) {
   if (!saveSource.includes(marker))
