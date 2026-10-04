@@ -8922,6 +8922,147 @@ async function main() {
   assert.equal(regression2I.length, 11);
   console.log(`PASS 2I regression matrix completed (${regression2I.length} cases)`);
 
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Mercado",
+    description: "Reparto directo",
+    totalAmount: "120000",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+    splitInstructions: [
+      { participant: "SELF", name: null, percentage: "70", equalShare: false },
+      { participant: "NAME", name: "Alejandra", percentage: "30", equalShare: false },
+    ],
+  };
+  const directSplitContext = { ...contextA, conversationKey: "agent-direct-split" };
+  const directSplitProposal = await conversation.processAgentMessage(
+    directSplitContext,
+    { message: "Gasté 120000, 70% mío y 30% de Alejandra" },
+  );
+  assert.equal(directSplitProposal.type, "PROPOSAL_CREATED");
+  const directSplitStored = proposals.find((row) => row.id === directSplitProposal.proposalId);
+  assert.deepEqual(directSplitStored.payload.expense.splits, [
+    { householdMemberId: memberA, percentage: 70 },
+    { householdMemberId: memberB, percentage: 30 },
+  ]);
+  assert.deepEqual(directSplitProposal.payload.expense.splits, directSplitStored.payload.expense.splits);
+  assert.equal(directSplitStored.payload.expense.paidByMemberId, memberA);
+  const directSplitConfirmed = await conversation.processAgentMessage(directSplitContext, { message: "si" });
+  assert.equal(directSplitConfirmed.type, "CONFIRMED");
+  assert.deepEqual(createdExpenses.at(-1).input.splits, directSplitStored.payload.expense.splits);
+  console.log("PASS Agent resolves declarative direct splits without member IDs from the model");
+
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "120000",
+    date: "2026-08-12",
+    merchant: "Mercado",
+    description: "Reparto multi-turno",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+    splitRequested: true,
+    splitInstructions: null,
+  };
+  const multiTurnSplitContext = { ...contextA, conversationKey: "agent-multi-turn-split" };
+  const multiTurnOperation = await conversation.processAgentMessage(
+    multiTurnSplitContext,
+    { message: "Quiero registrar un gasto compartido" },
+  );
+  assert.equal(multiTurnOperation.type, "CLARIFICATION_REQUIRED");
+  const multiTurnExpense = await conversation.processAgentMessage(
+    multiTurnSplitContext,
+    { message: "gasto" },
+  );
+  assert.equal(multiTurnExpense.type, "CLARIFICATION_REQUIRED");
+  const multiTurnCategory = await selectCategory(
+    multiTurnSplitContext,
+    "Household",
+    "Food",
+  );
+  assert.equal(multiTurnCategory.type, "CLARIFICATION_REQUIRED");
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Mercado",
+    description: "Reparto multi-turno",
+    totalAmount: "120000",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+    splitRequested: true,
+    splitInstructions: [
+      { participant: "SELF", name: null, percentage: "70", equalShare: false },
+      { participant: "NAME", name: "Alejandra", percentage: "30", equalShare: false },
+    ],
+  };
+  const multiTurnProposal = await conversation.processAgentMessage(
+    multiTurnSplitContext,
+    { message: "70% yo y 30% Alejandra" },
+  );
+  assert.equal(multiTurnProposal.type, "PROPOSAL_CREATED");
+  const multiTurnStored = proposals.find((row) => row.id === multiTurnProposal.proposalId);
+  assert.deepEqual(multiTurnStored.payload.expense.splits, [
+    { householdMemberId: memberA, percentage: 70 },
+    { householdMemberId: memberB, percentage: 30 },
+  ]);
+  console.log("PASS multi-turn direct split survives operation and category drafts");
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Transporte",
+    description: "Reparto propio",
+    totalAmount: "10000",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+    splitRequested: true,
+    splitInstructions: [
+      { participant: "SELF", name: null, percentage: "100", equalShare: false },
+    ],
+  };
+  const selfOnlySplit = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-direct-split-self-only" },
+    { message: "100% yo" },
+  );
+  assert.equal(selfOnlySplit.type, "PROPOSAL_CREATED");
+  assert.deepEqual(
+    proposals.find((row) => row.id === selfOnlySplit.proposalId).payload.expense.splits,
+    [{ householdMemberId: memberA, percentage: 100 }],
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Mercado",
+    description: "Mitad y mitad",
+    totalAmount: "20000",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: "Food",
+    splitRequested: true,
+    splitInstructions: [
+      { participant: "SELF", name: null, percentage: null, equalShare: true },
+      { participant: "NAME", name: "Alejandra", percentage: null, equalShare: true },
+    ],
+  };
+  const equalSplit = await conversation.processAgentMessage(
+    { ...contextA, conversationKey: "agent-direct-split-equal" },
+    { message: "mitad y mitad" },
+  );
+  assert.equal(equalSplit.type, "PROPOSAL_CREATED");
+  assert.deepEqual(
+    proposals.find((row) => row.id === equalSplit.proposalId).payload.expense.splits,
+    [
+      { householdMemberId: memberA, percentage: 50 },
+      { householdMemberId: memberB, percentage: 50 },
+    ],
+  );
+  console.log("PASS direct split supports 100% self and equal sharing");
+
   const openaiSource = fs.readFileSync(openaiAdapterModule, "utf8");
   const createExpenseTypeStart = openaiSource.indexOf('kind: "CREATE_EXPENSE"');
   const createIncomeTypeStart = openaiSource.indexOf('kind: "CREATE_INCOME"');

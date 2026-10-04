@@ -324,6 +324,10 @@ async function main() {
               totalAmount: updatedProposalAmount,
               expenseDate: updatedProposalDate,
               paidByMemberId: updatedProposalPayerId,
+              splits: [
+                { householdMemberId: updatedProposalPayerId, percentage: 50 },
+                { householdMemberId: memberId, percentage: 50 },
+              ],
               categoryId: updatedProposalCategoryId,
             },
           },
@@ -398,6 +402,10 @@ async function main() {
                 categoryPath: "Alimentación → Mercado",
                 merchant: "Éxito",
                 paidByMemberId: secondMemberId,
+                splits: [
+                  { householdMemberId: secondMemberId, percentage: 70 },
+                  { householdMemberId: memberId, percentage: 30 },
+                ],
               },
             },
           };
@@ -737,6 +745,8 @@ async function main() {
   assert.match(updatedExpenseText, /Mercado de la semana/);
   assert.match(updatedExpenseText, /Alimentación/);
   assert.match(updatedExpenseText, /Alejandra/);
+  assert.match(updatedExpenseText, /Reparto:/);
+  assert.match(updatedExpenseText, /50\.00%/);
   assert.match(updatedExpenseText, /Responde "sí" para confirmar/);
   assert.doesNotMatch(updatedExpenseText, /42000000-/);
   console.log("PASS WhatsApp corrected Expense proposal renders updated fields");
@@ -855,6 +865,9 @@ async function main() {
       signedRequest(rawBody(incomingPayload(eventId, text))),
     );
     assert.equal(response.status, 200);
+    if (eventId === "event-operation-category") {
+      var operationProposalText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+    }
   }
   const operationCalls = agentCalls.slice(-4);
   assert.deepEqual(
@@ -866,6 +879,10 @@ async function main() {
     1,
   );
   assert.equal(operationStep, 3);
+  assert.match(operationProposalText, /Alejandra/);
+  assert.match(operationProposalText, /70\.00%/);
+  assert.match(operationProposalText, /30\.00%/);
+  assert.match(operationProposalText, /Reparto:/);
   console.log(
     "PASS WhatsApp operation continuation preserves context through category and confirmation",
   );

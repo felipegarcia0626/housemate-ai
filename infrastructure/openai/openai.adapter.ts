@@ -34,6 +34,8 @@ export type ExpenseInterpretation =
       paidBySelf: boolean | null;
       paidByMemberName: string | null;
       categoryName: string | null;
+      splitRequested: boolean;
+      splitInstructions: ExpenseSplitInstruction[] | null;
     }
   | {
       kind: "CREATE_EXPENSE";
@@ -44,6 +46,8 @@ export type ExpenseInterpretation =
       paidBySelf: boolean | null;
       paidByMemberName: string | null;
       categoryName: string | null;
+      splitRequested: boolean;
+      splitInstructions: ExpenseSplitInstruction[] | null;
     }
   | {
       kind: "CREATE_INCOME";
@@ -64,6 +68,13 @@ export type ExpenseInterpretation =
   | { kind: "GET_CATEGORIES" }
   | { kind: "GET_SHARING_RULES" }
   | { kind: "UNSUPPORTED" };
+
+export type ExpenseSplitInstruction = {
+  participant: "SELF" | "NAME";
+  name: string | null;
+  percentage: string | null;
+  equalShare: boolean;
+};
 
 type ParsedInterpretation = ExpenseInterpretation | CorrectionInterpretation;
 
@@ -119,6 +130,21 @@ const responseSchema = {
     paidBySelf: { type: ["boolean", "null"] },
     paidByMemberName: { type: ["string", "null"] },
     categoryName: { type: ["string", "null"] },
+    splitRequested: { type: "boolean" },
+    splitInstructions: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          participant: { type: "string", enum: ["SELF", "NAME"] },
+          name: { type: ["string", "null"] },
+          percentage: { type: ["string", "null"] },
+          equalShare: { type: "boolean" },
+        },
+        required: ["participant", "name", "percentage", "equalShare"],
+      },
+    },
     amount: { type: ["string", "null"] },
     date: { type: ["string", "null"] },
     incomeDate: { type: ["string", "null"] },
@@ -160,6 +186,8 @@ const responseSchema = {
     "paidBySelf",
     "paidByMemberName",
     "categoryName",
+    "splitRequested",
+    "splitInstructions",
     "amount",
     "date",
     "incomeDate",
@@ -219,7 +247,12 @@ preserve that person's display name in paidByMemberName. Return
 paidBySelf=null and paidByMemberName=null when no payer is specified. Never
 invent a member name. Read filters must use only the fields available in the
 corresponding intent. Never return household, actor,
-createdBy, source, member ids, or any persistence fields.`;
+createdBy, source, member ids, or any persistence fields. For an explicitly
+requested split, return splitInstructions using SELF or NAME and percentages
+as decimal strings; use equalShare=true only when equal sharing is explicit.
+Return splitRequested=true when the user explicitly asks to share or split a
+expense, even if participants or percentages are still missing. Return false
+when no split is requested.`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -297,6 +330,27 @@ function isNullableString(value: unknown): value is string | null {
 
 function isNullableNumber(value: unknown): value is number | null {
   return value === null || typeof value === "number";
+}
+
+function parseSplitInstructions(value: unknown): ExpenseSplitInstruction[] | null {
+  if (value === null) return null;
+  if (!Array.isArray(value) || value.length === 0) throw new OpenAIAdapterError();
+  return value.map((item) => {
+    if (!isRecord(item)) throw new OpenAIAdapterError();
+    if (item.participant !== "SELF" && item.participant !== "NAME") {
+      throw new OpenAIAdapterError();
+    }
+    if (!isNullableString(item.name) || !isNullableString(item.percentage) || typeof item.equalShare !== "boolean") {
+      throw new OpenAIAdapterError();
+    }
+    if (item.participant === "NAME" && !item.name?.trim()) throw new OpenAIAdapterError();
+    if (item.participant === "SELF" && item.name !== null) throw new OpenAIAdapterError();
+    if (item.equalShare && item.percentage !== null) throw new OpenAIAdapterError();
+    if (!item.equalShare && (item.percentage === null || !/^\d+(?:\.\d{1,2})?$/.test(item.percentage.trim()))) {
+      throw new OpenAIAdapterError();
+    }
+    return item as ExpenseSplitInstruction;
+  });
 }
 
 function isCorrectionField(value: unknown): value is CorrectionField {
@@ -389,6 +443,8 @@ function parseInterpretation(value: unknown): ParsedInterpretation {
       paidBySelf: value.paidBySelf,
       paidByMemberName: value.paidByMemberName,
       categoryName: value.categoryName,
+      splitRequested: value.splitRequested === true,
+      splitInstructions: parseSplitInstructions(value.splitInstructions ?? null),
     };
   }
   if (value.kind === "CREATE_INCOME") {
@@ -456,6 +512,8 @@ function parseInterpretation(value: unknown): ParsedInterpretation {
     paidBySelf: value.paidBySelf,
     paidByMemberName: value.paidByMemberName,
     categoryName: value.categoryName,
+    splitRequested: value.splitRequested === true,
+    splitInstructions: parseSplitInstructions(value.splitInstructions ?? null),
   };
 }
 

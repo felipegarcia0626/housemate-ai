@@ -93,6 +93,7 @@ export interface AgentExpenseProposalPresentation {
   categoryPath?: string | null;
   merchant?: string | null;
   paidByMemberId: string;
+  splits?: Array<{ householdMemberId: string; percentage: number }>;
 }
 
 export interface AgentIncomeProposalPresentation {

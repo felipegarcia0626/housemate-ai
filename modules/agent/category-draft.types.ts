@@ -1,6 +1,7 @@
 import type { ExpenseSource } from "@/modules/expenses/expense.types";
 import type { IncomeCreateInput } from "@/modules/incomes/income.types";
 import type { ExpenseProposalInput } from "./agent.types";
+import type { ExpenseSplitInstruction } from "@/infrastructure/openai/openai.adapter";
 import type { CategoryMovementType } from "@/modules/categories/category.types";
 
 export type AgentCategoryDraftOperation = "CREATE_EXPENSE" | "CREATE_INCOME";
@@ -24,6 +25,8 @@ export interface AgentOperationDraftPayload {
   paidBySelf: boolean | null;
   paidByMemberName: string | null;
   categoryName: string | null;
+  splitRequested?: boolean;
+  splitInstructions?: ExpenseSplitInstruction[] | null;
 }
 
 export interface CategoryDraftExpensePayload {
@@ -33,6 +36,8 @@ export interface CategoryDraftExpensePayload {
   pendingCategoryCreation?: PendingCategoryCreation | null;
   expense: Omit<ExpenseProposalInput, "splits"> & {
     splits?: ExpenseProposalInput["splits"];
+    splitRequested?: boolean;
+    splitInstructions?: ExpenseSplitInstruction[] | null;
   };
 }
 

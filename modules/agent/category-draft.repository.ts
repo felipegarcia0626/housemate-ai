@@ -103,6 +103,8 @@ function isOperationPayload(value: unknown): boolean {
     "paidBySelf",
     "paidByMemberName",
     "categoryName",
+    "splitRequested",
+    "splitInstructions",
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) return false;
   return (
@@ -112,7 +114,23 @@ function isOperationPayload(value: unknown): boolean {
     isNullableString(value.description) &&
     (value.paidBySelf === null || typeof value.paidBySelf === "boolean") &&
     isNullableString(value.paidByMemberName) &&
-    isNullableString(value.categoryName)
+    isNullableString(value.categoryName) &&
+    (!('splitRequested' in value) || typeof value.splitRequested === "boolean") &&
+    (!('splitInstructions' in value) ||
+      value.splitInstructions === null ||
+      (Array.isArray(value.splitInstructions) &&
+        value.splitInstructions.every((item) => {
+          if (!isRecord(item)) return false;
+          if (Object.keys(item).some((key) =>
+            !new Set(["participant", "name", "percentage", "equalShare"]).has(key),
+          )) return false;
+          return (
+            (item.participant === "SELF" || item.participant === "NAME") &&
+            (item.name === null || typeof item.name === "string") &&
+            (item.percentage === null || typeof item.percentage === "string") &&
+            typeof item.equalShare === "boolean"
+          );
+        })))
   );
 }
 
@@ -155,6 +173,8 @@ function isExpenseProposalInput(value: unknown): boolean {
     "description",
     "items",
     "splits",
+    "splitRequested",
+    "splitInstructions",
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) return false;
   if (
@@ -162,6 +182,9 @@ function isExpenseProposalInput(value: unknown): boolean {
     !isFiniteNumber(value.totalAmount) ||
     !isString(value.expenseDate)
   ) {
+    return false;
+  }
+  if ("splitRequested" in value && typeof value.splitRequested !== "boolean") {
     return false;
   }
   if (

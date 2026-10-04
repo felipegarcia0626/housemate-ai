@@ -61,6 +61,7 @@ import {
   interpretExpenseMessage,
   type CorrectionInterpretation,
   type ExpenseInterpretation,
+  type ExpenseSplitInstruction,
 } from "@/infrastructure/openai/openai.adapter";
 
 type Interpreter = (
@@ -279,6 +280,7 @@ function operationDetailsClarification(
     if (field === "amount") return "el monto";
     if (field === "totalAmount") return "el monto";
     if (field === "paidByMemberName") return "qué integrante pagó";
+    if (field === "splits") return "cómo repartir el gasto";
     return field;
   });
   const subject = operation === "CREATE_INCOME" ? "ingreso" : "gasto";
@@ -302,6 +304,12 @@ function operationPayloadFromInterpretation(
     paidBySelf: interpretation.paidBySelf ?? null,
     paidByMemberName: interpretation.paidByMemberName ?? null,
     categoryName: interpretation.categoryName ?? null,
+    ...(interpretation.splitRequested !== undefined
+      ? { splitRequested: interpretation.splitRequested }
+      : {}),
+    ...(interpretation.splitInstructions !== undefined
+      ? { splitInstructions: interpretation.splitInstructions }
+      : {}),
   };
 }
 
@@ -330,6 +338,12 @@ function operationPayloadFromExpenseInterpretation(
     paidBySelf: interpretation.paidBySelf ?? null,
     paidByMemberName: interpretation.paidByMemberName ?? null,
     categoryName: interpretation.categoryName ?? null,
+    ...(interpretation.splitRequested !== undefined
+      ? { splitRequested: interpretation.splitRequested }
+      : {}),
+    ...(interpretation.splitInstructions !== undefined
+      ? { splitInstructions: interpretation.splitInstructions }
+      : {}),
   };
 }
 
@@ -375,11 +389,18 @@ function canResolveDraftDetails(
 function toCategoryExpensePayload(
   input: ExpenseProposalInput,
 ): CategoryDraftExpensePayload["expense"] {
+  const { splits, ...rest } = input;
+  const splitRequested = (input as ExpenseProposalInput & { splitRequested?: boolean }).splitRequested === true;
   const payload = {
-    ...input,
+    ...rest,
+    ...(splitRequested ||
+    !splits ||
+    splits.length !== 1 ||
+    splits[0]?.percentage !== 100
+      ? { splits }
+      : {}),
     categoryId: input.categoryId ?? null,
   } as CategoryDraftExpensePayload["expense"];
-  delete payload.splits;
   return payload;
 }
 
@@ -826,6 +847,20 @@ async function completeCategoryDraft(
           { householdMemberId: context.actorMemberId, percentage: 100 },
         ],
       };
+      if (
+        nextPayload.expense.splitRequested &&
+        (!nextPayload.expense.splits || nextPayload.expense.splits.length === 0)
+      ) {
+        if (!updatedCategoryDraft) {
+          updatedCategoryDraft = await updateCategoryDraft(
+            context,
+            draft.id,
+            nextPayload,
+            draft.updatedAt,
+          );
+        }
+        return clarification(["splits"], "¿Cómo quieres repartir el gasto?");
+      }
       let result: Awaited<ReturnType<typeof createExpenseTool>>;
       try {
         result = await createExpenseTool(context, expenseInput, draft.id);
@@ -1243,6 +1278,77 @@ interface ProposalInputResult {
   clarificationMessage?: string;
 }
 
+function splitPercentageBasisPoints(value: string): bigint | null {
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value.trim())) return null;
+  const [whole, decimals = ""] = value.trim().split(".");
+  const basisPoints = BigInt(whole) * BigInt(100) + BigInt(decimals.padEnd(2, "0"));
+  return basisPoints <= BigInt(10000) ? basisPoints : null;
+}
+
+async function resolveExpenseSplits(
+  context: AgentContext,
+  instructions: ExpenseSplitInstruction[] | null,
+  splitRequested = false,
+): Promise<{ splits: ExpenseProposalInput["splits"]; error?: string }> {
+  if (!instructions) {
+    if (splitRequested) return { splits: [], error: "Indica cómo repartir el gasto." };
+    return { splits: [{ householdMemberId: context.actorMemberId, percentage: 100 }] };
+  }
+  let members;
+  try {
+    members = await listHouseholdMembers({ householdId: context.householdId });
+  } catch {
+    throw new AgentDomainError("PERSISTENCE_ERROR", "Household members could not be resolved.");
+  }
+  const resolved: Array<{ householdMemberId: string; basisPoints: bigint }> = [];
+  for (const instruction of instructions) {
+    const memberId = instruction.participant === "SELF"
+      ? context.actorMemberId
+      : (() => {
+          const normalized = normalizeMemberName(instruction.name ?? "");
+          const matches = members.filter((member) => normalizeMemberName(member.displayName) === normalized);
+          return matches.length === 1 ? matches[0].id : null;
+        })();
+    if (!memberId) return { splits: [], error: "No pude resolver de forma única uno de los integrantes del reparto." };
+    if (resolved.some((item) => item.householdMemberId === memberId)) {
+      return { splits: [], error: "Cada integrante debe aparecer una sola vez en el reparto." };
+    }
+    const basisPoints = instruction.equalShare ? null : splitPercentageBasisPoints(instruction.percentage ?? "");
+    if (instruction.equalShare !== (basisPoints === null)) {
+      return { splits: [], error: "El reparto indicado no contiene porcentajes válidos." };
+    }
+    resolved.push({ householdMemberId: memberId, basisPoints: basisPoints ?? BigInt(0) });
+  }
+  if (resolved.length === 0) return { splits: [], error: "Indica al menos un integrante para el reparto." };
+  if (instructions.some((item) => item.equalShare)) {
+    if (!instructions.every((item) => item.equalShare)) return { splits: [], error: "Usa porcentajes explícitos o reparto igualitario, no ambos." };
+    const base = BigInt(10000) / BigInt(resolved.length);
+    let residual = BigInt(10000) - base * BigInt(resolved.length);
+    for (const item of resolved) { item.basisPoints = base; if (residual > BigInt(0)) { item.basisPoints += BigInt(1); residual -= BigInt(1); } }
+  }
+  if (resolved.reduce((sum, item) => sum + item.basisPoints, BigInt(0)) !== BigInt(10000)) {
+    return { splits: [], error: "El reparto debe sumar exactamente 100.00%." };
+  }
+  return { splits: resolved.map((item) => ({ householdMemberId: item.householdMemberId, percentage: Number(item.basisPoints) / 100 })) };
+}
+
+function looksLikeSplitReply(message: string): boolean {
+  return /%/.test(message) || /\bmitad(?:es)?\b/i.test(message);
+}
+
+async function parseSplitReply(
+  context: AgentContext,
+  message: string,
+  interpreter: Interpreter,
+): Promise<{ splits: ExpenseProposalInput["splits"]; splitInstructions: ExpenseSplitInstruction[]; error?: string } | null> {
+  if (!looksLikeSplitReply(message)) return null;
+  const interpretation = await interpreter(message);
+  if (interpretation.kind !== "CREATE_EXPENSE" || !interpretation.splitInstructions) return null;
+  const resolved = await resolveExpenseSplits(context, interpretation.splitInstructions, true);
+  if (resolved.error) return { splits: [], splitInstructions: interpretation.splitInstructions, error: resolved.error };
+  return { splits: resolved.splits, splitInstructions: interpretation.splitInstructions };
+}
+
 async function toProposalInput(
   context: AgentContext,
   interpretation: Extract<ExpenseInterpretation, { kind: "CREATE_EXPENSE" }>,
@@ -1307,6 +1413,27 @@ async function toProposalInput(
     };
   }
 
+  const splitResult = await resolveExpenseSplits(
+    context,
+    interpretation.splitInstructions,
+    interpretation.splitRequested,
+  );
+  if (splitResult.error) {
+    return {
+      input: {
+        paidByMemberId,
+        totalAmount: totalAmount as number,
+        expenseDate: expenseDate as string,
+        merchant: interpretation.merchant,
+        description: interpretation.description,
+        items: [],
+        splits: [],
+        splitRequested: interpretation.splitRequested,
+      } as ExpenseProposalInput,
+      missingFields: ["splits"],
+      clarificationMessage: splitResult.error,
+    };
+  }
   return {
     input: {
       paidByMemberId,
@@ -1315,7 +1442,7 @@ async function toProposalInput(
       merchant: interpretation.merchant,
       description: interpretation.description,
       items: [],
-      splits: [{ householdMemberId: context.actorMemberId, percentage: 100 }],
+      splits: splitResult.splits,
     },
     missingFields,
   };
@@ -1339,6 +1466,7 @@ function createdExpenseResult(
         categoryPath: category.path,
         merchant: input.merchant ?? null,
         paidByMemberId: input.paidByMemberId,
+        splits: input.splits,
       },
     },
   };
@@ -1416,6 +1544,8 @@ async function getDraftMissingFields(
       paidBySelf: payload.paidBySelf,
       paidByMemberName: payload.paidByMemberName,
       categoryName: payload.categoryName,
+      splitRequested: payload.splitRequested ?? false,
+      splitInstructions: payload.splitInstructions ?? null,
     }, { defaultExpenseDate: false })
   ).missingFields;
 }
@@ -1604,10 +1734,15 @@ async function completeOperationDraft(
       paidBySelf: operationPayload.paidBySelf,
       paidByMemberName: operationPayload.paidByMemberName,
       categoryName: operationPayload.categoryName,
+      splitRequested: operationPayload.splitRequested ?? false,
+      splitInstructions: operationPayload.splitInstructions ?? null,
     }, {
       defaultExpenseDate: options.defaultExpenseDate === true,
     });
-    if (proposal.missingFields.length > 0) {
+    const missingNonSplitFields = proposal.missingFields.filter(
+      (field) => field !== "splits",
+    );
+    if (missingNonSplitFields.length > 0) {
       await updateDraftOrThrow(
         context,
         draft,
@@ -1617,7 +1752,7 @@ async function completeOperationDraft(
       );
       return operationDetailsClarification(
         operation,
-        proposal.missingFields,
+        missingNonSplitFields,
       );
     }
     const categories = await getCategoriesTool(context, "EXPENSE");
@@ -1652,7 +1787,11 @@ async function completeOperationDraft(
         {
           selectedMacroId,
           pendingCategoryCreation,
-          expense: toCategoryExpensePayload(proposal.input),
+          expense: {
+            ...toCategoryExpensePayload(proposal.input),
+            splitRequested: operationPayload.splitRequested ?? false,
+            splitInstructions: operationPayload.splitInstructions ?? null,
+          },
         },
       );
       if (pendingCategoryCreation && selectedMacro) {
@@ -1669,6 +1808,28 @@ async function completeOperationDraft(
         "EXPENSE",
         selectedMacroId,
       );
+    }
+    if (
+      operationPayload.splitRequested &&
+      (!proposal.input.splits || proposal.input.splits.length === 0)
+    ) {
+      await updateDraftOrThrow(
+        context,
+        draft,
+        operation,
+        "AWAITING_CATEGORY",
+        {
+          selectedMacroId: category.macroId,
+          pendingCategoryCreation: null,
+          expense: {
+            ...toCategoryExpensePayload(proposal.input),
+            categoryId: category.id,
+            splitRequested: true,
+            splitInstructions: null,
+          },
+        },
+      );
+      return clarification(["splits"], "¿Cómo quieres repartir el gasto?");
     }
     const result = await createExpenseTool(context, {
       ...proposal.input,
@@ -2053,6 +2214,36 @@ export async function processAgentMessage(
 
   if (activeDraft?.status === "AWAITING_CATEGORY") {
     const categoryDraft = activeDraft as AgentCategoryDraft;
+    if (
+      categoryDraft.operationType === "CREATE_EXPENSE" &&
+      (categoryDraft.payload as CategoryDraftExpensePayload).expense.splitRequested &&
+      (categoryDraft.payload as CategoryDraftExpensePayload).expense.splits?.length === 0
+    ) {
+      const splitReply = await parseSplitReply(context, message, interpreter);
+      if (splitReply) {
+        if (splitReply.error) return clarification(["splits"], splitReply.error);
+        const expensePayload = (categoryDraft.payload as CategoryDraftExpensePayload).expense;
+        const nextPayload: CategoryDraftExpensePayload = {
+          ...(categoryDraft.payload as CategoryDraftExpensePayload),
+          expense: {
+            ...expensePayload,
+            splits: splitReply.splits,
+            splitRequested: true,
+            splitInstructions: splitReply.splitInstructions,
+          },
+        };
+        const categoriesForSplit = await getCategoriesTool(context, "EXPENSE");
+        const categoryForSplit = categoriesForSplit.find((item) => item.id === expensePayload.categoryId);
+        if (!categoryForSplit) return clarification(["categoryId"], "Necesito una categoría válida para continuar.");
+        const updatedSplitDraft = await updateCategoryDraft(
+          context,
+          categoryDraft.id,
+          nextPayload,
+          categoryDraft.updatedAt,
+        );
+        return completeCategoryDraft(context, updatedSplitDraft, categoryForSplit);
+      }
+    }
     const categories = await getCategoriesTool(
       context,
       categoryMovementType(categoryDraft.operationType),
@@ -2214,6 +2405,26 @@ export async function processAgentMessage(
   }
 
   if (activeDraft?.status === "AWAITING_DETAILS") {
+    const operationPayload = activeDraft.payload as AgentOperationDraftPayload;
+    if (activeDraft.operationType === "CREATE_EXPENSE" && operationPayload.splitRequested) {
+      const splitReply = await parseSplitReply(context, message, interpreter);
+      if (splitReply) {
+        if (splitReply.error) return clarification(["splits"], splitReply.error);
+        const updatedSplitPayload: AgentOperationDraftPayload = {
+          ...operationPayload,
+          splitRequested: true,
+          splitInstructions: splitReply.splitInstructions,
+        };
+        const updatedSplitDraft = await updateDraftOrThrow(
+          context,
+          activeDraft,
+          activeDraft.operationType,
+          "AWAITING_DETAILS",
+          updatedSplitPayload,
+        );
+        return completeOperationDraft(context, updatedSplitDraft, "CREATE_EXPENSE");
+      }
+    }
     const pendingFields = await getDraftMissingFields(context, activeDraft);
     if (!canResolveDraftDetails(message, pendingFields)) {
       return clarification(
@@ -2221,8 +2432,6 @@ export async function processAgentMessage(
         'Primero completa la operación anterior. Responde con los datos solicitados o "cancelar".',
       );
     }
-    const operationPayload =
-      activeDraft.payload as AgentOperationDraftPayload;
     const updatedPayload = parseDraftDetails(
       message,
       operationPayload,
@@ -2510,6 +2719,7 @@ export async function processAgentMessage(
         categoryPath: category.path,
         merchant: proposal.input.merchant ?? null,
         paidByMemberId: proposal.input.paidByMemberId,
+        splits: proposal.input.splits,
       },
     },
   };

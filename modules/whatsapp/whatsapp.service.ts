@@ -249,6 +249,19 @@ type ProposalPresentationLabels = {
   members: Map<string, string>;
 };
 
+function renderExpenseSplits(
+  splits: Array<{ householdMemberId: string; percentage: number }> | undefined,
+  labels: ProposalPresentationLabels,
+): string[] {
+  if (!splits || splits.length === 0) return [];
+  const lines = ["Reparto:"];
+  for (const split of splits) {
+    const memberName = labels.members.get(split.householdMemberId);
+    if (memberName) lines.push(`- ${memberName}: ${split.percentage.toFixed(2)}%`);
+  }
+  return lines.length > 1 ? lines : [];
+}
+
 function emptyProposalPresentationLabels(): ProposalPresentationLabels {
   return { categories: new Map(), members: new Map() };
 }
@@ -286,6 +299,7 @@ function renderUpdatedProposal(
       ? labels.members.get(expense.paidByMemberId)
       : undefined;
     if (payerName) lines.push(`Pagador: ${payerName}`);
+    lines.push(...renderExpenseSplits(expense.splits, labels));
   } else if (
     result.operationType === "CREATE_INCOME" &&
     "income" in payload &&
@@ -333,17 +347,21 @@ async function loadProposalPresentationLabels(
       : "income" in payload && payload.income
         ? payload.income.categoryId
         : null;
-  const memberId =
+  const memberIds =
     "expense" in payload && payload.expense
-      ? payload.expense.paidByMemberId
+      ? [
+          payload.expense.paidByMemberId,
+          ...(payload.expense.splits ?? []).map((split) => split.householdMemberId),
+        ]
       : "income" in payload && payload.income
-        ? payload.income.memberId
-        : null;
+        ? [payload.income.memberId]
+        : [];
+  const uniqueMemberIds = [...new Set(memberIds.filter(Boolean))];
   const [categories, members] = await Promise.all([
     result.type === "PROPOSAL_UPDATED" && categoryId
       ? getCategoriesTool(context).catch(() => [])
       : Promise.resolve([]),
-    memberId
+    uniqueMemberIds.length > 0
       ? listHouseholdMembers({ householdId: context.householdId }).catch(
           () => [],
         )
@@ -380,6 +398,7 @@ function renderCreatedProposal(
       ? labels.members.get(expense.paidByMemberId)
       : undefined;
     if (payerName) lines.push(`👤 Pagado por: ${payerName}`);
+    lines.push(...renderExpenseSplits(expense.splits, labels));
     if (expense.categoryPath)
       lines.push(`📂 Categoría: ${expense.categoryPath}`);
   } else if (!isExpense && "income" in payload && payload.income) {
