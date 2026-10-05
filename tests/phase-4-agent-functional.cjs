@@ -856,6 +856,7 @@ async function main() {
       ];
     },
   };
+  let interpreterCalls = 0;
   let mockInterpretation = {
     kind: "CREATE_EXPENSE",
     merchant: "mercado",
@@ -876,7 +877,10 @@ async function main() {
       [
         openaiAdapterModule,
         {
-          interpretExpenseMessage: async () => mockInterpretation,
+          interpretExpenseMessage: async () => {
+            interpreterCalls += 1;
+            return mockInterpretation;
+          },
         },
       ],
     ]),
@@ -8954,6 +8958,98 @@ async function main() {
   assert.deepEqual(createdExpenses.at(-1).input.splits, directSplitStored.payload.expense.splits);
   console.log("PASS Agent resolves declarative direct splits without member IDs from the model");
 
+  const initialNamedSplitContext = {
+    ...contextA,
+    conversationKey: "agent-initial-named-split",
+  };
+  const callsBeforeInitialNamedSplit = interpreterCalls;
+  const initialNamedSplit = await conversation.processAgentMessage(
+    initialNamedSplitContext,
+    { message: "Gasté $50.000 y quiero repartirlo entre Felipe y Alejandra" },
+  );
+  assert.equal(initialNamedSplit.type, "CLARIFICATION_REQUIRED");
+  const initialNamedSplitDraft = categoryDrafts.find(
+    (row) =>
+      row.conversation_key === initialNamedSplitContext.conversationKey &&
+      row.status === "AWAITING_DETAILS",
+  );
+  assert.ok(initialNamedSplitDraft);
+  assert.equal(initialNamedSplitDraft.payload.splitRequested, true);
+  assert.deepEqual(
+    initialNamedSplitDraft.payload.splitInstructions,
+    [
+      { participant: "NAME", name: "Felipe", percentage: null, equalShare: false },
+      { participant: "NAME", name: "Alejandra", percentage: null, equalShare: false },
+    ],
+  );
+  assert.equal(proposals.some((row) => row.actor_member_id === memberA && row.conversation_key === initialNamedSplitContext.conversationKey), false);
+  assert.equal(interpreterCalls, callsBeforeInitialNamedSplit);
+  const initialNamedSplitReply = await conversation.processAgentMessage(
+    initialNamedSplitContext,
+    { message: "50% y 50%" },
+  );
+  assert.equal(initialNamedSplitReply.type, "CLARIFICATION_REQUIRED");
+  assert.equal(interpreterCalls, callsBeforeInitialNamedSplit);
+  assert.deepEqual(
+    categoryDrafts.find((row) => row.id === initialNamedSplitDraft.id).payload.splitInstructions,
+    [
+      { participant: "NAME", name: "Felipe", percentage: "50", equalShare: false },
+      { participant: "NAME", name: "Alejandra", percentage: "50", equalShare: false },
+    ],
+  );
+  console.log("PASS initial named direct split preserves participants before percentages");
+
+  const equalPartsContext = {
+    ...contextA,
+    conversationKey: "agent-initial-equal-parts-split",
+  };
+  const equalPartsInitial = await conversation.processAgentMessage(
+    equalPartsContext,
+    { message: "Gasté $50.000 y quiero repartirlo entre yo y Alejandra" },
+  );
+  assert.equal(equalPartsInitial.type, "CLARIFICATION_REQUIRED");
+  const equalPartsReply = await conversation.processAgentMessage(
+    equalPartsContext,
+    { message: "en partes iguales" },
+  );
+  assert.equal(equalPartsReply.type, "CLARIFICATION_REQUIRED");
+  const equalPartsDraft = categoryDrafts.find(
+    (row) => row.conversation_key === equalPartsContext.conversationKey,
+  );
+  assert.ok(equalPartsDraft);
+  assert.deepEqual(equalPartsDraft.payload.splitInstructions, [
+    { participant: "SELF", name: null, percentage: null, equalShare: true },
+    { participant: "NAME", name: "Alejandra", percentage: null, equalShare: true },
+  ]);
+  await conversation.processAgentMessage(equalPartsContext, { message: "cancelar" });
+  console.log("PASS multi-turn direct split accepts en partes iguales");
+
+  const genericSplitContext = {
+    ...contextA,
+    conversationKey: "agent-generic-direct-split",
+  };
+  const callsBeforeGenericSplit = interpreterCalls;
+  const proposalsBeforeGenericSplit = proposals.length;
+  const expensesBeforeGenericSplit = createdExpenses.length;
+  const genericSplit = await conversation.processAgentMessage(
+    genericSplitContext,
+    { message: "Gasté $50.000 y quiero repartirlo" },
+  );
+  assert.equal(genericSplit.type, "CLARIFICATION_REQUIRED");
+  assert.equal(interpreterCalls, callsBeforeGenericSplit);
+  assert.equal(proposals.length, proposalsBeforeGenericSplit);
+  assert.equal(createdExpenses.length, expensesBeforeGenericSplit);
+  const genericSplitDraft = categoryDrafts.find(
+    (row) => row.conversation_key === genericSplitContext.conversationKey,
+  );
+  assert.ok(genericSplitDraft);
+  assert.equal(genericSplitDraft.status, "AWAITING_DETAILS");
+  assert.equal(genericSplitDraft.payload.amount, "50000");
+  assert.equal(genericSplitDraft.payload.splitRequested, true);
+  assert.deepEqual(genericSplitDraft.payload.splitInstructions, []);
+  await conversation.processAgentMessage(genericSplitContext, { message: "cancelar" });
+  console.log("PASS generic direct split is deterministic without interpreter fallback");
+
   mockInterpretation = {
     kind: "AMBIGUOUS_MOVEMENT",
     amount: "120000",
@@ -8998,6 +9094,7 @@ async function main() {
       { participant: "NAME", name: "Alejandra", percentage: "30", equalShare: false },
     ],
   };
+  const callsBeforeDeterministicReply = interpreterCalls;
   const multiTurnProposal = await conversation.processAgentMessage(
     multiTurnSplitContext,
     { message: "70% yo y 30% Alejandra" },
@@ -9008,6 +9105,7 @@ async function main() {
     { householdMemberId: memberA, percentage: 70 },
     { householdMemberId: memberB, percentage: 30 },
   ]);
+  assert.equal(interpreterCalls, callsBeforeDeterministicReply);
   console.log("PASS multi-turn direct split survives operation and category drafts");
 
   mockInterpretation = {

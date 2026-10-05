@@ -434,7 +434,7 @@ function parseDraftDetails(
   );
   const updatedPayload = {
     ...payload,
-    amount: amountMatch?.[1] ?? payload.amount,
+    amount: amountMatch ? normalizeStructuredAmount(amountMatch[1]) ?? payload.amount : payload.amount,
     date: dateMatch ? normalizeDraftDate(dateMatch[1]) ?? payload.date : payload.date,
     description: descriptionMatch?.[1]?.trim() ?? payload.description,
     paidByMemberName:
@@ -1333,20 +1333,159 @@ async function resolveExpenseSplits(
 }
 
 function looksLikeSplitReply(message: string): boolean {
-  return /%/.test(message) || /\bmitad(?:es)?\b/i.test(message);
+  return /%/.test(message) || /\bmitad(?:es)?\b/i.test(message) || /\b(?:en|a|por)\s+partes\s+iguales\b/i.test(message);
+}
+
+type ParsedSplitReply = {
+  recognized: boolean;
+  instructions: ExpenseSplitInstruction[];
+  error?: string;
+};
+
+function parseDeterministicSplitReply(message: string): ParsedSplitReply {
+  const normalized = message.trim();
+  if (!looksLikeSplitReply(normalized)) {
+    return { recognized: false, instructions: [] };
+  }
+  if (/\b(?:en|a|por)\s+partes\s+iguales\b/i.test(normalized)) {
+    return { recognized: true, instructions: [], error: "Indica quiénes participan en el reparto igualitario." };
+  }
+  if (/\bmitad(?:es)?\b/i.test(normalized) && !/%/.test(normalized)) {
+    return { recognized: false, instructions: [] };
+  }
+
+  const clauses = normalized
+    .split(/\s*,\s*|\s+(?:y|e)\s+/i)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  if (clauses.length === 0) {
+    return { recognized: true, instructions: [], error: "Indica cómo repartir el gasto." };
+  }
+
+  const instructions: ExpenseSplitInstruction[] = [];
+  for (const clause of clauses) {
+    if ((clause.match(/%/g) ?? []).length > 1) {
+      return { recognized: true, instructions: [], error: "Los porcentajes no están completos. Indica quién corresponde a cada porcentaje." };
+    }
+    const percentageFirst = clause.match(/^(\d+(?:\.\d{1,2})?)\s*%\s*(.+)$/);
+    const participantFirst = clause.match(/^(.+?)\s+(\d+(?:\.\d{1,2})?)\s*%$/);
+    const match = percentageFirst ?? participantFirst;
+    if (!match) {
+      return { recognized: true, instructions: [], error: "Indica cómo repartir el gasto." };
+    }
+
+    const percentage = percentageFirst ? match[1] : match[2];
+    const participant = (percentageFirst ? match[2] : match[1]).trim();
+    if (!participant || splitPercentageBasisPoints(percentage) === null) {
+      return { recognized: true, instructions: [], error: "El reparto indicado no contiene porcentajes válidos." };
+    }
+    if (/^yo$/i.test(participant)) {
+      instructions.push({ participant: "SELF", name: null, percentage, equalShare: false });
+    } else {
+      instructions.push({ participant: "NAME", name: participant, percentage, equalShare: false });
+    }
+  }
+  return { recognized: true, instructions };
+}
+
+function normalizeStructuredAmount(value: string): string | null {
+  let normalized = value.trim().replace(/^\$\s*/, "").replace(/\s+/g, "");
+  if (!normalized || !/^\d[\d.,]*$/.test(normalized)) return null;
+  if (normalized.includes(",")) {
+    const commaParts = normalized.split(",");
+    if (commaParts.length === 2 && /^\d{1,2}$/.test(commaParts[1])) {
+      normalized = `${commaParts[0].replace(/\./g, "")}.${commaParts[1]}`;
+    } else {
+      normalized = normalized.replace(/[.,]/g, "");
+    }
+  } else if (/^\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+    normalized = normalized.replace(/\./g, "");
+  }
+  return /^\d+(?:\.\d{1,2})?$/.test(normalized) ? normalized : null;
+}
+
+function parseInitialStructuredExpense(message: string): {
+  totalAmount: string;
+  splitInstructions: ExpenseSplitInstruction[];
+} | null {
+  const hasExpenseSignal = /(?:^|\s)(?:gast(?:e|é)|pagu(?:e|é)|compr(?:e|é))(?:\s|$)/i.test(message);
+  const hasParticipantSplit = /\brepart(?:irlo|ir)\s+(?:el\s+gasto\s+)?entre\s+/i.test(message);
+  const hasGenericSplit = /\b(?:repart(?:irlo|ir)|divid(?:irlo|ir))\b/i.test(message);
+  if (!hasExpenseSignal || (!/%/.test(message) && !hasGenericSplit)) return null;
+  const splitStart = message.search(/\d+\s*%|\b(?:yo|self)\s+\d+\s*%/i);
+  const prefix = splitStart >= 0 ? message.slice(0, splitStart) : message;
+  const amountMatch = prefix.match(/\$?\s*\d[\d.,]*/);
+  if (!amountMatch) return null;
+  const totalAmount = normalizeStructuredAmount(amountMatch[0]);
+  if (!totalAmount) return null;
+  if (splitStart >= 0) return null;
+  const participantsMatch = message.match(/\brepart(?:irlo|ir)\s+(?:el\s+gasto\s+)?entre\s+(.+)$/i);
+  if (!participantsMatch) {
+    if (!hasGenericSplit) return null;
+    return { totalAmount, splitInstructions: [] };
+  }
+  const participants = participantsMatch[1]
+    .split(/\s+(?:y|e)\s+/i)
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (participants.length < 2 || participants.some((name) => /%/.test(name))) return null;
+  return {
+    totalAmount,
+    splitInstructions: participants.map((name) => ({
+      participant: /^yo$/i.test(name) ? "SELF" : "NAME",
+      name: /^yo$/i.test(name) ? null : name,
+      percentage: null,
+      equalShare: false,
+    })),
+  };
+}
+
+function parsePositionalSplitReply(
+  message: string,
+  participants: ExpenseSplitInstruction[] | null,
+): ExpenseSplitInstruction[] | null {
+  if (!participants?.length) return null;
+  const percentages = message.trim().split(/\s*,\s*|\s+(?:y|e)\s+/i).map((part) => part.trim());
+  if (percentages.some((part) => !/^\d+(?:\.\d{1,2})?\s*%$/.test(part))) return null;
+  if (percentages.length !== participants.length) return [];
+  return participants.map((participant, index) => ({
+    ...participant,
+    percentage: percentages[index].replace(/\s*%$/, "").trim(),
+    equalShare: false,
+  }));
 }
 
 async function parseSplitReply(
   context: AgentContext,
   message: string,
-  interpreter: Interpreter,
+  pendingInstructions: ExpenseSplitInstruction[] | null = null,
 ): Promise<{ splits: ExpenseProposalInput["splits"]; splitInstructions: ExpenseSplitInstruction[]; error?: string } | null> {
-  if (!looksLikeSplitReply(message)) return null;
-  const interpretation = await interpreter(message);
-  if (interpretation.kind !== "CREATE_EXPENSE" || !interpretation.splitInstructions) return null;
-  const resolved = await resolveExpenseSplits(context, interpretation.splitInstructions, true);
-  if (resolved.error) return { splits: [], splitInstructions: interpretation.splitInstructions, error: resolved.error };
-  return { splits: resolved.splits, splitInstructions: interpretation.splitInstructions };
+  const positional = parsePositionalSplitReply(message, pendingInstructions);
+  if (positional) {
+    if (positional.length === 0) return { splits: [], splitInstructions: [], error: "Indica un porcentaje para cada integrante del reparto." };
+    const resolved = await resolveExpenseSplits(context, positional, true);
+    if (resolved.error) return { splits: [], splitInstructions: positional, error: resolved.error };
+    return { splits: resolved.splits, splitInstructions: positional };
+  }
+  if (/\b(?:en|a|por)\s+partes\s+iguales\b/i.test(message)) {
+    if (!pendingInstructions?.length) {
+      return { splits: [], splitInstructions: [], error: "Indica quiénes participan en el reparto igualitario." };
+    }
+    const equalInstructions = pendingInstructions.map((instruction) => ({
+      ...instruction,
+      percentage: null,
+      equalShare: true,
+    }));
+    const resolved = await resolveExpenseSplits(context, equalInstructions, true);
+    if (resolved.error) return { splits: [], splitInstructions: equalInstructions, error: resolved.error };
+    return { splits: resolved.splits, splitInstructions: equalInstructions };
+  }
+  const parsed = parseDeterministicSplitReply(message);
+  if (!parsed.recognized) return null;
+  if (parsed.error) return { splits: [], splitInstructions: parsed.instructions, error: parsed.error };
+  const resolved = await resolveExpenseSplits(context, parsed.instructions, true);
+  if (resolved.error) return { splits: [], splitInstructions: parsed.instructions, error: resolved.error };
+  return { splits: resolved.splits, splitInstructions: parsed.instructions };
 }
 
 async function toProposalInput(
@@ -1419,6 +1558,11 @@ async function toProposalInput(
     interpretation.splitRequested,
   );
   if (splitResult.error) {
+    const pendingSplitInstructions = interpretation.splitInstructions?.some(
+      (instruction) => !instruction.equalShare && instruction.percentage === null,
+    )
+      ? interpretation.splitInstructions
+      : null;
     return {
       input: {
         paidByMemberId,
@@ -1429,6 +1573,7 @@ async function toProposalInput(
         items: [],
         splits: [],
         splitRequested: interpretation.splitRequested,
+        ...(pendingSplitInstructions ? { splitInstructions: pendingSplitInstructions } : {}),
       } as ExpenseProposalInput,
       missingFields: ["splits"],
       clarificationMessage: splitResult.error,
@@ -2219,7 +2364,7 @@ export async function processAgentMessage(
       (categoryDraft.payload as CategoryDraftExpensePayload).expense.splitRequested &&
       (categoryDraft.payload as CategoryDraftExpensePayload).expense.splits?.length === 0
     ) {
-      const splitReply = await parseSplitReply(context, message, interpreter);
+      const splitReply = await parseSplitReply(context, message, (categoryDraft.payload as CategoryDraftExpensePayload).expense.splitInstructions ?? null);
       if (splitReply) {
         if (splitReply.error) return clarification(["splits"], splitReply.error);
         const expensePayload = (categoryDraft.payload as CategoryDraftExpensePayload).expense;
@@ -2407,7 +2552,7 @@ export async function processAgentMessage(
   if (activeDraft?.status === "AWAITING_DETAILS") {
     const operationPayload = activeDraft.payload as AgentOperationDraftPayload;
     if (activeDraft.operationType === "CREATE_EXPENSE" && operationPayload.splitRequested) {
-      const splitReply = await parseSplitReply(context, message, interpreter);
+      const splitReply = await parseSplitReply(context, message, operationPayload.splitInstructions ?? null);
       if (splitReply) {
         if (splitReply.error) return clarification(["splits"], splitReply.error);
         const updatedSplitPayload: AgentOperationDraftPayload = {
@@ -2449,6 +2594,24 @@ export async function processAgentMessage(
       updatedDraft,
       activeDraft.operationType,
     );
+  }
+
+  if (!activeDraft && !interpretation) {
+    const structuredExpense = parseInitialStructuredExpense(message);
+    if (structuredExpense) {
+      interpretation = {
+        kind: "CREATE_EXPENSE",
+        merchant: null,
+        description: null,
+        totalAmount: structuredExpense.totalAmount,
+        expenseDate: null,
+        paidBySelf: true,
+        paidByMemberName: null,
+        categoryName: null,
+        splitRequested: true,
+        splitInstructions: structuredExpense.splitInstructions,
+      };
+    }
   }
 
   if (!interpretation) {
