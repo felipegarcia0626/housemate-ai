@@ -23,6 +23,8 @@ export function HouseholdPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteUrl, setInviteUrl] = useState("");
 
   async function load(): Promise<void> {
     setLoading(true); setError("");
@@ -73,6 +75,16 @@ export function HouseholdPage() {
     finally { setBusy(false); }
   }
 
+  async function invite(): Promise<void> {
+    if (!inviteEmail.trim() || !current) { setError("Selecciona un household e ingresa un correo."); return; }
+    setBusy(true); setError(""); setInviteUrl("");
+    try {
+      const result = await request<{ status: string; inviteUrl: string }>(`/api/auth/households/${current.householdId}/invitations`, { method: "POST", body: JSON.stringify({ email: inviteEmail }) });
+      setInviteUrl(result.inviteUrl); setInviteEmail("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible crear la invitación."); }
+    finally { setBusy(false); }
+  }
+
   if (!sessionReady) return <main className="shell"><p className="loading" role="status">Cargando…</p></main>;
   if (!authenticated) return <LoginForm onError={setError} />;
   const current = households.find((item) => item.selected) ?? (households.length === 1 ? households[0] : undefined);
@@ -89,6 +101,9 @@ export function HouseholdPage() {
           <div className="form">
             {households.map((item) => <button key={item.householdId} className={item.selected ? "primary" : "refresh"} type="button" disabled={busy || item.selected} onClick={() => void select(item.householdId)}>{item.householdName}{item.selected ? " (actual)" : ""}</button>)}
             <button className="refresh" type="button" onClick={() => { setError(""); setModalOpen(true); }} disabled={busy}>+ Crear household</button>
+            <label>Invitar por email<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} disabled={busy} placeholder="persona@example.com" /></label>
+            <button className="primary" type="button" onClick={() => void invite()} disabled={busy || !current}>{busy ? "Generando…" : "Generar invitación"}</button>
+            {inviteUrl && <p role="status">Enlace generado: <button className="refresh" type="button" onClick={() => void navigator.clipboard?.writeText(inviteUrl)}>Copiar enlace</button></p>}
           </div>
         )}
       </section>

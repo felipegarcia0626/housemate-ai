@@ -1007,6 +1007,7 @@ assert.match(loginForm, /Revisa tu correo electrónico/);
 assert.match(loginForm, /signInWithOAuth/);
 assert.match(loginForm, /provider:\s*["']google["']/);
 assert.match(loginForm, /window\.location\.origin.*auth\/callback/);
+assert.match(loginForm, /oauthRedirectTo/);
 assert.match(loginForm, /Continuar con Google/);
 assert.match(loginForm, /¿Olvidaste tu contraseña\?/);
 assert.match(recoveryForm, /resetPasswordForEmail/);
@@ -1032,7 +1033,8 @@ assert.doesNotMatch(loginForm, /SUPABASE_SERVICE_ROLE_KEY|GOOGLE_CLIENT_SECRET/)
 assert.match(oauthCallback, /searchParams\.get\(["']code["']\)/);
 assert.match(oauthCallback, /exchangeCodeForSession\(code\)/);
 assert.match(oauthCallback, /new URL\(["']\/["']/);
-assert.doesNotMatch(oauthCallback, /searchParams\.get\(["'](?:next|redirect|redirectTo|returnTo)["']\)/);
+assert.match(oauthCallback, /searchParams\.get\(["']next["']\)/);
+assert.ok(oauthCallback.includes("household\\/invitations"));
 assert.doesNotMatch(oauthCallback, /SUPABASE_SERVICE_ROLE_KEY|GOOGLE_CLIENT_SECRET|console\.(log|error)/);
 assert.match(page, /auth\.getSession\(\)/);
 assert.match(page, /auth\.onAuthStateChange\(/);

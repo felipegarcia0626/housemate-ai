@@ -3,6 +3,12 @@ import { createSupabaseAuthServerClient } from "@/infrastructure/auth/supabase-s
 
 const CALLBACK_ERROR = "oauth_callback";
 
+function safeInvitationReturnTo(value: string | null): string {
+  if (!value) return "/";
+  const candidate = value.startsWith("/") && !value.startsWith("//") ? value : "";
+  return /^\/household\/invitations\/[A-Za-z0-9_-]{40,}$/.test(candidate) ? candidate : "/";
+}
+
 function redirectToError(request: Request) {
   const url = new URL("/", request.url);
   url.searchParams.set("authError", CALLBACK_ERROR);
@@ -10,7 +16,9 @@ function redirectToError(request: Request) {
 }
 
 export async function GET(request: Request) {
-  const code = new URL(request.url).searchParams.get("code");
+  const callbackUrl = new URL(request.url);
+  const code = callbackUrl.searchParams.get("code");
+  const returnTo = safeInvitationReturnTo(callbackUrl.searchParams.get("next"));
   if (!code) return redirectToError(request);
 
   try {
@@ -21,5 +29,5 @@ export async function GET(request: Request) {
     return redirectToError(request);
   }
 
-  return NextResponse.redirect(new URL("/", request.url));
+  return NextResponse.redirect(new URL(returnTo, request.url));
 }

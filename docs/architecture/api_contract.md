@@ -1325,3 +1325,17 @@ Agente / API
        ↓
 Backend
 ```
+## Household invitations
+
+`POST /api/auth/households/{householdId}/invitations` requiere una sesión
+autenticada y membership en el household indicado. Recibe un email y devuelve
+`201` con un link de invitación copiable. El email no se usa para enumerar
+cuentas y el token no se almacena en plaintext.
+
+`POST /api/auth/households/invitations/{token}/accept` requiere una sesión
+autenticada cuyo email coincida server-side con el destinatario. La aceptación
+crea la membership y marca la invitación como `ACCEPTED` atómicamente. Una
+aceptación repetida por el mismo usuario es idempotente. Las invitaciones
+pendientes expiran lazymente después de siete días y no cambian el household
+seleccionado automáticamente. Ambos endpoints devuelven errores sanitizados
+`401`, `403`, `400`, `409` o `500` según el caso.

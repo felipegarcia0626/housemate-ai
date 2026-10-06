@@ -1,0 +1,25 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = path.resolve(__dirname, "..");
+const migration = fs.readFileSync(path.join(root, "database/migrations/0029_create_household_invitations.sql"), "utf8");
+const createRoute = fs.readFileSync(path.join(root, "app/api/auth/households/[householdId]/invitations/route.ts"), "utf8");
+const acceptRoute = fs.readFileSync(path.join(root, "app/api/auth/households/invitations/[token]/accept/route.ts"), "utf8");
+const service = fs.readFileSync(path.join(root, "modules/household-invitations/invitation.service.ts"), "utf8");
+
+assert.match(migration, /CREATE TABLE public\.tb_household_invitations/);
+assert.match(migration, /UNIQUE INDEX uq_tb_household_invitations_pending_email/);
+assert.match(migration, /ENABLE ROW LEVEL SECURITY/);
+assert.match(migration, /SECURITY DEFINER/);
+assert.match(migration, /REVOKE EXECUTE ON FUNCTION public\.fn_create_household_invitation/);
+assert.match(migration, /REVOKE EXECUTE ON FUNCTION public\.fn_accept_household_invitation/);
+assert.match(createRoute, /createInvitation/);
+assert.match(createRoute, /status: 201/);
+assert.match(acceptRoute, /acceptInvitation/);
+assert.match(acceptRoute, /status: 401/);
+assert.match(service, /randomBytes\(32\)/);
+assert.match(service, /createHash\("sha256"\)/);
+assert.match(service, /normalizeInvitationEmail/);
+assert.match(service, /findActiveMembershipsByUserId/);
+console.log("PASS household invitation routes, secure token handling, membership authorization, and RPC security contract");

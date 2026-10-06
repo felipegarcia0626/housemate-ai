@@ -7,9 +7,11 @@ import { PasswordRecoveryForm } from "@/components/auth/password-recovery-form";
 export function LoginForm({
   initialError = "",
   onError,
+  oauthRedirectTo,
 }: {
   initialError?: string;
   onError: (message: string) => void;
+  oauthRedirectTo?: string;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -90,7 +92,7 @@ export function LoginForm({
       const { error } = await createSupabaseBrowserClient().auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: oauthRedirectTo ?? `${window.location.origin}/auth/callback`,
         },
       });
       if (error) {
