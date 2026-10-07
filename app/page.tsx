@@ -1,12 +1,13 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, startTransition, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { HierarchicalCategory } from "@/modules/categories/category.types";
 import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
 import { LoginForm } from "@/components/auth/login-form";
 import { OnboardingForm } from "@/components/auth/onboarding-form";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { createHouseholdRequest } from "@/components/household/household-client";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
@@ -603,7 +604,8 @@ function paginationItems(current: number, total: number): (number | "ellipsis")[
   return items;
 }
 
-export default function HomePage() {
+function HomePageContent() {
+  const searchParams = useSearchParams();
   const [supabase] = useState<SupabaseClient | null>(() =>
     typeof window === "undefined" ? null : createSupabaseBrowserClient(),
   );
@@ -615,7 +617,25 @@ export default function HomePage() {
       ? "No fue posible completar el inicio de sesión con Google. Intenta nuevamente."
       : "",
   );
-  const [section, setSection] = useState<Section>("dashboard");
+  const [section, setSection] = useState<Section>(() => {
+    if (typeof window === "undefined") return "dashboard";
+    const value = new URLSearchParams(window.location.search).get("section");
+    return value === "dashboard" || value === "expenses" || value === "incomes" || value === "balance" || value === "agent"
+      ? value
+      : "dashboard";
+  });
+  const consumedSectionParam = useRef<string | null>(null);
+  useEffect(() => {
+    const value = searchParams.get("section");
+    if (value === null) return;
+    if (consumedSectionParam.current === value) return;
+    consumedSectionParam.current = value;
+    const nextSection = value === "dashboard" || value === "expenses" || value === "incomes" || value === "balance" || value === "agent" ? value : "dashboard";
+    if (nextSection !== section) startTransition(() => setSection(nextSection));
+    const url = new URL(window.location.href);
+    url.searchParams.delete("section");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [searchParams, section]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [balance, setBalance] = useState<Balance | null>(null);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -2781,7 +2801,17 @@ export default function HomePage() {
         <button className="refresh" type="button" onClick={() => void signOut()}>
           Cerrar sesión
         </button>
-        <Link className="refresh" href="/household">Household</Link>
+        <Link
+          className="refresh"
+          href="/household"
+          onClick={() => {
+            const validSection = section === "dashboard" || section === "expenses" || section === "incomes" || section === "balance" || section === "agent";
+            if (!validSection) return;
+            window.sessionStorage.setItem("housemate.household.returnTo", section);
+          }}
+        >
+          Household
+        </Link>
       </header>
       <nav className="nav" aria-label="Navegación principal">
         {(
@@ -4414,5 +4444,13 @@ export default function HomePage() {
         <span>Reglas de reparto: {rules.length}</span>
       </footer>
     </main>
+  );
+}
+
+export default function HomePage() {
+  return (
+    <Suspense fallback={<main className="shell"><p className="loading">Cargando información…</p></main>}>
+      <HomePageContent />
+    </Suspense>
   );
 }

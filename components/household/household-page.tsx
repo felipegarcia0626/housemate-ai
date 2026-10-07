@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
 import { LoginForm } from "@/components/auth/login-form";
 import { createHouseholdRequest, type CreatedHousehold } from "@/components/household/household-client";
@@ -17,16 +18,19 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export function HouseholdPage() {
+  const router = useRouter();
   const [sessionReady, setSessionReady] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [households, setHouseholds] = useState<Household[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  const [inviteGeneratedOpen, setInviteGeneratedOpen] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteUrl, setInviteUrl] = useState("");
+  const [copyFeedback, setCopyFeedback] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const preparedAuthUserId = useRef<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
@@ -69,11 +73,11 @@ export function HouseholdPage() {
   }, []);
 
   useEffect(() => {
-    if (!modalOpen && !pendingAction) return;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) { setModalOpen(false); setPendingAction(null); } };
+    if (!modalOpen && !inviteGeneratedOpen && !pendingAction) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) { setModalOpen(false); setInviteGeneratedOpen(false); setPendingAction(null); } };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [modalOpen, pendingAction, busy]);
+  }, [modalOpen, inviteGeneratedOpen, pendingAction, busy]);
 
   async function select(householdId: string): Promise<void> {
     setBusy(true); setError("");
@@ -100,9 +104,16 @@ export function HouseholdPage() {
     setBusy(true); setError(""); setInviteUrl("");
     try {
       const result = await request<{ status: string; inviteUrl: string }>(`/api/auth/households/${current.householdId}/invitations`, { method: "POST", body: JSON.stringify({ email: inviteEmail }) });
-      setInviteUrl(result.inviteUrl); setInviteEmail("");
+      setInviteUrl(result.inviteUrl); setInviteEmail(""); setCopyFeedback(""); setInviteGeneratedOpen(true);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible crear la invitación."); }
     finally { setBusy(false); }
+  }
+
+  async function copyInviteLink(): Promise<void> {
+    if (!inviteUrl) return;
+    try { await navigator.clipboard.writeText(inviteUrl); setCopyFeedback("Link copied"); }
+    catch { setCopyFeedback("No fue posible copiar el enlace."); }
+    window.setTimeout(() => setCopyFeedback(""), 3000);
   }
 
   async function confirmPendingAction(): Promise<void> {
@@ -132,28 +143,40 @@ export function HouseholdPage() {
   const currentIsOwner = currentMember?.role === "OWNER" && currentMember.status === "ACTIVE";
   const currentIsMember = currentMember?.role === "MEMBER" && currentMember.status === "ACTIVE";
   return (
-    <main className="shell">
-      <section className="panel" aria-labelledby="household-title">
-        <p className="eyebrow">HOUSEMATE AI</p>
-        <h1 id="household-title">Household</h1>
-        <p className="muted">Household actual</p>
-        <p className="active-household">{current?.householdName ?? "Sin household seleccionado"}</p>
-        <h2>Mis households</h2>
-        {error && <p className="alert" role="alert">{error}</p>}
-        {loading ? <p className="loading" role="status">Cargando tus hogares…</p> : (
-          <div className="form">
-            {households.map((item) => <button key={item.householdId} className={item.selected ? "primary" : "refresh"} type="button" disabled={busy || item.selected} onClick={() => void select(item.householdId)}>{item.householdName}{item.selected ? " (actual)" : ""}</button>)}
-            <button className="refresh" type="button" onClick={() => { setError(""); setModalOpen(true); }} disabled={busy}>+ Crear household</button>
-            <label>Invitar por email<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} disabled={busy} placeholder="persona@example.com" /></label>
-            <button className="primary" type="button" onClick={() => void invite()} disabled={busy || !current}>{busy ? "Generando…" : "Generar invitación"}</button>
-            {inviteUrl && <p role="status">Enlace generado: <button className="refresh" type="button" onClick={() => void navigator.clipboard?.writeText(inviteUrl)}>Copiar enlace</button></p>}
-            <h3>Integrantes</h3>
-            {members.length === 0 ? <p className="muted">No hay integrantes activos.</p> : members.map((member) => <div className="member-row" key={member.membershipId}><span>{member.displayName} <span className="panel-tag">{member.role === "OWNER" ? "Owner" : "Member"}</span>{member.isCurrentUser && <span className="panel-tag">You</span>}</span>{currentIsOwner && member.role === "MEMBER" && currentHouseholdId && <span className="form"><button className="refresh" type="button" disabled={busy} onClick={() => setPendingAction({ kind: "transfer", member })}>Transfer ownership</button><button className="refresh" type="button" disabled={busy} onClick={() => setPendingAction({ kind: "remove", member })}>Remove</button></span>}</div>)}
-            {currentIsMember && currentHouseholdId && <button className="refresh" type="button" disabled={busy} onClick={() => setPendingAction({ kind: "leave" })}>Leave household</button>}
+    <main className="shell household-shell">
+      <button className="refresh household-back" type="button" onClick={() => {
+        const returnTo = window.sessionStorage.getItem("housemate.household.returnTo");
+        window.sessionStorage.removeItem("housemate.household.returnTo");
+        const validReturnTo = returnTo === "dashboard" || returnTo === "expenses" || returnTo === "incomes" || returnTo === "balance" || returnTo === "agent";
+        router.push(validReturnTo ? `/?section=${returnTo}` : "/");
+      }} aria-label="Volver a la vista anterior">← Volver</button>
+      <header className="household-header">
+        <div><p className="eyebrow">HOUSEMATE AI</p><h1 id="household-title">Household</h1><p className="muted">Administra tus hogares y sus integrantes.</p></div>
+        <button className="primary" type="button" onClick={() => { setError(""); setModalOpen(true); }} disabled={busy}>+ Crear household</button>
+      </header>
+      {error && <p className="alert" role="alert">{error}</p>}
+      {loading ? <p className="loading" role="status">Cargando tus hogares…</p> : <>
+        <section className="household-current-card" aria-labelledby="current-household-title">
+          <div><p className="eyebrow">HOUSEHOLD ACTUAL</p><h2 id="current-household-title">{current?.householdName ?? "Sin household seleccionado"}</h2><p className="muted">{currentMember ? `${currentMember.role === "OWNER" ? "Owner" : "Member"}${currentMember.isCurrentUser ? " · You" : ""}` : "Selecciona un household para continuar"}</p></div>
+          <span className="status-pill">{current ? "Activo" : "Pendiente"}</span>
+        </section>
+        <section className="household-section" aria-labelledby="my-households-title">
+          <div className="section-heading"><div><p className="eyebrow">SELECCIÓN</p><h2 id="my-households-title">Mis households</h2></div><span className="section-count">{households.length}</span></div>
+          <div className="household-options">
+            {households.map((item) => <button key={item.householdId} className={`household-option${item.selected ? " is-selected" : ""}`} type="button" disabled={busy || item.selected} aria-current={item.selected ? "true" : undefined} onClick={() => void select(item.householdId)}><span><strong>{item.householdName}</strong><small>{item.selected ? "Activo" : "Seleccionar household"}</small></span><span aria-hidden="true">{item.selected ? "✓" : "→"}</span></button>)}
           </div>
-        )}
-      </section>
-      {modalOpen && <div className="modal-backdrop" role="presentation"><section className="panel" role="dialog" aria-modal="true" aria-labelledby="create-household-title"><h2 id="create-household-title">Crear household</h2><label>Nombre<input autoFocus value={name} onChange={(event) => setName(event.target.value)} disabled={busy} /></label><div className="form"><button className="refresh" type="button" onClick={() => setModalOpen(false)} disabled={busy}>Cancelar</button><button className="primary" type="button" onClick={() => void create()} disabled={busy}>{busy ? "Creando…" : "Crear"}</button></div></section></div>}
+        </section>
+        <section className="household-section" aria-labelledby="members-title">
+          <div className="section-heading"><div><p className="eyebrow">PARTICIPANTES</p><h2 id="members-title">Miembros</h2></div><span className="section-count">{members.length}</span></div>
+          <div className="members-list">
+            {members.length === 0 ? <p className="empty-state">No hay integrantes activos.</p> : members.map((member) => <div className="member-row" key={member.membershipId}><div className="member-identity"><span><strong>{member.displayName}</strong><small><span className={`role-badge ${member.role === "OWNER" ? "owner" : "member"}`}>{member.role === "OWNER" ? "Owner" : "Member"}</span>{member.isCurrentUser && <span className="you-badge">You</span>}</small></span></div>{currentIsOwner && member.role === "MEMBER" && currentHouseholdId && <span className="member-actions"><button className="icon-button" type="button" aria-label={`Transfer ownership to ${member.displayName}`} data-tooltip="Transfer ownership" disabled={busy} onClick={() => setPendingAction({ kind: "transfer", member })}>⇄</button><button className="icon-button danger" type="button" aria-label={`Remove ${member.displayName}`} data-tooltip="Remove member" disabled={busy} onClick={() => setPendingAction({ kind: "remove", member })}>−</button></span>}{currentIsMember && member.isCurrentUser && currentHouseholdId && <button className="icon-button" type="button" aria-label="Leave household" data-tooltip="Leave household" disabled={busy} onClick={() => setPendingAction({ kind: "leave" })}>↪</button>}</div>)}
+          </div>
+        </section>
+        <section className="household-section invite-section" aria-labelledby="invite-title"><div><p className="eyebrow">INVITATIONS</p><h2 id="invite-title">Invite a member</h2><p className="muted">Enter the email address of the person you want to invite.</p></div><div className="invite-form"><label>Email<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} disabled={busy} placeholder="email@example.com" /></label><button className="refresh" type="button" onClick={() => void invite()} disabled={busy || !current || !inviteEmail.trim()}>{busy ? "Generating…" : "Generate invitation"}</button></div></section>
+      </>}
+      {modalOpen && <div className="modal-backdrop" role="presentation"><section className="panel" role="dialog" aria-modal="true" aria-labelledby="create-household-title"><h2 id="create-household-title">Crear household</h2><p className="muted">Crea un nuevo hogar para organizar tus gastos.</p><label>Nombre<input autoFocus value={name} onChange={(event) => setName(event.target.value)} disabled={busy} /></label><div className="form"><button className="refresh" type="button" onClick={() => setModalOpen(false)} disabled={busy}>Cancelar</button><button className="primary" type="button" onClick={() => void create()} disabled={busy}>{busy ? "Creando…" : "Crear"}</button></div></section></div>}
+      {inviteGeneratedOpen && <div className="modal-backdrop" role="presentation"><section className="panel invite-modal" role="dialog" aria-modal="true" aria-labelledby="invite-generated-title" aria-describedby="invite-generated-description"><h2 id="invite-generated-title">Invitation created</h2><p id="invite-generated-description" className="muted">Comparte este enlace con el nuevo miembro.</p><p className="invite-link" role="status">{inviteUrl}</p><div className="form"><button className="refresh" type="button" onClick={() => void copyInviteLink()} disabled={busy}>Copy link</button><button className="refresh" type="button" onClick={() => { setInviteGeneratedOpen(false); setInviteUrl(""); }}>Close</button></div></section></div>}
+      {copyFeedback && <p className={`floating-feedback ${copyFeedback === "Link copied" ? "success" : "error"}`} role="status">{copyFeedback}</p>}
       {pendingAction && <div className="modal-backdrop" role="presentation"><section className="panel" role="dialog" aria-modal="true" aria-labelledby="member-action-title" aria-describedby="member-action-description"><h2 id="member-action-title">Confirmar acción</h2><p id="member-action-description">{pendingAction.kind === "transfer" ? `Transferir ownership a ${pendingAction.member?.displayName}. Dejarás de ser owner.` : pendingAction.kind === "remove" ? `Remover a ${pendingAction.member?.displayName} de este household.` : "Abandonar este household."}</p><div className="form"><button className="refresh" type="button" onClick={() => setPendingAction(null)} disabled={busy}>Cancelar</button><button autoFocus className="primary" type="button" onClick={() => void confirmPendingAction()} disabled={busy}>{busy ? "Procesando…" : "Confirmar"}</button></div></section></div>}
     </main>
   );
