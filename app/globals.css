@@ -60,6 +60,23 @@ textarea:focus-visible {
   color: #155d49;
   font-weight: 700;
 }
+.member-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid #dfe8e4;
+}
+.member-row > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.member-row .form {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 
 .modal-backdrop {
   position: fixed;
@@ -928,6 +945,14 @@ footer {
   .list-item {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .member-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .member-row .form {
+    justify-content: flex-start;
+    width: 100%;
   }
   .expenses-page-header {
     align-items: stretch;

@@ -7,6 +7,7 @@ import { createHouseholdRequest, type CreatedHousehold } from "@/components/hous
 
 type Household = { householdId: string; householdName: string; selected?: boolean };
 type Member = { membershipId: string; displayName: string; role: "OWNER" | "MEMBER"; status: "ACTIVE" | "LEFT" | "REMOVED"; isCurrentUser?: boolean };
+type PendingAction = { kind: "transfer" | "remove" | "leave"; member?: Member };
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) } });
@@ -28,6 +29,7 @@ export function HouseholdPage() {
   const [inviteUrl, setInviteUrl] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const preparedAuthUserId = useRef<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
 
   async function load(): Promise<void> {
     setLoading(true); setError("");
@@ -67,11 +69,11 @@ export function HouseholdPage() {
   }, []);
 
   useEffect(() => {
-    if (!modalOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) setModalOpen(false); };
+    if (!modalOpen && !pendingAction) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) { setModalOpen(false); setPendingAction(null); } };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [modalOpen, busy]);
+  }, [modalOpen, pendingAction, busy]);
 
   async function select(householdId: string): Promise<void> {
     setBusy(true); setError("");
@@ -103,12 +105,23 @@ export function HouseholdPage() {
     finally { setBusy(false); }
   }
 
-  async function lifecycle(path: string, method: "POST" | "DELETE", body?: object): Promise<void> {
-    if (!current) return;
+  async function confirmPendingAction(): Promise<void> {
+    if (!pendingAction || busy || !current) return;
+    const action = pendingAction;
     setBusy(true); setError("");
-    try { await request(path, { method, ...(body ? { body: JSON.stringify(body) } : {}) }); await load(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible completar la operación."); }
-    finally { setBusy(false); }
+    try {
+      const path = action.kind === "transfer"
+        ? `/api/auth/households/${current.householdId}/transfer-owner`
+        : action.kind === "remove"
+          ? `/api/auth/households/${current.householdId}/members/${action.member?.membershipId}`
+          : `/api/auth/households/${current.householdId}/leave`;
+      const method = action.kind === "remove" ? "DELETE" : "POST";
+      await request(path, { method, ...(action.kind === "transfer" ? { body: JSON.stringify({ targetMemberId: action.member?.membershipId }) } : {}) });
+      setPendingAction(null);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No fue posible completar la operación.");
+    } finally { setBusy(false); }
   }
 
   if (!sessionReady) return <main className="shell"><p className="loading" role="status">Cargando…</p></main>;
@@ -135,12 +148,13 @@ export function HouseholdPage() {
             <button className="primary" type="button" onClick={() => void invite()} disabled={busy || !current}>{busy ? "Generando…" : "Generar invitación"}</button>
             {inviteUrl && <p role="status">Enlace generado: <button className="refresh" type="button" onClick={() => void navigator.clipboard?.writeText(inviteUrl)}>Copiar enlace</button></p>}
             <h3>Integrantes</h3>
-            {members.length === 0 ? <p className="muted">No hay integrantes activos.</p> : members.map((member) => <div className="member-row" key={member.membershipId}><span>{member.displayName} {member.role === "OWNER" ? "(owner)" : ""}</span>{currentIsOwner && member.role === "MEMBER" && member.status === "ACTIVE" && currentHouseholdId && <span className="form"><button className="refresh" type="button" disabled={busy} onClick={() => { if (window.confirm(`¿Transferir ownership a ${member.displayName}?`)) void lifecycle(`/api/auth/households/${currentHouseholdId}/transfer-owner`, "POST", { targetMemberId: member.membershipId }); }}>Transferir ownership</button><button className="refresh" type="button" disabled={busy} onClick={() => { if (window.confirm(`¿Remover a ${member.displayName}?`)) void lifecycle(`/api/auth/households/${currentHouseholdId}/members/${member.membershipId}`, "DELETE"); }}>Remover</button></span>}</div>)}
-            {currentIsMember && currentHouseholdId && <button className="refresh" type="button" disabled={busy} onClick={() => { if (window.confirm("¿Salir de este household?")) void lifecycle(`/api/auth/households/${currentHouseholdId}/leave`, "POST"); }}>Salir del household</button>}
+            {members.length === 0 ? <p className="muted">No hay integrantes activos.</p> : members.map((member) => <div className="member-row" key={member.membershipId}><span>{member.displayName} <span className="panel-tag">{member.role === "OWNER" ? "Owner" : "Member"}</span>{member.isCurrentUser && <span className="panel-tag">You</span>}</span>{currentIsOwner && member.role === "MEMBER" && currentHouseholdId && <span className="form"><button className="refresh" type="button" disabled={busy} onClick={() => setPendingAction({ kind: "transfer", member })}>Transfer ownership</button><button className="refresh" type="button" disabled={busy} onClick={() => setPendingAction({ kind: "remove", member })}>Remove</button></span>}</div>)}
+            {currentIsMember && currentHouseholdId && <button className="refresh" type="button" disabled={busy} onClick={() => setPendingAction({ kind: "leave" })}>Leave household</button>}
           </div>
         )}
       </section>
       {modalOpen && <div className="modal-backdrop" role="presentation"><section className="panel" role="dialog" aria-modal="true" aria-labelledby="create-household-title"><h2 id="create-household-title">Crear household</h2><label>Nombre<input autoFocus value={name} onChange={(event) => setName(event.target.value)} disabled={busy} /></label><div className="form"><button className="refresh" type="button" onClick={() => setModalOpen(false)} disabled={busy}>Cancelar</button><button className="primary" type="button" onClick={() => void create()} disabled={busy}>{busy ? "Creando…" : "Crear"}</button></div></section></div>}
+      {pendingAction && <div className="modal-backdrop" role="presentation"><section className="panel" role="dialog" aria-modal="true" aria-labelledby="member-action-title" aria-describedby="member-action-description"><h2 id="member-action-title">Confirmar acción</h2><p id="member-action-description">{pendingAction.kind === "transfer" ? `Transferir ownership a ${pendingAction.member?.displayName}. Dejarás de ser owner.` : pendingAction.kind === "remove" ? `Remover a ${pendingAction.member?.displayName} de este household.` : "Abandonar este household."}</p><div className="form"><button className="refresh" type="button" onClick={() => setPendingAction(null)} disabled={busy}>Cancelar</button><button autoFocus className="primary" type="button" onClick={() => void confirmPendingAction()} disabled={busy}>{busy ? "Procesando…" : "Confirmar"}</button></div></section></div>}
     </main>
   );
 }

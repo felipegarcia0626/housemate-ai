@@ -13,7 +13,7 @@ export const removeMember = (authUserId: string, householdId: string, targetMemb
 export const leaveHousehold = (authUserId: string, householdId: string) => call("fn_leave_household", { p_auth_user_id: authUserId, p_household_id: householdId });
 
 export async function listMembers(householdId: string) {
-  const { data, error } = await getSupabaseAdminClient().from("tb_household_members").select("id,user_id,display_name,role,status").eq("household_id", householdId).order("created_at").order("id");
+  const { data, error } = await getSupabaseAdminClient().from("tb_household_members").select("id,user_id,display_name,role,status").eq("household_id", householdId).eq("status", "ACTIVE").order("created_at").order("id");
   if (error) throw new MembershipLifecycleRepositoryError(error);
   return data ?? [];
 }
