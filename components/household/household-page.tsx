@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
 import { LoginForm } from "@/components/auth/login-form";
 import { createHouseholdRequest, type CreatedHousehold } from "@/components/household/household-client";
 
 type Household = { householdId: string; householdName: string; selected?: boolean };
+type Member = { membershipId: string; displayName: string; role: "OWNER" | "MEMBER"; status: "ACTIVE" | "LEFT" | "REMOVED"; isCurrentUser?: boolean };
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) } });
@@ -25,10 +26,17 @@ export function HouseholdPage() {
   const [busy, setBusy] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteUrl, setInviteUrl] = useState("");
+  const [members, setMembers] = useState<Member[]>([]);
+  const preparedAuthUserId = useRef<string | null>(null);
 
   async function load(): Promise<void> {
     setLoading(true); setError("");
-    try { setHouseholds(await request<Household[]>("/api/auth/households")); }
+    try {
+      const options = await request<Household[]>("/api/auth/households");
+      setHouseholds(options);
+      const selected = options.find((item) => item.selected) ?? (options.length === 1 ? options[0] : undefined);
+      setMembers(selected ? await request<Member[]>(`/api/auth/households/${selected.householdId}/members`) : []);
+    }
     catch (cause) {
       const status = cause && typeof cause === "object" && "status" in cause ? (cause as { status?: number }).status : 500;
       setError(status === 403 ? "Tu cuenta todavía no está vinculada a un hogar." : "No fue posible cargar tus hogares.");
@@ -37,14 +45,24 @@ export function HouseholdPage() {
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
-    const applySession = (hasSession: boolean) => {
-      setAuthenticated(hasSession); setSessionReady(true);
-      if (hasSession) void load(); else setLoading(false);
+    const applySession = (session: { user?: { id?: string } } | null) => {
+      const authUserId = session?.user?.id ?? null;
+      setSessionReady(true);
+      if (!authUserId) {
+        preparedAuthUserId.current = null;
+        setAuthenticated(false);
+        setLoading(false);
+        return;
+      }
+      setAuthenticated(true);
+      if (preparedAuthUserId.current === authUserId) return;
+      preparedAuthUserId.current = authUserId;
+      void load();
     };
     void supabase.auth.getSession().then(({ data }) => {
-      applySession(Boolean(data.session));
+      applySession(data.session);
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => applySession(Boolean(nextSession)));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => applySession(nextSession));
     return () => listener.subscription.unsubscribe();
   }, []);
 
@@ -85,9 +103,21 @@ export function HouseholdPage() {
     finally { setBusy(false); }
   }
 
+  async function lifecycle(path: string, method: "POST" | "DELETE", body?: object): Promise<void> {
+    if (!current) return;
+    setBusy(true); setError("");
+    try { await request(path, { method, ...(body ? { body: JSON.stringify(body) } : {}) }); await load(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "No fue posible completar la operación."); }
+    finally { setBusy(false); }
+  }
+
   if (!sessionReady) return <main className="shell"><p className="loading" role="status">Cargando…</p></main>;
   if (!authenticated) return <LoginForm onError={setError} />;
   const current = households.find((item) => item.selected) ?? (households.length === 1 ? households[0] : undefined);
+  const currentHouseholdId = current?.householdId;
+  const currentMember = members.find((member) => member.isCurrentUser);
+  const currentIsOwner = currentMember?.role === "OWNER" && currentMember.status === "ACTIVE";
+  const currentIsMember = currentMember?.role === "MEMBER" && currentMember.status === "ACTIVE";
   return (
     <main className="shell">
       <section className="panel" aria-labelledby="household-title">
@@ -104,6 +134,9 @@ export function HouseholdPage() {
             <label>Invitar por email<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} disabled={busy} placeholder="persona@example.com" /></label>
             <button className="primary" type="button" onClick={() => void invite()} disabled={busy || !current}>{busy ? "Generando…" : "Generar invitación"}</button>
             {inviteUrl && <p role="status">Enlace generado: <button className="refresh" type="button" onClick={() => void navigator.clipboard?.writeText(inviteUrl)}>Copiar enlace</button></p>}
+            <h3>Integrantes</h3>
+            {members.length === 0 ? <p className="muted">No hay integrantes activos.</p> : members.map((member) => <div className="member-row" key={member.membershipId}><span>{member.displayName} {member.role === "OWNER" ? "(owner)" : ""}</span>{currentIsOwner && member.role === "MEMBER" && member.status === "ACTIVE" && currentHouseholdId && <span className="form"><button className="refresh" type="button" disabled={busy} onClick={() => { if (window.confirm(`¿Transferir ownership a ${member.displayName}?`)) void lifecycle(`/api/auth/households/${currentHouseholdId}/transfer-owner`, "POST", { targetMemberId: member.membershipId }); }}>Transferir ownership</button><button className="refresh" type="button" disabled={busy} onClick={() => { if (window.confirm(`¿Remover a ${member.displayName}?`)) void lifecycle(`/api/auth/households/${currentHouseholdId}/members/${member.membershipId}`, "DELETE"); }}>Remover</button></span>}</div>)}
+            {currentIsMember && currentHouseholdId && <button className="refresh" type="button" disabled={busy} onClick={() => { if (window.confirm("¿Salir de este household?")) void lifecycle(`/api/auth/households/${currentHouseholdId}/leave`, "POST"); }}>Salir del household</button>}
           </div>
         )}
       </section>

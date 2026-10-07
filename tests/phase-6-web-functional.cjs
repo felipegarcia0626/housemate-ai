@@ -81,18 +81,21 @@ const members = [
     household_id: householdA,
     user_id: userA,
     display_name: "Felipe",
+    status: "ACTIVE",
   },
   {
     id: "56000000-0000-4000-8000-000000000012",
     household_id: householdA,
     user_id: "56000000-0000-4000-8000-000000000036",
     display_name: "Alejandra",
+    status: "ACTIVE",
   },
   {
     id: "56000000-0000-4000-8000-000000000013",
     household_id: householdB,
     user_id: "56000000-0000-4000-8000-000000000037",
     display_name: "Otra persona",
+    status: "ACTIVE",
   },
 ];
 const operations = [];

@@ -112,6 +112,7 @@ async function main() {
   );
   const seedDirectory = path.join(repositoryRoot, "database", "seeds");
   const testDirectory = path.join(repositoryRoot, "tests");
+  const fixtureDirectory = path.join(repositoryRoot, "tests", "fixtures");
   let postgres;
   let failure;
   let postgresStopped = false;
@@ -140,6 +141,16 @@ async function main() {
     await bootstrapClient.end();
 
     for (const migrationPath of await sqlFiles(migrationDirectory)) {
+      if (path.basename(migrationPath) === "0030_household_membership_lifecycle.sql") {
+        const fixturePath = path.join(fixtureDirectory, "0030_household_legacy_fixture.sql");
+        const fixtureClient = postgres.getPgClient("housemate_test");
+        await fixtureClient.connect();
+        try {
+          await runSqlFile(fixtureClient, fixturePath, "migration fixture 0030_household_legacy_fixture.sql");
+        } finally {
+          await fixtureClient.end();
+        }
+      }
       const client = postgres.getPgClient("housemate_test");
       await client.connect();
       try {

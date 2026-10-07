@@ -51,12 +51,11 @@ export async function findApplicationUserByAuthUserId(
 export async function findActiveMembershipsByUserId(
   userId: string,
 ): Promise<ActiveMembershipRecord[]> {
-  // tb_household_members currently has no status/active column. Every
-  // existing membership row is therefore treated as active in this phase.
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_household_members")
     .select("household_id, id")
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .eq("status", "ACTIVE");
 
   if (error) {
     throw new AuthenticatedContextRepositoryError(error);

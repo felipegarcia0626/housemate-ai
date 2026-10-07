@@ -48,36 +48,42 @@ const members = [
     household_id: householdA,
     user_id: userA,
     display_name: "Member A1",
+    status: "ACTIVE",
   },
   {
     id: memberA2,
     household_id: householdA,
     user_id: "57000000-0000-4000-8000-000000000036",
     display_name: "Member A2",
+    status: "ACTIVE",
   },
   {
     id: memberB,
     household_id: householdB,
     user_id: userB,
     display_name: "Member B",
+    status: "ACTIVE",
   },
   {
     id: "57000000-0000-4000-8000-000000000014",
     household_id: householdC,
     user_id: userWithMultipleMemberships,
     display_name: "Member C",
+    status: "ACTIVE",
   },
   {
     id: "57000000-0000-4000-8000-000000000015",
     household_id: householdD,
     user_id: userWithMultipleMemberships,
     display_name: "Member D",
+    status: "ACTIVE",
   },
   {
     id: "57000000-0000-4000-8000-000000000016",
     household_id: householdWithoutMembers,
     user_id: userWithoutMembers,
     display_name: "Context Member",
+    status: "ACTIVE",
   },
 ];
 
@@ -194,6 +200,7 @@ function createLoader(runtime) {
         return {
           cookies: async () => ({
             getAll: () => [],
+            get: () => undefined,
             set: () => undefined,
           }),
         };

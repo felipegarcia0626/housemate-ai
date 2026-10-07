@@ -20,7 +20,8 @@ export async function listHouseholdMembers(
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_household_members")
     .select("id,display_name")
-    .eq("household_id", householdId);
+    .eq("household_id", householdId)
+    .eq("status", "ACTIVE");
 
   if (error) throw new HouseholdMemberRepositoryError(error);
 

@@ -1339,3 +1339,15 @@ aceptación repetida por el mismo usuario es idempotente. Las invitaciones
 pendientes expiran lazymente después de siete días y no cambian el household
 seleccionado automáticamente. Ambos endpoints devuelven errores sanitizados
 `401`, `403`, `400`, `409` o `500` según el caso.
+
+## Household membership lifecycle
+
+`GET /api/auth/households/{householdId}/members` lista únicamente memberships
+`ACTIVE` del household para la sesión autenticada. El miembro con rol `OWNER`
+puede transferir ownership con `POST /api/auth/households/{householdId}/transfer-owner`
+(body `{ "targetMemberId": "uuid" }`) o remover un miembro activo con
+`DELETE /api/auth/households/{householdId}/members/{memberId}`. Un miembro
+`MEMBER` puede abandonar mediante `POST /api/auth/households/{householdId}/leave`.
+Las operaciones preservan los estados `ACTIVE`, `LEFT` y `REMOVED`, requieren
+membership activa y devuelven errores sanitizados `401`, `403`, `400`, `409` o
+`500`.
