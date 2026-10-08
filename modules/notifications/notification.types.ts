@@ -8,7 +8,15 @@ export const notificationTypes = [
 
 export type NotificationType = (typeof notificationTypes)[number];
 
-type NotificationEventBase<T extends NotificationType, S extends "INVITATION" | "MEMBERSHIP"> = {
+export const notificationSourceEntityTypes = [
+  "HOUSEHOLD_INVITATION",
+  "HOUSEHOLD_MEMBER",
+  "HOUSEHOLD",
+] as const;
+
+export type NotificationSourceEntityType = (typeof notificationSourceEntityTypes)[number];
+
+type NotificationEventBase<T extends NotificationType, S extends NotificationSourceEntityType> = {
   type: T;
   householdId: string;
   householdName: string;
@@ -20,7 +28,7 @@ type NotificationEventBase<T extends NotificationType, S extends "INVITATION" | 
 
 export type HouseholdInvitationReceivedEvent = NotificationEventBase<
   "HOUSEHOLD_INVITATION_RECEIVED",
-  "INVITATION"
+  "HOUSEHOLD_INVITATION"
 > & {
   metadata: {
     invitationId: string;
@@ -31,7 +39,7 @@ export type HouseholdInvitationReceivedEvent = NotificationEventBase<
 
 export type HouseholdInvitationAcceptedEvent = NotificationEventBase<
   "HOUSEHOLD_INVITATION_ACCEPTED",
-  "INVITATION"
+  "HOUSEHOLD_INVITATION"
 > & {
   metadata: {
     invitationId: string;
@@ -42,7 +50,7 @@ export type HouseholdInvitationAcceptedEvent = NotificationEventBase<
 
 export type HouseholdMemberRemovedEvent = NotificationEventBase<
   "HOUSEHOLD_MEMBER_REMOVED",
-  "MEMBERSHIP"
+  "HOUSEHOLD_MEMBER"
 > & {
   metadata: {
     removedMemberId: string;
@@ -52,7 +60,7 @@ export type HouseholdMemberRemovedEvent = NotificationEventBase<
 
 export type HouseholdMemberLeftEvent = NotificationEventBase<
   "HOUSEHOLD_MEMBER_LEFT",
-  "MEMBERSHIP"
+  "HOUSEHOLD_MEMBER"
 > & {
   metadata: {
     leftMemberId: string;
@@ -62,7 +70,7 @@ export type HouseholdMemberLeftEvent = NotificationEventBase<
 
 export type HouseholdOwnershipTransferredEvent = NotificationEventBase<
   "HOUSEHOLD_OWNERSHIP_TRANSFERRED",
-  "MEMBERSHIP"
+  "HOUSEHOLD"
 > & {
   metadata: {
     previousOwnerMemberId: string;

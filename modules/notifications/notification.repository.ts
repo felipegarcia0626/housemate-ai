@@ -1,5 +1,5 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
-import type { HouseholdNotificationEvent, NotificationType } from "./notification.types";
+import type { HouseholdNotificationEvent, NotificationSourceEntityType, NotificationType } from "./notification.types";
 
 export type NotificationRecord = {
   id: string;
@@ -9,7 +9,7 @@ export type NotificationRecord = {
   title: string;
   body: string;
   metadata: Record<string, unknown>;
-  sourceEntityType: "INVITATION" | "MEMBERSHIP" | null;
+  sourceEntityType: NotificationSourceEntityType | null;
   sourceEntityId: string | null;
   deduplicationKey: string | null;
   createdAt: string;
