@@ -82,6 +82,7 @@ export async function listNotifications(input: {
   householdId?: string;
   limit: number;
   cursor?: NotificationCursor;
+  unreadOnly?: boolean;
 }): Promise<{ notifications: NotificationRecord[]; nextCursor: NotificationCursor | null }> {
   let query = getSupabaseAdminClient()
     .from("tb_notifications")
@@ -92,6 +93,7 @@ export async function listNotifications(input: {
     .limit(input.limit + 1);
 
   if (input.householdId) query = query.eq("household_id", input.householdId);
+  if (input.unreadOnly) query = query.is("read_at", null);
   if (input.cursor) {
     const timestamp = input.cursor.createdAt.replaceAll(",", "");
     const id = input.cursor.id.replaceAll(",", "");

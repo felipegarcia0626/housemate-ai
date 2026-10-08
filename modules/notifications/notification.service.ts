@@ -52,12 +52,13 @@ export async function listNotifications(input: {
   householdId?: string;
   limit?: number;
   cursor?: NotificationCursor;
+  unreadOnly?: boolean;
 }): Promise<{ notifications: NotificationRecord[]; unreadCount: number; nextCursor: NotificationCursor | null }> {
   const current = await authenticatedApplicationUser();
   await validateHouseholdAccess(current.userId, input.householdId);
   const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
   const [page, unreadCount] = await Promise.all([
-    listNotificationsInRepository({ recipientUserId: current.userId, householdId: input.householdId, limit, cursor: input.cursor }),
+    listNotificationsInRepository({ recipientUserId: current.userId, householdId: input.householdId, limit, cursor: input.cursor, unreadOnly: input.unreadOnly }),
     countUnreadNotifications({ recipientUserId: current.userId, householdId: input.householdId }),
   ]);
   return { ...page, unreadCount };
