@@ -72,6 +72,7 @@ textarea:focus-visible {
 .notifications-list { display: grid; gap: 0.5rem; }
 .notification-item { position: relative; display: flex; width: 100%; gap: 0.65rem; padding: 0.75rem; border: 1px solid #e1ebe7; border-radius: 0.65rem; background: #fff; color: inherit; text-align: left; }
 .notification-item:hover:not(:disabled), .notification-item:focus-visible { border-color: #5aa88f; background: #f7fcfa; }
+.notification-item.is-actionable { cursor: pointer; }
 .notification-item.is-unread { border-color: #b9dfd1; background: #f0faf6; font-weight: 600; }
 .notification-item-content { display: grid; gap: 0.25rem; min-width: 0; }
 .notification-item-content small { color: #71817b; font-weight: 400; }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useRouter } from "next/navigation";
 
 type NotificationItem = {
   id: string;
@@ -39,7 +40,19 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("es-CO", { dateStyle: "short", timeStyle: "short" }).format(date);
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isActionableNotification(notification: NotificationItem): boolean {
+  if (!UUID.test(notification.sourceEntityId)) return false;
+  return (
+    (notification.type === "HOUSEHOLD_INVITATION_ACCEPTED" && notification.sourceEntityType === "HOUSEHOLD_INVITATION") ||
+    (notification.type === "HOUSEHOLD_MEMBER_LEFT" && notification.sourceEntityType === "HOUSEHOLD_MEMBER") ||
+    (notification.type === "HOUSEHOLD_OWNERSHIP_TRANSFERRED" && notification.sourceEntityType === "HOUSEHOLD")
+  );
+}
+
 export function NotificationsBell({ userId }: { userId?: string | null }): ReactElement | null {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -147,6 +160,12 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
     } finally { setMarkAllBusy(false); }
   }
 
+  function openNotification(notification: NotificationItem): void {
+    if (!isActionableNotification(notification)) return;
+    if (!notification.readAt) void markRead(notification);
+    router.push("/household");
+  }
+
   if (!userId) return null;
   return (
     <div className="notifications-bell" ref={rootRef}>
@@ -160,7 +179,10 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
           {loading && <p className="loading" role="status">Cargando notificaciones…</p>}
           {error && <div className="notifications-error" role="alert"><span>{error}</span><button type="button" onClick={() => { loadedUserId.current = null; setError(""); setRetryNonce((current) => current + 1); }}>Reintentar</button></div>}
           {!loading && !error && notifications.length === 0 && <p className="empty-state">No tienes notificaciones.</p>}
-          {!loading && notifications.length > 0 && <div className="notifications-list">{notifications.map((notification) => <button className={`notification-item${notification.readAt ? "" : " is-unread"}`} key={notification.id} type="button" onClick={() => void markRead(notification)} disabled={busyNotificationIds.has(notification.id)} aria-label={`${notification.readAt ? "Leída" : "No leída"}: ${notification.title}`}><span className="notification-item-content"><strong>{notification.title}</strong><span>{notification.body}</span><small>{formatDate(notification.createdAt)}</small></span>{!notification.readAt && <span className="notification-unread-indicator" aria-hidden="true" />}</button>)}</div>}
+          {!loading && notifications.length > 0 && <div className="notifications-list">{notifications.map((notification) => {
+            const actionable = isActionableNotification(notification);
+            return <button className={`notification-item${notification.readAt ? "" : " is-unread"}${actionable ? " is-actionable" : ""}`} key={notification.id} type="button" onClick={() => actionable ? openNotification(notification) : void markRead(notification)} disabled={busyNotificationIds.has(notification.id)} aria-label={`${notification.readAt ? "Leída" : "No leída"}${actionable ? ", abrir Household" : ""}: ${notification.title}`}><span className="notification-item-content"><strong>{notification.title}</strong><span>{notification.body}</span><small>{formatDate(notification.createdAt)}</small></span>{!notification.readAt && <span className="notification-unread-indicator" aria-hidden="true" />}</button>;
+          })}</div>}
           {nextCursor && !loading && <button className="notifications-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? "Cargando…" : "Ver más"}</button>}
         </section>
       )}
