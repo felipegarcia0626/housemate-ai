@@ -9,6 +9,7 @@ import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { createHouseholdRequest } from "@/components/household/household-client";
+import { NotificationsBell } from "@/components/notifications/notifications-bell";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
 type ResourceKey =
@@ -2812,6 +2813,7 @@ function HomePageContent() {
         >
           Household
         </Link>
+        <NotificationsBell key={session?.user.id ?? "signed-out"} userId={session?.user.id} />
       </header>
       <nav className="nav" aria-label="Navegación principal">
         {(
