@@ -14,6 +14,7 @@ export type NotificationRecord = {
   deduplicationKey: string | null;
   createdAt: string;
   readAt: string | null;
+  actionState?: "PENDING" | "ACCEPTED" | "EXPIRED" | "UNAVAILABLE";
 };
 
 export type NotificationCursor = { createdAt: string; id: string };
@@ -122,6 +123,22 @@ export async function countUnreadNotifications(input: { recipientUserId: string;
   const { count, error } = await query;
   if (error) throw mapError(error);
   return count ?? 0;
+}
+
+export async function getInvitationActionStates(invitationIds: string[], currentUserId: string): Promise<Map<string, NotificationRecord["actionState"]>> {
+  const states = new Map<string, NotificationRecord["actionState"]>();
+  if (invitationIds.length === 0) return states;
+  const { data, error } = await getSupabaseAdminClient().from("tb_household_invitations").select("id,status,accepted_user_id,expires_at").in("id", invitationIds);
+  if (error) throw mapError(error);
+  for (const row of (data ?? []) as Record<string, unknown>[]) {
+    const id = String(row.id);
+    const status = String(row.status);
+    if (status === "ACCEPTED") states.set(id, row.accepted_user_id === currentUserId ? "ACCEPTED" : "UNAVAILABLE");
+    else if (status === "PENDING") states.set(id, new Date(String(row.expires_at)).getTime() <= Date.now() ? "EXPIRED" : "PENDING");
+    else states.set(id, "UNAVAILABLE");
+  }
+  for (const id of invitationIds) if (!states.has(id)) states.set(id, "UNAVAILABLE");
+  return states;
 }
 
 export async function markNotificationAsRead(input: {

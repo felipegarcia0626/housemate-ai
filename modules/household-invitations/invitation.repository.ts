@@ -57,3 +57,19 @@ export async function acceptHouseholdInvitation(input: {
   }
   return result as unknown as AcceptedHouseholdInvitation;
 }
+
+export async function acceptHouseholdInvitationById(input: {
+  authUserId: string;
+  invitationId: string;
+}): Promise<AcceptedHouseholdInvitation> {
+  const { data, error } = await getSupabaseAdminClient().rpc("fn_accept_household_invitation_by_id", {
+    p_auth_user_id: input.authUserId,
+    p_invitation_id: input.invitationId,
+  });
+  if (error) throw new HouseholdInvitationRepositoryError(error, error.code ?? null);
+  const result = resultObject(data);
+  if (result.status !== "ACCEPTED" || typeof result.alreadyAccepted !== "boolean" || typeof result.householdId !== "string" || typeof result.memberId !== "string") {
+    throw new HouseholdInvitationRepositoryError("Invalid accept invitation result");
+  }
+  return result as unknown as AcceptedHouseholdInvitation;
+}

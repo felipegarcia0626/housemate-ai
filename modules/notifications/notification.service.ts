@@ -2,6 +2,7 @@ import { getAuthenticatedAuthUser, SupabaseAuthError } from "@/infrastructure/au
 import { findActiveMembershipsByUserId, findApplicationUserByAuthUserId } from "@/modules/context/authenticated-context.repository";
 import {
   countUnreadNotifications,
+  getInvitationActionStates,
   createNotification as createNotificationInRepository,
   listNotifications as listNotificationsInRepository,
   markAllNotificationsAsRead as markAllInRepository,
@@ -61,7 +62,9 @@ export async function listNotifications(input: {
     listNotificationsInRepository({ recipientUserId: current.userId, householdId: input.householdId, limit, cursor: input.cursor, unreadOnly: input.unreadOnly }),
     countUnreadNotifications({ recipientUserId: current.userId, householdId: input.householdId }),
   ]);
-  return { ...page, unreadCount };
+  const invitationIds = page.notifications.filter((notification) => notification.type === "HOUSEHOLD_INVITATION_RECEIVED" && notification.sourceEntityType === "HOUSEHOLD_INVITATION" && notification.sourceEntityId).map((notification) => notification.sourceEntityId as string);
+  const actionStates = await getInvitationActionStates(invitationIds, current.userId);
+  return { notifications: page.notifications.map((notification) => ({ ...notification, ...(notification.type === "HOUSEHOLD_INVITATION_RECEIVED" && notification.sourceEntityType === "HOUSEHOLD_INVITATION" && notification.sourceEntityId && actionStates.has(notification.sourceEntityId) ? { actionState: actionStates.get(notification.sourceEntityId) } : {}) })), nextCursor: page.nextCursor, unreadCount };
 }
 
 export async function getUnreadCount(input: { householdId?: string } = {}): Promise<number> {

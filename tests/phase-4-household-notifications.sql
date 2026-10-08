@@ -11,15 +11,18 @@ DECLARE
   v_member_member UUID := '00000000-0000-4000-8000-000000009936';
   v_left_member UUID := '00000000-0000-4000-8000-000000009937';
   v_new_owner_member UUID := '00000000-0000-4000-8000-000000009938';
+  v_intruder_user UUID := '00000000-0000-4000-8000-000000009939';
   v_invitation JSONB;
   v_result JSONB;
+  v_transfer_key UUID := '00000000-0000-4000-8000-000000009951';
 BEGIN
   INSERT INTO public.tb_users (id, display_name, external_identifier, auth_user_id)
   VALUES
     (v_owner_user, 'Notification Owner', 'notification-owner', '00000000-0000-4000-8000-000000009941'),
     (v_member_user, 'Notification Member', 'notification-member', '00000000-0000-4000-8000-000000009942'),
     (v_left_user, 'Notification Leaver', 'notification-leaver', '00000000-0000-4000-8000-000000009943'),
-    (v_new_owner_user, 'Notification New Owner', 'notification-new-owner', '00000000-0000-4000-8000-000000009944');
+    (v_new_owner_user, 'Notification New Owner', 'notification-new-owner', '00000000-0000-4000-8000-000000009944'),
+    (v_intruder_user, 'Notification Intruder', 'notification-intruder', '00000000-0000-4000-8000-000000009945');
   INSERT INTO public.tb_households (id, name) VALUES (v_household, 'Notification Household');
   INSERT INTO public.tb_household_members (id, household_id, user_id, display_name, role, status)
   VALUES
@@ -82,7 +85,7 @@ BEGIN
   END IF;
 
   PERFORM public.fn_transfer_household_owner(
-    '00000000-0000-4000-8000-000000009941', v_household, v_new_owner_member
+    '00000000-0000-4000-8000-000000009941', v_household, v_new_owner_member, v_transfer_key
   );
   IF (SELECT role FROM public.tb_household_members WHERE id = v_owner_member) <> 'MEMBER'
      OR (SELECT role FROM public.tb_household_members WHERE id = v_new_owner_member) <> 'OWNER'
@@ -92,6 +95,28 @@ BEGIN
 
   IF (SELECT count(*) FROM public.tb_notifications WHERE deduplication_key LIKE 'ownership:%') <> 2 THEN
     RAISE EXCEPTION 'ownership transfer deduplication keys are incorrect';
+  END IF;
+
+  v_result := public.fn_transfer_household_owner(
+    '00000000-0000-4000-8000-000000009941', v_household, v_new_owner_member, v_transfer_key
+  );
+  IF v_result->>'ownerMemberId' <> v_new_owner_member::TEXT
+     OR (SELECT count(*) FROM public.tb_notifications WHERE type = 'HOUSEHOLD_OWNERSHIP_TRANSFERRED') <> 2 THEN
+    RAISE EXCEPTION 'ownership transfer retry was not idempotent';
+  END IF;
+
+  BEGIN
+    PERFORM public.fn_transfer_household_owner(
+      '00000000-0000-4000-8000-000000009945', v_household, v_new_owner_member, v_transfer_key
+    );
+    RAISE EXCEPTION 'non-member must not replay ownership transfer';
+  EXCEPTION WHEN SQLSTATE 'P0003' THEN NULL;
+  END;
+  IF (SELECT role FROM public.tb_household_members WHERE id = v_owner_member) <> 'MEMBER'
+     OR (SELECT role FROM public.tb_household_members WHERE id = v_new_owner_member) <> 'OWNER'
+     OR (SELECT count(*) FROM public.tb_notifications WHERE type = 'HOUSEHOLD_OWNERSHIP_TRANSFERRED') <> 2
+     OR (SELECT count(*) FROM public.tb_household_owner_transfer_operations WHERE household_id = v_household AND idempotency_key = v_transfer_key) <> 1 THEN
+    RAISE EXCEPTION 'non-member replay changed ownership or operation state';
   END IF;
   RAISE NOTICE 'PASS household mutations and notifications share the RPC transaction';
 END;

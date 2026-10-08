@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
 import { LoginForm } from "@/components/auth/login-form";
 
@@ -11,6 +12,7 @@ export default function HouseholdInvitationPage({ params }: { params: Promise<{ 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const router = useRouter();
 
   useEffect(() => {
     void params.then(({ token: nextToken }) => setToken(nextToken));
@@ -34,5 +36,5 @@ export default function HouseholdInvitationPage({ params }: { params: Promise<{ 
 
   if (!ready) return <main className="shell"><p className="loading" role="status">Cargando invitación…</p></main>;
   if (!authenticated) return <><meta name="referrer" content="no-referrer" /><LoginForm onError={setError} oauthRedirectTo={`${window.location.origin}/auth/callback?next=${encodeURIComponent(`/household/invitations/${token}`)}`} /></>;
-  return <main className="shell"><meta name="referrer" content="no-referrer" /><section className="panel" aria-labelledby="invitation-title"><p className="eyebrow">HOUSEMATE AI</p><h1 id="invitation-title">Invitación a Household</h1>{error && <p className="alert" role="alert">{error}</p>}{message ? <p role="status">{message}</p> : <><p className="muted">Tienes una invitación pendiente. Puedes aceptarla con tu cuenta actual.</p><button className="primary" type="button" onClick={() => void accept()} disabled={busy || !token}>{busy ? "Aceptando…" : "Aceptar invitación"}</button></>}</section></main>;
+  return <main className="shell"><meta name="referrer" content="no-referrer" /><section className="panel" aria-labelledby="invitation-title"><button className="invitation-back" type="button" onClick={() => router.push("/")}>← Volver a HouseMate</button><p className="eyebrow">HOUSEMATE AI</p><h1 id="invitation-title">Invitación a Household</h1>{error && <p className="alert" role="alert">{error}</p>}{message ? <p role="status">{message}</p> : <><p className="muted">Tienes una invitación pendiente. Puedes aceptarla con tu cuenta actual.</p><button className="primary" type="button" onClick={() => void accept()} disabled={busy || !token}>{busy ? "Aceptando…" : "Aceptar invitación"}</button></>}</section></main>;
 }

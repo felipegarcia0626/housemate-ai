@@ -8,7 +8,7 @@ async function call(name: string, args: Record<string, unknown>) {
   if (!data || typeof data !== "object") throw new MembershipLifecycleRepositoryError("Invalid RPC result");
   return data as Record<string, unknown>;
 }
-export const transferOwner = (authUserId: string, householdId: string, targetMemberId: string) => call("fn_transfer_household_owner", { p_auth_user_id: authUserId, p_household_id: householdId, p_target_member_id: targetMemberId });
+export const transferOwner = (authUserId: string, householdId: string, targetMemberId: string, idempotencyKey: string) => call("fn_transfer_household_owner", { p_auth_user_id: authUserId, p_household_id: householdId, p_target_member_id: targetMemberId, p_idempotency_key: idempotencyKey });
 export const removeMember = (authUserId: string, householdId: string, targetMemberId: string) => call("fn_remove_household_member", { p_auth_user_id: authUserId, p_household_id: householdId, p_target_member_id: targetMemberId });
 export const leaveHousehold = (authUserId: string, householdId: string) => call("fn_leave_household", { p_auth_user_id: authUserId, p_household_id: householdId });
 

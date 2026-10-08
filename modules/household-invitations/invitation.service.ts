@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { getAuthenticatedAuthUser, SupabaseAuthError } from "@/infrastructure/auth/supabase-server.client";
 import { findApplicationUserByAuthUserId, findActiveMembershipsByUserId } from "@/modules/context/authenticated-context.repository";
-import { createHouseholdInvitation, acceptHouseholdInvitation, HouseholdInvitationRepositoryError } from "./invitation.repository";
+import { createHouseholdInvitation, acceptHouseholdInvitation, acceptHouseholdInvitationById, HouseholdInvitationRepositoryError } from "./invitation.repository";
 import type { AcceptedHouseholdInvitation, CreatedHouseholdInvitation } from "./invitation.types";
 
 export class HouseholdInvitationValidationError extends Error { constructor() { super("Invalid invitation input."); this.name = "HouseholdInvitationValidationError"; } }
@@ -49,6 +49,17 @@ export async function acceptInvitation(token: unknown): Promise<AcceptedHousehol
   const current = await authenticatedApplicationUser();
   try {
     return await acceptHouseholdInvitation({ authUserId: current.authUserId, email: current.email, tokenHash: tokenHash(token) });
+  } catch (error) {
+    if (error instanceof HouseholdInvitationRepositoryError && ["P0003", "42501"].includes(error.code ?? "")) throw new HouseholdInvitationConflictError();
+    throw error;
+  }
+}
+
+export async function acceptInvitationById(invitationId: unknown): Promise<AcceptedHouseholdInvitation> {
+  if (typeof invitationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(invitationId)) throw new HouseholdInvitationValidationError();
+  const current = await authenticatedApplicationUser();
+  try {
+    return await acceptHouseholdInvitationById({ authUserId: current.authUserId, invitationId });
   } catch (error) {
     if (error instanceof HouseholdInvitationRepositoryError && ["P0003", "42501"].includes(error.code ?? "")) throw new HouseholdInvitationConflictError();
     throw error;

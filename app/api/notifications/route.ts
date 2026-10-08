@@ -42,6 +42,7 @@ function project(notification: Awaited<ReturnType<typeof listNotifications>>["no
     sourceEntityId: notification.sourceEntityId,
     createdAt: notification.createdAt,
     readAt: notification.readAt,
+    ...(notification.actionState ? { actionState: notification.actionState } : {}),
   };
 }
 

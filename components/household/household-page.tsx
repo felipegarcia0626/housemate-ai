@@ -26,6 +26,7 @@ export function HouseholdPage() {
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [inviteGeneratedOpen, setInviteGeneratedOpen] = useState(false);
+  const transferIdempotencyKey = useRef<string | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -127,7 +128,9 @@ export function HouseholdPage() {
           ? `/api/auth/households/${current.householdId}/members/${action.member?.membershipId}`
           : `/api/auth/households/${current.householdId}/leave`;
       const method = action.kind === "remove" ? "DELETE" : "POST";
-      await request(path, { method, ...(action.kind === "transfer" ? { body: JSON.stringify({ targetMemberId: action.member?.membershipId }) } : {}) });
+      const transferKey = action.kind === "transfer" ? (transferIdempotencyKey.current ??= crypto.randomUUID()) : undefined;
+      await request(path, { method, ...(action.kind === "transfer" ? { body: JSON.stringify({ targetMemberId: action.member?.membershipId }), headers: { "Idempotency-Key": transferKey! } } : {}) });
+      if (action.kind === "transfer") transferIdempotencyKey.current = null;
       setPendingAction(null);
       await load();
     } catch (cause) {
