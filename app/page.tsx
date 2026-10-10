@@ -1239,15 +1239,21 @@ function HomePageContent() {
   useEffect(() => {
     if (!supabase) return;
     let mounted = true;
+    const sessionDiagnosticsEnabled = window.__HOUSEMATE_REALTIME_E2E_DIAGNOSTICS__ === true;
+    const sessionStartedAt = performance.now();
+    if (sessionDiagnosticsEnabled) console.info("[notifications][session] get_session_started");
     void supabase.auth.getSession().then(({ data, error: sessionError }) => {
       if (!mounted) return;
       if (sessionError) setAuthError("No fue posible recuperar la sesión.");
       setSession(data.session);
       setAuthReady(true);
+    }).finally(() => {
+      if (sessionDiagnosticsEnabled) console.info("[notifications][session] get_session_finished", JSON.stringify({ durationMs: Math.round(performance.now() - sessionStartedAt) }));
     });
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (sessionDiagnosticsEnabled) console.info("[notifications][session] auth_state_changed", JSON.stringify({ authEvent: event }));
       if (!mounted) return;
       setSession(nextSession);
       setAuthReady(true);

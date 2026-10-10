@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactElement } from "react";
 import { useRouter } from "next/navigation";
+import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
 
 type NotificationItem = {
   id: string;
@@ -25,9 +26,30 @@ type NotificationsResponse = {
 
 type ApiError = Error & { status?: number };
 type NotificationFilter = "all" | "unread";
+type DiagnosticReconciliation = { id: string; eventIds: string[] };
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) } });
+declare global {
+  interface Window {
+    __HOUSEMATE_REALTIME_E2E_DIAGNOSTICS__?: boolean;
+  }
+}
+
+function realtimeDiagnosticLog(message: string, details?: Record<string, unknown>): void {
+  if (typeof window === "undefined" || window.__HOUSEMATE_REALTIME_E2E_DIAGNOSTICS__ !== true) return;
+  console.info(details ? `${message} ${JSON.stringify(details)}` : message);
+}
+
+async function request<T>(path: string, options?: RequestInit, diagnostic?: Record<string, unknown>): Promise<T> {
+  const isNotificationsGet = !options?.method && path.startsWith("/api/notifications?");
+  if (isNotificationsGet) realtimeDiagnosticLog("[notifications][realtime] notifications_get_started", diagnostic);
+  const diagnosticRequestId = typeof diagnostic?.requestId === "string" ? diagnostic.requestId : null;
+  const headers = new Headers(options?.headers);
+  headers.set("Content-Type", "application/json");
+  if (diagnosticRequestId && typeof window !== "undefined" && window.__HOUSEMATE_REALTIME_E2E_DIAGNOSTICS__ === true) {
+    headers.set("x-housemate-realtime-request-id", diagnosticRequestId);
+  }
+  const response = await fetch(path, { ...options, headers });
+  if (isNotificationsGet) realtimeDiagnosticLog("[notifications][realtime] notifications_get_finished", { ...diagnostic, status: response.status, ok: response.ok });
   const body = (await response.json().catch(() => null)) as { data?: T; error?: { message?: string } } | null;
   if (!response.ok) {
     const error = new Error(body?.error?.message ?? "No fue posible completar la operación.") as ApiError;
@@ -76,11 +98,33 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
   const controller = useRef<AbortController | null>(null);
   const loadedUserId = useRef<string | null>(null);
   const loadedFilter = useRef<NotificationFilter>("all");
+  const notificationFilterRef = useRef<NotificationFilter>(notificationFilter);
   const currentUserId = useRef<string | null>(userId ?? null);
   const loadingRequest = useRef(false);
   const wasOpen = useRef(false);
+  const realtimeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeRefreshPending = useRef(false);
+  const realtimeDiagnosticMountLogged = useRef(false);
+  const realtimeDiagnosticEffectKey = useRef<string | null>(null);
+  const realtimeDiagnosticStatuses = useRef<Set<string>>(new Set());
+  const realtimeDiagnosticInstanceId = useId();
+  const realtimeDiagnosticReconciliationSequence = useRef(0);
+  const realtimeDiagnosticPendingIds = useRef<Set<string>>(new Set());
+  const realtimeDiagnosticScheduledId = useRef<string | null>(null);
+  const realtimeDiagnosticRequestSequence = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelId = "notifications-panel";
+  const [realtimeDiagnosticError, setRealtimeDiagnosticError] = useState("");
+
+  useEffect(() => {
+    notificationFilterRef.current = notificationFilter;
+  }, [notificationFilter]);
+
+  useEffect(() => {
+    if (realtimeDiagnosticMountLogged.current) return;
+    realtimeDiagnosticMountLogged.current = true;
+    realtimeDiagnosticLog("[notifications][realtime] bell_mounted", { user_id_present: Boolean(userId) });
+  }, [userId]);
 
   function changeFilter(nextFilter: NotificationFilter): void {
     if (nextFilter === notificationFilter) return;
@@ -95,7 +139,7 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
     setNotificationFilter(nextFilter);
   }
 
-  const loadNotifications = useCallback(async (requestUserId: string, filter: NotificationFilter = notificationFilter): Promise<void> => {
+  const loadNotifications = useCallback(async (requestUserId: string, filter: NotificationFilter = notificationFilterRef.current, diagnostic?: DiagnosticReconciliation): Promise<void> => {
     if (loadingRequest.current) return;
     loadingRequest.current = true;
     generation.current += 1;
@@ -106,13 +150,20 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
     setLoading(true);
     setError("");
     try {
-      const result = await request<NotificationsResponse>(`/api/notifications?limit=20&unreadOnly=${filter === "unread"}`, { signal: requestController.signal });
-      if (requestController.signal.aborted || requestGeneration !== generation.current || currentUserId.current !== requestUserId) return;
+      const requestId = `${realtimeDiagnosticInstanceId}:request:${++realtimeDiagnosticRequestSequence.current}`;
+      const requestDiagnostic = diagnostic ? { instanceId: realtimeDiagnosticInstanceId, requestId, reconciliationId: diagnostic.id, eventIds: diagnostic.eventIds } : { instanceId: realtimeDiagnosticInstanceId, requestId, kind: "ordinary" };
+      const result = await request<NotificationsResponse>(`/api/notifications?limit=20&unreadOnly=${filter === "unread"}`, { signal: requestController.signal }, requestDiagnostic);
+      if (requestController.signal.aborted || requestGeneration !== generation.current || currentUserId.current !== requestUserId) {
+        realtimeDiagnosticLog("[notifications][realtime] reconciliation_response_discarded", { ...requestDiagnostic, reason: "fencing" });
+        return;
+      }
       setNotifications(result.notifications);
       setUnreadCount(result.unreadCount);
       setNextCursor(result.nextCursor);
       loadedUserId.current = requestUserId;
       loadedFilter.current = filter;
+      realtimeDiagnosticLog("[notifications][realtime] reconciliation_response_applied", { ...requestDiagnostic });
+      realtimeDiagnosticLog("[notifications][realtime] ui_state_applied", { ...requestDiagnostic, unreadCount: result.unreadCount });
     } catch (cause: unknown) {
       if (requestController.signal.aborted || requestGeneration !== generation.current || currentUserId.current !== requestUserId) return;
       setError(cause instanceof Error ? cause.message : "No fue posible cargar las notificaciones.");
@@ -123,7 +174,37 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
       loadingRequest.current = false;
       if (!requestController.signal.aborted && requestGeneration === generation.current) setLoading(false);
     }
-  }, [notificationFilter]);
+  }, [realtimeDiagnosticInstanceId]);
+
+  const scheduleRealtimeReconciliation = useCallback((notificationId?: string): void => {
+    if (notificationId) realtimeDiagnosticPendingIds.current.add(notificationId);
+    const pendingEventIds = [...realtimeDiagnosticPendingIds.current];
+    const reconciliationId = realtimeDiagnosticScheduledId.current ?? `${realtimeDiagnosticInstanceId}:${++realtimeDiagnosticReconciliationSequence.current}`;
+    realtimeDiagnosticScheduledId.current = reconciliationId;
+    realtimeDiagnosticLog("[notifications][realtime] reconciliation_scheduled", { instanceId: realtimeDiagnosticInstanceId, reconciliationId, eventIds: pendingEventIds, requestInFlight: loadingRequest.current, timerPending: Boolean(realtimeTimer.current) });
+    realtimeRefreshPending.current = true;
+    if (realtimeTimer.current) {
+      realtimeDiagnosticLog("[notifications][realtime] reconciliation_event_added", { instanceId: realtimeDiagnosticInstanceId, reconciliationId, eventIds: pendingEventIds });
+      return;
+    }
+    const reconcile = () => {
+      realtimeTimer.current = null;
+      if (!realtimeRefreshPending.current || !currentUserId.current) return;
+      if (loadingRequest.current) {
+        realtimeDiagnosticLog("[notifications][realtime] reconciliation_waiting_for_request", { instanceId: realtimeDiagnosticInstanceId, eventIds: [...realtimeDiagnosticPendingIds.current] });
+        realtimeTimer.current = setTimeout(reconcile, 100);
+        return;
+      }
+      const eventIds = [...realtimeDiagnosticPendingIds.current];
+      const diagnostic: DiagnosticReconciliation = { id: realtimeDiagnosticScheduledId.current ?? `${realtimeDiagnosticInstanceId}:${++realtimeDiagnosticReconciliationSequence.current}`, eventIds };
+      realtimeDiagnosticPendingIds.current.clear();
+      realtimeDiagnosticScheduledId.current = null;
+      realtimeRefreshPending.current = false;
+      realtimeDiagnosticLog("[notifications][realtime] reconciliation_executed", { instanceId: realtimeDiagnosticInstanceId, reconciliationId: diagnostic.id, eventIds });
+      void loadNotifications(currentUserId.current, notificationFilterRef.current, diagnostic);
+    };
+    realtimeTimer.current = setTimeout(reconcile, 150);
+  }, [loadNotifications, realtimeDiagnosticInstanceId]);
 
   useEffect(() => {
     currentUserId.current = userId ?? null;
@@ -159,7 +240,65 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
     controller.current?.abort();
     controller.current = null;
     loadingRequest.current = false;
+    if (realtimeTimer.current) clearTimeout(realtimeTimer.current);
+    realtimeTimer.current = null;
+    realtimeRefreshPending.current = false;
+    realtimeDiagnosticPendingIds.current.clear();
+    realtimeDiagnosticScheduledId.current = null;
   }, []);
+
+  useEffect(() => {
+    const effectKey = userId ?? "missing";
+    const shouldLogEffect = realtimeDiagnosticEffectKey.current !== effectKey;
+    realtimeDiagnosticEffectKey.current = effectKey;
+    if (shouldLogEffect) realtimeDiagnosticLog("[notifications][realtime] subscription_effect_started", { user_id_present: Boolean(userId) });
+    if (!userId) {
+      if (shouldLogEffect) realtimeDiagnosticLog("[notifications][realtime] subscription_effect_skipped", { reason: "user_id_missing" });
+      return;
+    }
+    let active = true;
+    let supabase: ReturnType<typeof createSupabaseBrowserClient>;
+    try {
+      supabase = createSupabaseBrowserClient();
+    } catch (error) {
+      const errorName = error instanceof Error ? error.name : "UnknownError";
+      realtimeDiagnosticLog("[notifications][realtime] client_initialization_failed", { error_name: errorName });
+      queueMicrotask(() => setRealtimeDiagnosticError("No fue posible iniciar las actualizaciones en tiempo real."));
+      return;
+    }
+    const channel = supabase
+      .channel(`notifications:${userId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "tb_notifications" }, (payload) => {
+        const notificationId = typeof payload.new === "object" && payload.new !== null && "id" in payload.new && typeof payload.new.id === "string" ? payload.new.id : null;
+        realtimeDiagnosticLog("[notifications][realtime] insert_received", { event: "INSERT", table: "tb_notifications", notification_id: notificationId });
+        if (active) scheduleRealtimeReconciliation(notificationId ?? undefined);
+      })
+      .subscribe((status) => {
+        if (!realtimeDiagnosticStatuses.current.has(status)) {
+          realtimeDiagnosticStatuses.current.add(status);
+          realtimeDiagnosticLog("[notifications][realtime] channel_status", { status });
+        }
+        if (status === "SUBSCRIBED") {
+          setRealtimeDiagnosticError("");
+          return;
+        }
+        if (active && ["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+          setRealtimeDiagnosticError("Las actualizaciones en tiempo real no están disponibles.");
+          scheduleRealtimeReconciliation();
+        }
+      });
+    const pendingIdsRef = realtimeDiagnosticPendingIds;
+    const scheduledIdRef = realtimeDiagnosticScheduledId;
+    return () => {
+      active = false;
+      if (realtimeTimer.current) clearTimeout(realtimeTimer.current);
+      realtimeTimer.current = null;
+      realtimeRefreshPending.current = false;
+      pendingIdsRef.current.clear();
+      scheduledIdRef.current = null;
+      void supabase.removeChannel(channel);
+    };
+  }, [scheduleRealtimeReconciliation, userId]);
 
   useEffect(() => {
     if (!open) return;
@@ -250,6 +389,7 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
   if (!userId) return null;
   return (
     <div className="notifications-bell" ref={rootRef}>
+      {realtimeDiagnosticError && <p className="notifications-error" role="status">{realtimeDiagnosticError}</p>}
       <button className="refresh notifications-trigger" type="button" aria-label="Notificaciones" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((current) => !current)}>
         <span aria-hidden="true">🔔</span>
         {unreadCount > 0 && <span className="notifications-badge" aria-label={`${unreadCount} sin leer`}>{unreadCount > 99 ? "99+" : unreadCount}</span>}

@@ -11,6 +11,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e": "playwright test",
+    "test:e2e:notifications-realtime:subscription": "playwright test --config=playwright.realtime-readonly.config.cjs tests/e2e/notifications-realtime-subscription.spec.cjs",
     "test:e2e:agent": "node tests/e2e/agent-authenticated.cjs",
     "test:e2e:agent:split": "node tests/e2e/agent-direct-split.cjs",
     "test:household-invitations": "node tests/phase-3-household-invitations-functional.cjs",
