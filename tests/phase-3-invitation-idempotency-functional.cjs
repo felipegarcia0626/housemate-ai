@@ -96,6 +96,18 @@ async function main() {
   assert.equal(legacy.status, 201);
   assert.ok((await legacy.json()).data.inviteUrl);
   assert.equal(calls.at(-1).parameters.p_idempotency_key, null);
+
+  for (const [code, status, publicCode, publicMessage] of [
+    ["23505", 409, "CONFLICT", "Ya existe una invitación activa para ese correo."],
+    ["P0004", 409, "CONFLICT", "Ya existe una invitación activa para ese correo."],
+    ["42501", 403, "FORBIDDEN", "No tienes acceso a ese hogar."],
+    ["XX000", 500, "INTERNAL_ERROR", "No fue posible crear la invitación."],
+  ]) {
+    behavior = () => ({ data: null, error: { code, message: "private SQL secret" } });
+    const response = await post({ email: "recipient@example.test", idempotencyKey: key });
+    assert.equal(response.status, status);
+    assert.deepEqual(await response.json(), { error: { code: publicCode, message: publicMessage } });
+  }
   behavior = () => { throw new SyntaxError("private internal failure"); };
   const internalSyntaxError = await post({ email: "recipient@example.test", idempotencyKey: key });
   assert.equal(internalSyntaxError.status, 500, "a SyntaxError outside JSON parsing must remain an internal error");
@@ -106,10 +118,27 @@ async function main() {
   assert.deepEqual(await malformedJson.json(), validationError);
   assert.equal(calls.length, count, "malformed JSON must not invoke persistence");
 
-  behavior = () => ({ data: null, error: { code: "P0004", message: "private SQL secret" } });
-  const conflict = await post({ email: "different@example.test", idempotencyKey: key });
-  assert.equal(conflict.status, 409);
-  assert.deepEqual(await conflict.json(), { error: { code: "CONFLICT", message: "Ya existe una invitación activa para ese correo." } });
-  console.log("PASS invitation idempotency HTTP contract (controlled RPC fake)");
+  for (const invalidBody of [
+    { email: "recipient@example.test", idempotencyKey: "invalid" },
+    { email: "recipient@example.test", actorUserId: authUserId },
+    null,
+    [],
+  ]) {
+    const response = await post(invalidBody);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), validationError);
+  }
+  assert.equal(calls.length, count, "invalid bodies and actor-supplied identity must not invoke persistence");
+  active = false;
+  const forbidden = await post({ email: "recipient@example.test", idempotencyKey: key });
+  assert.equal(forbidden.status, 403);
+  assert.deepEqual(await forbidden.json(), { error: { code: "FORBIDDEN", message: "No tienes acceso a ese hogar." } });
+  authUserId = null;
+  const unauthenticated = await post({ email: "recipient@example.test", idempotencyKey: key });
+  assert.equal(unauthenticated.status, 401);
+  assert.deepEqual(await unauthenticated.json(), { error: { code: "UNAUTHENTICATED", message: "Se requiere una sesión autenticada." } });
+  assert.equal(calls.length, count, "invalid or unauthorized requests must not invoke persistence");
+  console.log("PASS invitation Route -> Service -> Repository recovery, token safety, validation and sanitized errors (controlled RPC fake)");
 }
+
 main().catch((error) => { console.error(error); process.exitCode = 1; });
