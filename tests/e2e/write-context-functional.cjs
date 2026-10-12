@@ -107,9 +107,12 @@ function runBlockedWriteEntrypoints() {
     const calls = {
       constructors: 0,
       rpc: 0,
+      from: 0,
+      deletes: 0,
       authLists: 0,
       authCreates: 0,
       authUpdates: 0,
+      manifestRemovals: [],
       fsMutations: [],
       events: [],
     };
@@ -117,6 +120,10 @@ function runBlockedWriteEntrypoints() {
     const authUsers = [];
     const fakeClient = {
       rpc() { calls.rpc++; return Promise.resolve({ data: null, error: null }); },
+      from() {
+        calls.from++;
+        return { delete() { calls.deletes++; return { eq() { return { in: async () => ({ data: null, error: null }) }; } }; } };
+      },
       auth: { admin: {
         listUsers: async () => {
           calls.authLists++;
@@ -138,6 +145,7 @@ function runBlockedWriteEntrypoints() {
     const fsPromisesDouble = {
       async mkdir(...args) { calls.fsMutations.push(["mkdir", ...args]); },
       async writeFile(...args) { calls.fsMutations.push(["writeFile", ...args]); },
+      async rm(...args) { calls.manifestRemovals.push(args); },
     };
     Module._load = function(name, ...args) {
       if (name === "@next/env") return { loadEnvConfig() {} };
@@ -158,6 +166,7 @@ function runBlockedWriteEntrypoints() {
     const directSplit = require(${JSON.stringify(directSplitModulePath)});
     const provision = require(${JSON.stringify(provisionModulePath)});
     const householdId = "00000000-0000-4000-8000-000000000101";
+    const expenseId = "00000000-0000-4000-8000-000000000102";
     const writeContext = fixtures.readE2EContext();
     async function expectBlocked(label, operation) {
       try { await operation; } catch (error) {
@@ -192,6 +201,33 @@ function runBlockedWriteEntrypoints() {
       assert.equal(calls.rpc, 0, "createExpense must stop before RPC even when called directly");
       assert.equal(calls.constructors, 0, "direct createExpense test must not construct a client");
 
+      await expectBlocked("exact fixture cleanup", fixtures.cleanupExpenseFixtures({
+        client: fakeClient,
+        context: { householdId },
+        createdIds: [expenseId],
+      }));
+      assert.equal(calls.from, 0, "cleanup must stop before table access");
+      assert.equal(calls.deletes, 0, "cleanup must stop before DELETE");
+
+      const beforeEmptyCleanup = calls.events.length;
+      await expectBlocked("cleanup with an empty ID list", fixtures.cleanupExpenseFixtures({
+        client: fakeClient,
+        context: { householdId },
+        createdIds: [],
+      }));
+      assert.equal(calls.events.length, beforeEmptyCleanup);
+      assert.equal(calls.from, 0, "empty-ID cleanup must not access a table");
+      assert.deepEqual(calls.manifestRemovals, [], "empty-ID cleanup must preserve the recovery manifest");
+
+      const beforeMissingIdsCleanup = calls.events.length;
+      await expectBlocked("cleanup without an ID list", fixtures.cleanupExpenseFixtures({
+        client: fakeClient,
+        context: { householdId },
+      }));
+      assert.equal(calls.events.length, beforeMissingIdsCleanup);
+      assert.equal(calls.from, 0, "cleanup without IDs must not access a table");
+      assert.deepEqual(calls.manifestRemovals, [], "cleanup without IDs must preserve the recovery manifest");
+      assert.deepEqual(calls.fsMutations, [], "cleanup cases must not mutate local files");
 
       await expectBlocked("Auth user creation", provision.createE2EAuthUser(writeContext, "fake@example.invalid", "not-a-real-password"));
       assert.equal(calls.constructors, 0, "Auth creation must stop before the admin client constructor");
@@ -252,6 +288,7 @@ function runBlockedWriteEntrypoints() {
       assert.equal(calls.authCreates, 0, "a lookup miss must not create a persistent user implicitly");
       assert.equal(calls.authUpdates, 0, "a lookup miss must not update a persistent user");
       assert.equal(fetchCalls, 0, "no blocked or read-only branch may attempt fetch");
+      assert.deepEqual(calls.manifestRemovals, [], "no cleanup scenario may remove a recovery manifest");
       assert.deepEqual(calls.fsMutations, [], "the local harness must not mutate files");
     })().catch((error) => {
       console.error(error instanceof Error ? error.message : "Local E2E write guard check failed.");

@@ -9,6 +9,8 @@ const {
   createE2EClient,
   authorizedAgentHouseholdId,
   assertRecoverableE2EOperation,
+  recordReturnedResourceIds,
+  requireAdministrativeRecovery,
 } = require("./fixtures.cjs");
 
 function required(name) {
@@ -119,13 +121,14 @@ async function ensureHousehold(baseUrl, cookie) {
   return selected.householdId;
 }
 
-async function sendAgent(baseUrl, cookie, message) {
+async function sendAgent(baseUrl, cookie, message, returnedRecords = []) {
   const requestId = `e2e-${crypto.randomUUID()}`;
   const result = await requestJson(baseUrl, cookie, "/api/agent", {
     method: "POST",
     headers: { "x-e2e-request-id": requestId },
     body: JSON.stringify({ message }),
   });
+  recordReturnedResourceIds(result.body, returnedRecords);
   const type = result.body?.data?.type ?? result.body?.error?.code ?? "UNKNOWN";
   console.log(JSON.stringify({ requestId, message, status: result.response.status, type }));
   assertResponse("agent request", result.response);
@@ -156,52 +159,7 @@ async function resolveActorMemberId(admin, householdId, email) {
   return member.data.id;
 }
 
-async function snapshotScenario(admin, householdId, actorMemberId) {
-  const conversationKey = `web:${householdId}:${actorMemberId}`;
-  const [proposals, drafts, expenses] = await Promise.all([
-    admin.from("tb_pending_proposals").select("id").eq("household_id", householdId).eq("actor_member_id", actorMemberId).eq("conversation_key", conversationKey).eq("source", "WEB"),
-    admin.from("tb_agent_category_drafts").select("id").eq("household_id", householdId).eq("actor_member_id", actorMemberId).eq("conversation_key", conversationKey).eq("source", "WEB"),
-    admin.from("tb_expenses").select("id").eq("household_id", householdId).eq("created_by", actorMemberId),
-  ]);
-  if (proposals.error || drafts.error || expenses.error) throw new Error("E2E could not snapshot control state.");
-  return {
-    proposals: new Set((proposals.data ?? []).map((row) => row.id)),
-    drafts: new Set((drafts.data ?? []).map((row) => row.id)),
-    expenses: new Set((expenses.data ?? []).map((row) => row.id)),
-  };
-}
-
-async function recordsCreatedSince(admin, householdId, actorMemberId, before) {
-  const after = await snapshotScenario(admin, householdId, actorMemberId);
-  return {
-    proposals: [...after.proposals].filter((id) => !before.proposals.has(id)),
-    drafts: [...after.drafts].filter((id) => !before.drafts.has(id)),
-    expenses: [...after.expenses].filter((id) => !before.expenses.has(id)),
-  };
-}
-
-async function cleanupCreatedRecords(admin, records) {
-  for (const id of records.proposals) {
-    const result = await admin.from("tb_pending_proposals").delete().eq("id", id);
-    if (result.error) throw new Error(`E2E cleanup failed for proposal ${id}.`);
-  }
-  for (const id of records.drafts) {
-    const result = await admin.from("tb_agent_category_drafts").delete().eq("id", id);
-    if (result.error) throw new Error(`E2E cleanup failed for draft ${id}.`);
-  }
-  for (const id of records.expenses) {
-    const result = await admin.from("tb_expenses").delete().eq("id", id);
-    if (result.error) throw new Error(`E2E cleanup failed for expense ${id}.`);
-  }
-}
-
-async function validateCreatedRecordsRemoved(admin, records) {
-  for (const [table, ids] of [["tb_pending_proposals", records.proposals], ["tb_agent_category_drafts", records.drafts], ["tb_expenses", records.expenses]]) {
-    if (ids.length === 0) continue;
-    const result = await admin.from(table).select("id").in("id", ids);
-    if (result.error || (result.data ?? []).length > 0) throw new Error(`E2E cleanup validation failed for ${table}.`);
-  }
-}
+// No snapshot-delta cleanup: current Agent responses do not prove resource ownership.
 
 async function main() {
   const writeContext = assertWriteE2EContext();
@@ -220,27 +178,23 @@ async function main() {
     password: required("E2E_TEST_PASSWORD"),
   });
   const householdId = await ensureHousehold(baseUrl, cookie);
-  const actorMemberId = await resolveActorMemberId(admin, householdId, email);
-  const before = await snapshotScenario(admin, householdId, actorMemberId);
-  let created = { proposals: [], drafts: [], expenses: [] };
-  let testError = null;
+  await resolveActorMemberId(admin, householdId, email);
+  const returnedRecords = [];
+  let primaryError = null;
   try {
-    await sendAgent(baseUrl, cookie, "Gasté $20.000 en una cena");
-    created = await recordsCreatedSince(admin, householdId, actorMemberId, before);
+    await sendAgent(baseUrl, cookie, "Gasté $20.000 en una cena", returnedRecords);
   } catch (error) {
-    testError = error;
-    created = await recordsCreatedSince(admin, householdId, actorMemberId, before);
+    primaryError = error;
+    throw error;
   } finally {
+    // Exact returned IDs are retained for review, not treated as owned by this run.
     try {
-      await cleanupCreatedRecords(admin, created);
-      await validateCreatedRecordsRemoved(admin, created);
-      console.log(JSON.stringify({ controlCleanup: "PASS", created }));
-    } catch (cleanupError) {
-      console.error(cleanupError instanceof Error ? cleanupError.message : "E2E control cleanup failed.");
-      if (!testError) testError = cleanupError;
+      requireAdministrativeRecovery(returnedRecords, true);
+    } catch (recoveryError) {
+      if (primaryError) console.error(recoveryError.message);
+      else throw recoveryError;
     }
   }
-  if (testError) throw testError;
   console.log(JSON.stringify({ authenticated: true, householdConfigured: Boolean(householdId) }));
   console.log("PASS authenticated Agent control E2E");
 }

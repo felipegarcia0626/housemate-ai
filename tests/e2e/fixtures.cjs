@@ -153,6 +153,31 @@ function assertRecoverableE2EOperation(operation) {
   throw new Error(`E2E_RECOVERY_BLOCKED: ${reason} No scenario write is authorized until a safe recovery contract is independently audited.`);
 }
 
+function recordReturnedResourceIds(body, records) {
+  // Returned references do not prove creation or ownership and never authorize deletion.
+  let invalidReference = null;
+  for (const [field, table] of [["proposalId", "tb_pending_proposals"], ["expenseId", "tb_expenses"]]) {
+    const value = body?.data?.[field];
+    if (value === undefined || value === null) continue;
+    let id;
+    try {
+      id = normalizedUuid(field, value);
+    } catch (error) {
+      invalidReference = error;
+      continue;
+    }
+    if (!records.some((record) => record.table === table && record.id === id)) {
+      records.push({ table, id });
+    }
+  }
+  if (invalidReference) throw invalidReference;
+}
+
+function requireAdministrativeRecovery(records, writeAttempted = false) {
+  if (!writeAttempted && records.length === 0) return;
+  throw new Error(`E2E_RECOVERY_BLOCKED: creation/ownership of returned references is not proven; additional unidentified resources may exist. No automatic deletion attempted. Known references: ${JSON.stringify(records)}`);
+}
+
 function assertSupabaseResult(operation, result) {
   if (result.error) {
     const code =
@@ -351,6 +376,8 @@ module.exports = {
   createE2EClient,
   authorizedAgentHouseholdId,
   assertRecoverableE2EOperation,
+  recordReturnedResourceIds,
+  requireAdministrativeRecovery,
   createExpense,
   prepareExpenseFixtures,
   cleanupExpenseFixtures,

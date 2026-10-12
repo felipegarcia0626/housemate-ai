@@ -15,6 +15,8 @@ const {
   createE2EClient,
   authorizedAgentHouseholdId,
   assertRecoverableE2EOperation,
+  recordReturnedResourceIds,
+  requireAdministrativeRecovery,
 } = require("./fixtures.cjs");
 
 function required(name) {
@@ -63,17 +65,7 @@ async function resolveFixtureMembers(admin, householdId, primaryEmail) {
   return { actor, splitMember };
 }
 
-async function idsForScenario(admin, householdId, actorMemberId, before) {
-  const proposals = await admin.from("tb_pending_proposals").select("id, expense_id").eq("household_id", householdId).eq("actor_member_id", actorMemberId).eq("conversation_key", `web:${householdId}:${actorMemberId}`).eq("source", "WEB");
-  const drafts = await admin.from("tb_agent_category_drafts").select("id").eq("household_id", householdId).eq("actor_member_id", actorMemberId).eq("conversation_key", `web:${householdId}:${actorMemberId}`).eq("source", "WEB");
-  const expenses = await admin.from("tb_expenses").select("id, merchant").eq("household_id", householdId).eq("created_by", actorMemberId);
-  if (proposals.error || drafts.error || expenses.error) throw new Error("E2E could not inspect scenario records.");
-  return {
-    proposals: proposals.data.filter((row) => !before.proposals.has(row.id)),
-    drafts: drafts.data.filter((row) => !before.drafts.has(row.id)),
-    expenses: expenses.data.filter((row) => !before.expenses.has(row.id)),
-  };
-}
+// Snapshots never establish ownership and are not used as a deletion manifest.
 
 async function preflight(admin, householdId, actorMemberId) {
   const conversationKey = `web:${householdId}:${actorMemberId}`;
@@ -104,44 +96,7 @@ async function preflight(admin, householdId, actorMemberId) {
   console.log("[E2E] PASS — clean state");
 }
 
-async function snapshot(admin, householdId, actorMemberId) {
-  return idsForScenario(admin, householdId, actorMemberId, { proposals: new Set(), drafts: new Set(), expenses: new Set() });
-}
-
-async function cleanupScenario(admin, records) {
-  for (const proposal of records.proposals ?? []) {
-    const result = await admin.from("tb_pending_proposals").delete().eq("id", proposal.id);
-    if (result.error) throw new Error("E2E cleanup failed for proposal.");
-  }
-  for (const draft of records.drafts ?? []) {
-    const result = await admin.from("tb_agent_category_drafts").delete().eq("id", draft.id);
-    if (result.error) throw new Error("E2E cleanup failed for category draft.");
-  }
-  for (const expense of records.expenses ?? []) {
-    const result = await admin.from("tb_expenses").delete().eq("id", expense.id);
-    if (result.error) throw new Error("E2E cleanup failed for expense.");
-  }
-}
-
-async function validateCleanup(admin, records) {
-  const ids = {
-    proposals: (records.proposals ?? []).map((record) => record.id),
-    drafts: (records.drafts ?? []).map((record) => record.id),
-    expenses: (records.expenses ?? []).map((record) => record.id),
-  };
-  if (ids.proposals.length > 0) {
-    const result = await admin.from("tb_pending_proposals").select("id").in("id", ids.proposals);
-    if (result.error || result.data.length > 0) throw new Error(`E2E cleanup validation failed for proposals: ${ids.proposals.join(",")}`);
-  }
-  if (ids.drafts.length > 0) {
-    const result = await admin.from("tb_agent_category_drafts").select("id").in("id", ids.drafts);
-    if (result.error || result.data.length > 0) throw new Error(`E2E cleanup validation failed for drafts: ${ids.drafts.join(",")}`);
-  }
-  if (ids.expenses.length > 0) {
-    const result = await admin.from("tb_expenses").select("id").in("id", ids.expenses);
-    if (result.error || result.data.length > 0) throw new Error(`E2E cleanup validation failed for expenses: ${ids.expenses.join(",")}`);
-  }
-}
+// Cleanup requires an audited creation/recovery contract before writes can resume.
 
 async function readDiagnostics(requestIdValue) {
   const logPath = path.resolve(".next", "dev", "logs", "next-development.log");
@@ -154,13 +109,14 @@ async function readDiagnostics(requestIdValue) {
   return { requestId: requestIdValue, stage: matches.at(-1) ?? "not_found" };
 }
 
-async function sendTurn(baseUrl, cookie, scenario, turn, message) {
+async function sendTurn(baseUrl, cookie, scenario, turn, message, returnedRecords = []) {
   const id = requestId();
   const result = await requestJson(baseUrl, cookie, "/api/agent", {
     method: "POST",
     headers: { "x-e2e-request-id": id },
     body: JSON.stringify({ message }),
   });
+  recordReturnedResourceIds(result.body, returnedRecords);
   const type = safeType(result.body);
   console.log(JSON.stringify({ scenario, turn, requestId: id, status: result.response.status, type }));
   return { ...result, requestId: id, type, diagnostics: await readDiagnostics(id) };
@@ -198,14 +154,14 @@ function responseSummary(result) {
   };
 }
 
-async function drive(baseUrl, cookie, scenario, initial, secondMemberName, maxTurns = 8) {
+async function drive(baseUrl, cookie, scenario, initial, secondMemberName, maxTurns = 8, returnedRecords = []) {
   const turns = [];
-  let result = await sendTurn(baseUrl, cookie, scenario, 1, initial);
+  let result = await sendTurn(baseUrl, cookie, scenario, 1, initial, returnedRecords);
   turns.push(result);
   for (let turn = 2; turn <= maxTurns; turn += 1) {
     const reply = nextReply(result, secondMemberName);
     if (!reply) break;
-    result = await sendTurn(baseUrl, cookie, scenario, turn, reply);
+    result = await sendTurn(baseUrl, cookie, scenario, turn, reply, returnedRecords);
     turns.push(result);
     if (result.type === "CONFIRMED" || result.type === "REJECTED") break;
   }
@@ -243,19 +199,12 @@ async function main() {
   const { actor, splitMember } = await resolveFixtureMembers(admin, householdId, required("E2E_TEST_EMAIL"));
   await preflight(admin, householdId, actor.id);
   const allScenarioRecords = [];
+  let primaryError = null;
   try {
-    const beforeA = await snapshot(admin, householdId, actor.id);
-    const caseA = await sendTurn(baseUrl, primaryCookie, "A", 1, "Gasté $50.000 y quiero repartirlo");
+    const caseA = await sendTurn(baseUrl, primaryCookie, "A", 1, "Gasté $50.000 y quiero repartirlo", allScenarioRecords);
     console.log(JSON.stringify({ scenario: "A", response: responseSummary(caseA), requestId: caseA.requestId, diagnostics: caseA.diagnostics }));
     if (caseA.type !== "CLARIFICATION_REQUIRED") throw new Error(`FAIL — unexpected Case A result (${caseA.type}; request ${caseA.requestId}).`);
-    const caseARecords = await idsForScenario(admin, householdId, actor.id, {
-      proposals: new Set(beforeA.proposals.map((row) => row.id)),
-      drafts: new Set(beforeA.drafts.map((row) => row.id)),
-      expenses: new Set(beforeA.expenses.map((row) => row.id)),
-    });
-    allScenarioRecords.push(caseARecords);
-    await cleanupScenario(admin, caseARecords);
-    await validateCleanup(admin, caseARecords);
+    // References were recorded before response assertions; none authorize deletion.
 
     for (const [name, initial, expected] of [
       ["B", "Gasté $50.000", [{ memberId: actor.id, percentage: 100 }]],
@@ -264,14 +213,7 @@ async function main() {
         { memberId: splitMember.id, percentage: 50 },
       ]],
     ]) {
-      const before = await snapshot(admin, householdId, actor.id);
-      const turns = await drive(baseUrl, primaryCookie, name, initial, name === "C" ? splitMember.display_name : null);
-      const records = await idsForScenario(admin, householdId, actor.id, {
-        proposals: new Set(before.proposals.map((row) => row.id)),
-        drafts: new Set(before.drafts.map((row) => row.id)),
-        expenses: new Set(before.expenses.map((row) => row.id)),
-      });
-      allScenarioRecords.push(records);
+      const turns = await drive(baseUrl, primaryCookie, name, initial, name === "C" ? splitMember.display_name : null, 8, allScenarioRecords);
       const confirmed = turns.find((turn) => turn.type === "CONFIRMED");
       const expectedTerminal = name === "B" || name === "C";
       if (expectedTerminal && !confirmed) {
@@ -280,17 +222,20 @@ async function main() {
       }
       if (confirmed?.body?.data?.expenseId) await verifyExpense(admin, householdId, confirmed.body.data.expenseId, expected);
       console.log(JSON.stringify({ scenario: name, status: turns.at(-1)?.response.status, result: turns.at(-1)?.type, confirmation: Boolean(confirmed), diagnostics: turns.map((turn) => turn.diagnostics) }));
-      await cleanupScenario(admin, records);
-      await validateCleanup(admin, records);
+      // No snapshot-derived or unproven resource deletion.
     }
-    allScenarioRecords.push(await idsForScenario(admin, householdId, actor.id, {
-      proposals: new Set(beforeA.proposals.map((row) => row.id)),
-      drafts: new Set(beforeA.drafts.map((row) => row.id)),
-      expenses: new Set(beforeA.expenses.map((row) => row.id)),
-    }));
-    console.log("PASS authenticated Agent direct split diagnostics");
+    // A future audited recovery mechanism must account for every returned reference.
+    console.log("E2E scenario assertions completed; administrative recovery is still required.");
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    for (const records of allScenarioRecords.reverse()) await cleanupScenario(admin, records);
+    try {
+      requireAdministrativeRecovery(allScenarioRecords, true);
+    } catch (recoveryError) {
+      if (primaryError) console.error(recoveryError.message);
+      else throw recoveryError;
+    }
   }
 }
 
