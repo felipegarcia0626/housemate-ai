@@ -1811,3 +1811,31 @@ PendingProposal, AgentDraft ni la resolución de categorías del Agent. Los
 services de Expense e Income ya consumen `movement_type`, `level`, `parent_id` e
 `is_active` para validar nuevas operaciones sin cambiar este catálogo; la
 resolución de categorías del Agent permanece fuera de este incremento.
+
+# 29. Notifications: autorización SELECT para PostgreSQL Realtime
+
+La migración `0039_fix_notifications_realtime_select_policy.sql` corrige únicamente
+la condición de `tb_notifications_select_own`. `tb_notifications.recipient_user_id`
+referencia `tb_users.id`; el UUID de Supabase Auth se relaciona mediante
+`tb_users.auth_user_id` y no es el mismo identificador conceptual.
+
+`public.fn_notifications_current_user_id()` no recibe parámetros y devuelve un
+UUID: el ID de aplicación vinculado a `auth.uid()`, o NULL si no existe esa
+relación. Es SQL STABLE, SECURITY DEFINER, con `search_path` vacío y referencias
+calificadas. Su propietario debe poder consultar `public.tb_users` y ejecutar
+`auth.uid()`. La migración revoca EXECUTE a PUBLIC y lo concede a `authenticated`;
+no concede SELECT sobre `tb_users` al navegador.
+
+La política SELECT permite filas cuyo `recipient_user_id` coincide con el resultado
+del helper. `auth.uid()` contempla los formatos de identidad individual y JSON
+utilizados en el entorno Supabase verificado. La publicación sigue configurada por
+0037; el GET de la aplicación sigue usando el repository administrativo y no
+sustituye la comprobación de autorización Realtime.
+
+0039 está envuelta en una transacción y configura el helper y la política solo si
+existe el rol `authenticated`, siguiendo la condición usada por 0031. No reemplaza
+un helper preexistente: una colisión de nombre provoca un fallo, en vez de
+sobrescribirlo. No modifica la política UPDATE, los grants de tabla, la publicación
+ni las escrituras de negocio. No se deben editar 0031 o 0037 para reproducir esta
+corrección. La validación manual y sus límites se registran en FINDING-009 de
+`audit_findings.md`.

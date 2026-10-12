@@ -78,3 +78,15 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 - **Estado:** OPEN
 - **Origen/detección:** Implementación de defaults de `CREATE_EXPENSE` del 2026-08-13.
 - **Criterio de resolución:** Aprobar un incremento independiente que defina y valide la resolución segura de pagadores distintos sin aceptar identidad desde el cliente.
+
+### FINDING-009
+
+- **Fecha:** 2026-10-11
+- **Área:** Notifications / autorización PostgreSQL Realtime
+- **Descripción:** La política SELECT de `0031` consultaba `tb_users` directamente y obtenía la identidad solo de `request.jwt.claim.sub`. En el proyecto de desarrollo, `authenticated` no tenía SELECT sobre esa tabla ni sobre las columnas utilizadas; una lectura bajo ese rol falló con `42501: permission denied for table tb_users`. La función desplegada `realtime.apply_rls` configuraba `request.jwt.claims`, mientras la política no contemplaba ese formato JSON.
+- **Impacto:** La unión del canal y los heartbeats funcionaban, pero un INSERT confirmado para el receptor correcto no producía un frame `postgres_changes` ni ejecutaba el callback. El GET administrativo recuperaba la notificación y no demostraba autorización Realtime.
+- **Prioridad:** HIGH
+- **Estado:** RESOLVED (política SELECT y entrega observada en desarrollo)
+- **Corrección:** `0039_fix_notifications_realtime_select_policy.sql` añade `fn_notifications_current_user_id()`, sin parámetros, con `SECURITY DEFINER`, referencias calificadas y `search_path` vacío. Resuelve únicamente la identidad propia mediante `auth.uid()` y cambia la condición SELECT para comparar `recipient_user_id` con ese resultado, sin conceder SELECT general de `tb_users`. Las migraciones anteriores permanecen intactas.
+- **Evidencia de resolución:** El usuario aplicó 0039 manualmente y comunicó la política y el helper desplegados; EXECUTE estaba permitido a `authenticated` y denegado a `anon` y PUBLIC. Una lectura simulando el formato JSON bajo `authenticated` resolvió la identidad, mostró notificaciones propias y no mostró ajenas. Después, el usuario observó un INSERT controlado en el WebSocket, callback INSERT, reconciliación, carga HTTP, actualización de estado y aumento del contador sin abrir la campana; también reportó llegada inmediata en una prueba funcional real adicional.
+- **Límites:** La evidencia remota procede de resultados y observaciones aportados por el usuario; el agente no ejecutó consultas remotas ni pruebas automatizadas. No se validaron todos los escenarios de negocio. 0039 no cambia la política UPDATE de lectura definida en 0031, que conserva el patrón anterior.
