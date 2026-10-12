@@ -1,5 +1,17 @@
 # Data Model — HouseMate AI
 
+## Correlación de invitaciones (`0038`)
+
+`tb_household_invitations.creator_user_id` referencia `tb_users.id` y
+`idempotency_key` es UUID. Ambos son nulos para filas históricas/sin correlación
+o ambos están presentes. El índice único parcial `(creator_user_id, idempotency_key)`
+define el ámbito por actor, no por household. La RPC autenticada resuelve el actor
+desde `auth_user_id`, bloquea su fila y la membership activa, compara household/email
+normalizado y persiste correlación, invitación y notificación atómicamente.
+No guarda el token en plaintext ni expone su hash. La firma histórica de creación
+se conserva; ya no elimina invitaciones correlacionadas al expirar. No se añaden
+grants DELETE ni mecanismos de cleanup. Recuperar IDs no recupera el enlace original.
+
 Version: 1.0
 
 ---

@@ -1332,6 +1332,27 @@ autenticada y membership en el household indicado. Recibe un email y devuelve
 `201` con un link de invitación copiable. El email no se usa para enumerar
 cuentas y el token no se almacena en plaintext.
 
+El body permite `{ "email": "...", "idempotencyKey": "uuid" }`; la clave es
+opcional para conservar compatibilidad. Si está presente, su ámbito es el usuario
+de aplicación obtenido de la sesión. Misma clave, household y email normalizado
+recuperan la operación; cambiar household o email devuelve `409 CONFLICT`. La
+recuperación exige todavía membership `ACTIVE` en el household solicitado.
+
+La creación responde `201` con `data = { outcome: "CREATED", status: "PENDING",
+invitationId, inviteUrl }`. La recuperación responde `200` con
+`data = { outcome: "RECOVERED", status: "PENDING" | "ACCEPTED", invitationId }`,
+sin token ni `inviteUrl`. No se reconstruye ni se regenera el enlace original.
+`PENDING` no garantiza que la invitación no haya expirado. No se expone si existe
+una cuenta destinataria ni el ID de su notificación; la recuperación administrativa
+puede identificarla por el ID exacto de invitación, tipo y destinatario verificados.
+
+La correlación se conserva mientras exista la invitación, incluso expirada; esas
+filas no se eliminan lazymente. Una nueva clave para el mismo destinatario con una
+invitación correlacionada todavía `PENDING` produce conflicto. Tras una eliminación
+administrativa desaparece la correlación: no deben reintentarse ejecuciones cerradas.
+Sin clave no se garantiza recuperación de una respuesta perdida. Este contrato no
+habilita E2E remoto ni acredita permisos administrativos de limpieza.
+
 `POST /api/auth/households/invitations/{token}/accept` requiere una sesión
 autenticada cuyo email coincida server-side con el destinatario. La aceptación
 crea la membership y marca la invitación como `ACCEPTED` atómicamente. Una

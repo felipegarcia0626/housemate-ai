@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { SupabaseAuthError } from "@/infrastructure/auth/supabase-server.client";
 import { HouseholdInvitationConflictError, HouseholdInvitationForbiddenError, HouseholdInvitationRepositoryError, HouseholdInvitationValidationError, createInvitation } from "@/modules/household-invitations/invitation.service";
+import type { InvitationCreationResponse } from "@/modules/household-invitations/invitation.types";
 
 export async function POST(request: Request, { params }: { params: Promise<{ householdId: string }> }): Promise<Response> {
   try {
@@ -9,9 +10,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ hou
     if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "email" && key !== "idempotencyKey")) {
       return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Solicitud inválida." } }, { status: 400 });
     }
-    const result = await createInvitation({ householdId, email: (body as { email?: unknown }).email });
+    const input = body as { email?: unknown; idempotencyKey?: unknown };
+    const result = await createInvitation({ householdId, email: input.email, idempotencyKey: input.idempotencyKey });
+    if (result.outcome === "RECOVERED") {
+      const data: InvitationCreationResponse = { outcome: result.outcome, status: result.status, invitationId: result.invitationId };
+      return NextResponse.json({ data }, { status: 200 });
+    }
+    if (!result.token) throw new HouseholdInvitationRepositoryError("Missing creation token");
     const url = new URL(request.url);
-    return NextResponse.json({ data: { status: result.status, inviteUrl: `${url.origin}/household/invitations/${encodeURIComponent(result.token)}` } }, { status: 201 });
+    const data: InvitationCreationResponse = { outcome: result.outcome, status: result.status, invitationId: result.invitationId, inviteUrl: `${url.origin}/household/invitations/${encodeURIComponent(result.token)}` };
+    return NextResponse.json({ data }, { status: 201 });
   } catch (error) {
     if (error instanceof SupabaseAuthError && error.code === "UNAUTHENTICATED") return NextResponse.json({ error: { code: "UNAUTHENTICATED", message: "Se requiere una sesión autenticada." } }, { status: 401 });
     if (error instanceof HouseholdInvitationValidationError) return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Solicitud inválida." } }, { status: 400 });

@@ -5,6 +5,14 @@ export interface CreatedHouseholdInvitation {
   invitationId: string;
 }
 
+export type InvitationCreationResult =
+  | (CreatedHouseholdInvitation & { outcome: "CREATED" })
+  | { outcome: "RECOVERED"; status: HouseholdInvitationStatus; invitationId: string };
+
+export type InvitationCreationResponse =
+  | (CreatedHouseholdInvitation & { outcome: "CREATED"; inviteUrl: string })
+  | { outcome: "RECOVERED"; status: HouseholdInvitationStatus; invitationId: string };
+
 export interface AcceptedHouseholdInvitation {
   status: "ACCEPTED";
   alreadyAccepted: boolean;

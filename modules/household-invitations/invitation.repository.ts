@@ -1,5 +1,5 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
-import type { AcceptedHouseholdInvitation, CreatedHouseholdInvitation } from "./invitation.types";
+import type { AcceptedHouseholdInvitation, InvitationCreationResult } from "./invitation.types";
 
 export class HouseholdInvitationRepositoryError extends Error {
   readonly code: string | null;
@@ -18,25 +18,33 @@ function resultObject(data: unknown): Record<string, unknown> {
 }
 
 export async function createHouseholdInvitation(input: {
+  authUserId: string;
   householdId: string;
-  inviterMemberId: string;
   email: string;
-  tokenHash: string;
-  expiresAt: string;
-}): Promise<CreatedHouseholdInvitation> {
+  idempotencyKey: string | null;
+  tokenHash: string | null;
+  expiresAt: string | null;
+}): Promise<InvitationCreationResult | null> {
   const { data, error } = await getSupabaseAdminClient().rpc("fn_create_household_invitation", {
     p_household_id: input.householdId,
-    p_inviter_member_id: input.inviterMemberId,
+    p_auth_user_id: input.authUserId,
+    p_idempotency_key: input.idempotencyKey,
     p_invitee_email_normalized: input.email,
     p_token_hash: input.tokenHash,
     p_expires_at: input.expiresAt,
   });
   if (error) throw new HouseholdInvitationRepositoryError(error, error.code ?? null);
   const result = resultObject(data);
-  if (result.status !== "PENDING" || typeof result.invitationId !== "string") {
+  if (result.outcome === "NEEDS_CREATION" && input.tokenHash === null && input.idempotencyKey !== null) return null;
+  if ((result.outcome !== "CREATED" && result.outcome !== "RECOVERED") ||
+      (result.status !== "PENDING" && result.status !== "ACCEPTED") ||
+      (result.outcome === "CREATED" && result.status !== "PENDING") ||
+      typeof result.invitationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result.invitationId)) {
     throw new HouseholdInvitationRepositoryError("Invalid create invitation result");
   }
-  return { status: "PENDING", invitationId: result.invitationId };
+  return result.outcome === "CREATED"
+    ? { outcome: "CREATED", status: "PENDING", invitationId: result.invitationId }
+    : { outcome: "RECOVERED", status: result.status, invitationId: result.invitationId };
 }
 
 export async function acceptHouseholdInvitation(input: {
