@@ -19,6 +19,13 @@ Optional variables:
 
 Start the application with the normal development command, then run:
 
+The repository separates browser E2E into two configurations:
+
+- `npm run test:e2e:readonly` runs the mocked Expenses editor and Notifications UI
+  specs: `expenses.editor.spec.cjs` and `notifications.mocked.spec.cjs`. It has no
+  `globalSetup`, uses a non-routable Supabase endpoint, and
+  must not write to a remote project.
+
 ```bash
 npm run test:e2e:agent
 npm run test:e2e:agent:split
@@ -36,6 +43,25 @@ selects the test household, and sends `Gasté $20.000 en una cena` to the real
 Agent API. It prints only request IDs, HTTP status, result type, and boolean
 setup information. Access tokens, refresh tokens, cookies and secrets are
 never printed.
+
+## Isolated Notifications browser tests
+
+Run `npm run test:e2e:notifications-ui` for **mocked UI behavior only**.
+It explicitly selects `notifications.mocked.spec.cjs` with the readonly config:
+no global setup, provisioning, integration fixtures or administrative client.
+Next runs with `NODE_ENV=test` (does not load `.env.local`), dummy keys and a
+loopback-only Supabase URL. Inherited E2E values are overridden, not merely deleted.
+The browser receives a fictitious session cookie; all API requests are fulfilled
+or rejected by mocks installed before navigation. Unexpected HTTP/WebSocket
+destinations are blocked and make the test fail. Service workers are disabled.
+
+Coverage: bell/badge, list, pagination, mark-one/all-read, always available unread
+filter and empty state, filter persistence, Escape, error/retry, mocked invitation
+acceptance and accepted state after reload. A simulated Phoenix INSERT exercises
+the existing SDK callback/reconciliation and badge update with the panel closed.
+It does **not** demonstrate Supabase delivery, RLS, real authentication, database
+permissions or real invitation acceptance. Contextual Household navigation and
+multi-user integration remain outside this isolated test.
 
 ## Realtime subscription preflight
 
