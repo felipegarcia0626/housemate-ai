@@ -385,7 +385,7 @@ if (page.includes('api<Income[]>("/api/incomes"'))
   throw new Error("Income collection must consume the paginated response");
 if (page.includes('className="form expense-edit-row"'))
   throw new Error("Income editing must use the modal instead of inline forms");
-const incomeSectionStart = page.indexOf('section === "incomes"');
+const incomeSectionStart = page.indexOf('{!loading && section === "incomes" && (');
 const incomeSectionEnd = page.indexOf('section === "agent"', incomeSectionStart);
 const incomeSection =
   incomeSectionStart >= 0 && incomeSectionEnd >= incomeSectionStart
