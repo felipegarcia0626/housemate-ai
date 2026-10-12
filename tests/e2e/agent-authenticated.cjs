@@ -93,32 +93,41 @@ async function requestJson(baseUrl, cookie, path, options = {}) {
 }
 
 async function ensureHousehold(baseUrl, cookie) {
-  let result = await requestJson(baseUrl, cookie, "/api/auth/households");
+  const requestedHouseholdId = authorizedAgentHouseholdId();
+  const result = await requestJson(baseUrl, cookie, "/api/auth/households");
   if (result.response.status === 403) {
-    result = await requestJson(baseUrl, cookie, "/api/auth/onboarding", {
-      method: "POST",
-      body: JSON.stringify({
-        displayName: optional("E2E_TEST_DISPLAY_NAME", "Felipe"),
-        householdName: optional("E2E_TEST_HOUSEHOLD_NAME", "HouseMate E2E"),
-      }),
-    });
-    assertResponse("onboarding", result.response);
-    result = await requestJson(baseUrl, cookie, "/api/auth/households");
+    throw new Error(
+      "E2E household lookup returned 403; a pre-existing household membership is required and onboarding provisioning is disabled.",
+    );
   }
   assertResponse("household lookup", result.response);
-  const households = Array.isArray(result.body?.data) ? result.body.data : [];
-  if (households.length === 0) throw new Error("E2E household provisioning returned no household.");
-  const requestedHouseholdId = process.env.E2E_AGENT_HOUSEHOLD_ID?.trim();
-  const selected = requestedHouseholdId
-    ? households.find((item) => item.householdId === requestedHouseholdId)
-    : households[0];
-  if (!selected) throw new Error("E2E_HOUSEHOLD_ID is not available to the authenticated user.");
-  const selection = await requestJson(baseUrl, cookie, "/api/auth/household-selection", {
-    method: "POST",
-    body: JSON.stringify({ householdId: selected.householdId }),
-  });
-  assertResponse("household selection", selection.response);
-  return selected.householdId;
+  const households = result.body?.data;
+  if (!Array.isArray(households)) {
+    throw new Error("E2E household lookup returned an invalid household list.");
+  }
+  if (households.length === 0) {
+    throw new Error("E2E household lookup returned no selectable household memberships.");
+  }
+  if (
+    households.some(
+      (item) =>
+        !item || typeof item !== "object" || Array.isArray(item) ||
+        typeof item.householdId !== "string" || typeof item.householdName !== "string" ||
+        typeof item.selected !== "boolean",
+    )
+  ) {
+    throw new Error("E2E household lookup returned an invalid household list.");
+  }
+  const authorizedHousehold = households.find(
+    (item) => item.householdId.toLowerCase() === requestedHouseholdId,
+  );
+  if (!authorizedHousehold) {
+    throw new Error("E2E_AGENT_HOUSEHOLD_ID is not available to the authenticated user.");
+  }
+  if (households.length !== 1) {
+    throw new Error("E2E Agent account must have exactly one selectable household; automatic household selection is disabled.");
+  }
+  return requestedHouseholdId;
 }
 
 async function sendAgent(baseUrl, cookie, message, returnedRecords = []) {

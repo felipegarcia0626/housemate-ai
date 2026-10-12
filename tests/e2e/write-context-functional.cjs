@@ -91,12 +91,62 @@ function runBlockedAgentHelper(environment, expression, expectedMessage) {
     };
     let fetchCalls = 0;
     global.fetch = async () => { fetchCalls++; throw new Error("NETWORK_CALL_FORBIDDEN"); };
-    const { requestJson } = require(${JSON.stringify(agentModulePath)});
+    const { requestJson, ensureHousehold } = require(${JSON.stringify(agentModulePath)});
     (${expression}).then(() => { process.exitCode = 1; }).catch(error => {
       process.exitCode = fetchCalls === 0 && String(error.message).includes(${JSON.stringify(expectedMessage)}) ? 0 : 2;
     });
   `;
   return spawnSync(process.execPath, ["-e", script], { cwd: root, env: childEnvironment, encoding: "utf8" });
+}
+
+function runEnsureHouseholdWithResponses(responses) {
+  const script = `
+    const Module = require("node:module");
+    const originalLoad = Module._load;
+    const calls = [];
+    let adminClientConstructions = 0;
+    let serverClientConstructions = 0;
+    const responses = ${JSON.stringify(responses)};
+    Module._load = function(name, ...args) {
+      if (name === "@next/env") return { loadEnvConfig() {} };
+      if (name === "@supabase/supabase-js") {
+        return { createClient() { adminClientConstructions++; throw new Error("ADMIN_CLIENT_CONSTRUCTION_FORBIDDEN"); } };
+      }
+      if (name === "@supabase/ssr") {
+        return { createServerClient() { serverClientConstructions++; throw new Error("SERVER_CLIENT_CONSTRUCTION_FORBIDDEN"); } };
+      }
+      return originalLoad.call(this, name, ...args);
+    };
+    global.fetch = async (input, options = {}) => {
+      calls.push({ path: new URL(String(input)).pathname, method: String(options.method ?? "GET").toUpperCase() });
+      const response = responses.shift();
+      if (!response) throw new Error("UNEXPECTED_FETCH");
+      return {
+        status: response.status,
+        ok: response.status >= 200 && response.status < 300,
+        json: async () => response.body,
+      };
+    };
+    const { ensureHousehold } = require(${JSON.stringify(agentModulePath)});
+    ensureHousehold("http://127.0.0.1:9", "").then(value => {
+      process.stdout.write(JSON.stringify({ value, error: null, calls, adminClientConstructions, serverClientConstructions }));
+    }).catch(error => {
+      process.stdout.write(JSON.stringify({ value: null, error: String(error?.message ?? error), calls, adminClientConstructions, serverClientConstructions }));
+    });
+  `;
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: root,
+    env: { ...minimalChildEnvironment(), ...validContext() },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+function assertHouseholdLookupOnly(result) {
+  assert.deepEqual(result.calls, [{ path: "/api/auth/households", method: "GET" }]);
+  assert.equal(result.adminClientConstructions, 0);
+  assert.equal(result.serverClientConstructions, 0);
 }
 
 function runBlockedWriteEntrypoints() {
@@ -380,6 +430,53 @@ for (const expression of [
   const result = runBlockedAgentHelper(validContext(), expression, "E2E_RECOVERY_BLOCKED");
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 }
+const wrongAgentHousehold = runBlockedAgentHelper(
+  validContext({ E2E_AGENT_HOUSEHOLD_ID: "00000000-0000-4000-8000-000000000103" }),
+  'ensureHousehold("http://127.0.0.1:9", "")',
+  "centrally authorized",
+);
+assert.equal(wrongAgentHousehold.status, 0, wrongAgentHousehold.stderr);
+
+const authorizedHouseholdId = "00000000-0000-4000-8000-000000000101";
+const otherHouseholdId = "00000000-0000-4000-8000-000000000103";
+const soleAuthorizedHousehold = runEnsureHouseholdWithResponses([
+  { status: 200, body: { data: [{ householdId: authorizedHouseholdId, householdName: "Local household", selected: false }] } },
+]);
+assert.equal(soleAuthorizedHousehold.value, authorizedHouseholdId);
+assert.equal(soleAuthorizedHousehold.error, null);
+assertHouseholdLookupOnly(soleAuthorizedHousehold);
+
+const ambiguousHouseholdContext = runEnsureHouseholdWithResponses([
+  { status: 200, body: { data: [
+    { householdId: otherHouseholdId, householdName: "Other local household", selected: false },
+    { householdId: authorizedHouseholdId, householdName: "Local household", selected: true },
+  ] } },
+]);
+assert.equal(ambiguousHouseholdContext.value, null);
+assert.match(ambiguousHouseholdContext.error, /exactly one selectable household/);
+assertHouseholdLookupOnly(ambiguousHouseholdContext);
+
+for (const [responses, expectedError] of [
+  [[{ status: 403, body: { error: { code: "FORBIDDEN" } } }], /403.*pre-existing household membership/],
+  [[{ status: 200, body: { data: null } }], /invalid household list/],
+  [[{ status: 200, body: { data: [null] } }], /invalid household list/],
+  [[{ status: 200, body: { data: [] } }], /no selectable household memberships/],
+  [[{
+    status: 200,
+    body: { data: [{ householdId: otherHouseholdId, householdName: "Other local household", selected: true }] },
+  }], /E2E_AGENT_HOUSEHOLD_ID is not available/],
+  [[{ status: 200, body: { data: [
+    { householdId: authorizedHouseholdId, householdName: "Local household", selected: false },
+    { householdId: otherHouseholdId, householdName: "Other local household", selected: true },
+  ] } }], /exactly one selectable household/],
+  [[{ status: 500, body: { error: { code: "INTERNAL_ERROR" } } }], /HTTP 500/],
+]) {
+  const result = runEnsureHouseholdWithResponses(responses);
+  assert.equal(result.value, null);
+  assert.match(result.error, expectedError);
+  assertHouseholdLookupOnly(result);
+}
+
 const wrongSelection = runBlockedAgentHelper(
   validContext(),
   'requestJson("http://127.0.0.1:9", "", "/api/auth/household-selection", { method: "POST", body: JSON.stringify({ householdId: "00000000-0000-4000-8000-000000000103" }) })',
