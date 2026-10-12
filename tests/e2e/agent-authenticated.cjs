@@ -4,6 +4,12 @@ loadEnvConfig(process.cwd());
 const { createClient } = require("@supabase/supabase-js");
 const { createServerClient } = require("@supabase/ssr");
 const crypto = require("node:crypto");
+const {
+  assertWriteE2EContext,
+  createE2EClient,
+  authorizedAgentHouseholdId,
+  assertRecoverableE2EOperation,
+} = require("./fixtures.cjs");
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -57,6 +63,21 @@ async function createAuthenticatedCookieHeader({ supabaseUrl, anonKey, email, pa
 }
 
 async function requestJson(baseUrl, cookie, path, options = {}) {
+  const method = (options.method ?? "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const context = assertWriteE2EContext();
+    const pathname = new URL(`${baseUrl}${path}`).pathname;
+    authorizedAgentHouseholdId();
+    if (pathname === "/api/auth/household-selection") {
+      const selected = JSON.parse(options.body ?? "null")?.householdId;
+      if (typeof selected !== "string" || selected.toLowerCase() !== context.householdId) {
+        throw new Error("E2E household selection must use the centrally authorized household.");
+      }
+    }
+    // Existing consumers only mutate Agent or select a household. Unknown/encoded
+    // paths cannot bypass the recovery hold via this exported HTTP helper.
+    assertRecoverableE2EOperation("agent");
+  }
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers: {
@@ -183,11 +204,14 @@ async function validateCreatedRecordsRemoved(admin, records) {
 }
 
 async function main() {
+  const writeContext = assertWriteE2EContext();
+  authorizedAgentHouseholdId();
+  assertRecoverableE2EOperation("agent");
   const baseUrl = optional("E2E_BASE_URL", "http://localhost:3000").replace(/\/$/, "");
   const supabaseUrl = required("E2E_SUPABASE_URL");
   const anonKey = process.env.E2E_SUPABASE_ANON_KEY?.trim() || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
   if (!anonKey) throw new Error("E2E requires E2E_SUPABASE_ANON_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  const admin = createClient(supabaseUrl, required("SUPABASE_SERVICE_ROLE_KEY"), { auth: { autoRefreshToken: false, persistSession: false } });
+  const admin = createE2EClient(writeContext);
   const email = required("E2E_TEST_EMAIL");
   const cookie = await createAuthenticatedCookieHeader({
     supabaseUrl,
@@ -229,6 +253,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  main,
   createAuthenticatedCookieHeader,
   requestJson,
   ensureHousehold,

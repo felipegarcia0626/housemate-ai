@@ -5,12 +5,17 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createClient } = require("@supabase/supabase-js");
 const {
   createAuthenticatedCookieHeader,
   requestJson,
   ensureHousehold,
 } = require("./agent-authenticated.cjs");
+const {
+  assertWriteE2EContext,
+  createE2EClient,
+  authorizedAgentHouseholdId,
+  assertRecoverableE2EOperation,
+} = require("./fixtures.cjs");
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -224,15 +229,17 @@ async function verifyExpense(admin, householdId, expenseId, expectedSplits) {
 }
 
 async function main() {
+  const writeContext = assertWriteE2EContext();
+  authorizedAgentHouseholdId();
+  assertRecoverableE2EOperation("agent");
   const baseUrl = optional("E2E_BASE_URL", "http://localhost:3000").replace(/\/$/, "");
   const supabaseUrl = required("E2E_SUPABASE_URL");
   const anonKey = process.env.E2E_SUPABASE_ANON_KEY?.trim() || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
   if (!anonKey) throw new Error("E2E requires E2E_SUPABASE_ANON_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  const admin = createClient(supabaseUrl, required("SUPABASE_SERVICE_ROLE_KEY"), { auth: { autoRefreshToken: false, persistSession: false } });
+  const admin = createE2EClient(writeContext);
   const primaryCookie = await createAuthenticatedCookieHeader({ supabaseUrl, anonKey, email: required("E2E_TEST_EMAIL"), password: required("E2E_TEST_PASSWORD") });
   const householdId = await ensureHousehold(baseUrl, primaryCookie);
-  const configuredHouseholdId = required("E2E_AGENT_HOUSEHOLD_ID");
-  if (householdId !== configuredHouseholdId) throw new Error("Authenticated user did not select the configured E2E household.");
+  if (householdId !== writeContext.householdId) throw new Error("Authenticated user did not select the centrally authorized E2E household.");
   const { actor, splitMember } = await resolveFixtureMembers(admin, householdId, required("E2E_TEST_EMAIL"));
   await preflight(admin, householdId, actor.id);
   const allScenarioRecords = [];
@@ -288,3 +295,5 @@ async function main() {
 }
 
 if (require.main === module) main().catch((error) => { console.error(error instanceof Error ? error.message : "E2E failed."); process.exitCode = 1; });
+
+module.exports = { main };

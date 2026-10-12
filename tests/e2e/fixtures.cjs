@@ -10,11 +10,18 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SUPABASE_PROJECT_REF_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+function normalizedUuid(name, value) {
+  if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
+    throw new Error(`${name} must be a valid UUID.`);
+  }
+  return value.toLowerCase();
+}
+
 function requiredEnvironment(name) {
   const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(
-      `Missing ${name}; browser E2E requires an explicit isolated context and never falls back to the MVP context.`,
+      `Missing ${name}; browser E2E requires an explicit configured context and never falls back to the MVP context.`,
     );
   }
   return value;
@@ -23,6 +30,7 @@ function requiredEnvironment(name) {
 function readE2EContext() {
   const context = {
     supabaseUrl: requiredEnvironment("E2E_SUPABASE_URL"),
+    anonKey: requiredEnvironment("E2E_SUPABASE_ANON_KEY"),
     serviceRoleKey: requiredEnvironment("E2E_SUPABASE_SERVICE_ROLE_KEY"),
     householdId: requiredEnvironment("E2E_HOUSEHOLD_ID"),
     allowedHouseholdId: requiredEnvironment("E2E_ALLOWED_HOUSEHOLD_ID"),
@@ -66,9 +74,12 @@ function readE2EContext() {
     ["E2E_ALLOWED_HOUSEHOLD_ID", context.allowedHouseholdId],
     ["E2E_MEMBER_ID", context.memberId],
   ]) {
-    if (!UUID_PATTERN.test(value))
-      throw new Error(`${name} must be a valid UUID.`);
+    normalizedUuid(name, value);
   }
+
+  context.householdId = normalizedUuid("E2E_HOUSEHOLD_ID", context.householdId);
+  context.allowedHouseholdId = normalizedUuid("E2E_ALLOWED_HOUSEHOLD_ID", context.allowedHouseholdId);
+  context.memberId = normalizedUuid("E2E_MEMBER_ID", context.memberId);
 
   if (context.householdId !== context.allowedHouseholdId) {
     throw new Error(
@@ -76,10 +87,11 @@ function readE2EContext() {
     );
   }
 
-  if (
-    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID &&
-    process.env.HOUSEMATE_MVP_HOUSEHOLD_ID === context.householdId
-  ) {
+  const mvpHouseholdId = normalizedUuid(
+    "HOUSEMATE_MVP_HOUSEHOLD_ID",
+    requiredEnvironment("HOUSEMATE_MVP_HOUSEHOLD_ID"),
+  );
+  if (mvpHouseholdId === context.householdId) {
     throw new Error(
       "E2E_HOUSEHOLD_ID must not equal HOUSEMATE_MVP_HOUSEHOLD_ID.",
     );
@@ -89,9 +101,46 @@ function readE2EContext() {
 }
 
 function createE2EClient(context) {
-  return createClient(context.supabaseUrl, context.serviceRoleKey, {
+  const validatedContext = assertWriteE2EContext();
+  if (
+    !context ||
+    context.projectRef !== validatedContext.projectRef ||
+    context.supabaseUrl !== validatedContext.supabaseUrl ||
+    context.anonKey !== validatedContext.anonKey ||
+    context.serviceRoleKey !== validatedContext.serviceRoleKey ||
+    context.householdId !== validatedContext.householdId ||
+    context.memberId !== validatedContext.memberId
+  ) {
+    throw new Error(
+      "The administrative E2E client requires the validated write context.",
+    );
+  }
+
+  return createClient(validatedContext.supabaseUrl, validatedContext.serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+}
+
+function assertWriteE2EContext() {
+  if (process.env.E2E_WRITE_ENABLED !== "1") {
+    throw new Error(
+      "Write E2E is disabled. Set E2E_WRITE_ENABLED=1 only for the explicitly configured development project.",
+    );
+  }
+
+  return readE2EContext();
+}
+
+function authorizedAgentHouseholdId() {
+  const context = assertWriteE2EContext();
+  const householdId = normalizedUuid(
+    "E2E_AGENT_HOUSEHOLD_ID",
+    requiredEnvironment("E2E_AGENT_HOUSEHOLD_ID"),
+  );
+  if (householdId !== context.householdId) {
+    throw new Error("E2E_AGENT_HOUSEHOLD_ID must match the centrally authorized E2E household.");
+  }
+  return householdId;
 }
 
 function assertRecoverableE2EOperation(operation) {
@@ -113,29 +162,15 @@ function assertSupabaseResult(operation, result) {
   return result.data;
 }
 
-async function findExpenseIds(client, householdId) {
-  const result = await client
-    .from("tb_expenses")
-    .select("id")
-    .eq("household_id", householdId)
-    .like("merchant", `${FIXTURE_PREFIX}%`);
-  const data = assertSupabaseResult("lookup", result);
-  return Array.isArray(data) ? data.map((row) => row.id) : [];
-}
-
 async function deleteExpenseIds(client, householdId, expenseIds) {
   if (expenseIds.length === 0) return;
+  assertRecoverableE2EOperation("unknown");
   const result = await client
     .from("tb_expenses")
     .delete()
     .eq("household_id", householdId)
     .in("id", expenseIds);
   assertSupabaseResult("cleanup", result);
-}
-
-async function cleanupPreviousFixtures(client, householdId) {
-  const expenseIds = await findExpenseIds(client, householdId);
-  await deleteExpenseIds(client, householdId, expenseIds);
 }
 
 async function findMembers(client, householdId, configuredMemberId) {
@@ -199,6 +234,7 @@ async function createExpense(client, {
   expenseDate,
   distributions,
 }) {
+  assertRecoverableE2EOperation("unknown");
   const result = await client.rpc("fn_create_expense", {
     p_household_id: householdId,
     p_created_by: memberId,
@@ -220,9 +256,9 @@ async function createExpense(client, {
 }
 
 async function prepareExpenseFixtures() {
-  const context = readE2EContext();
+  assertRecoverableE2EOperation("unknown");
+  const context = assertWriteE2EContext();
   const client = createE2EClient(context);
-  await cleanupPreviousFixtures(client, context.householdId);
 
   const members = await findMembers(
     client,
@@ -281,13 +317,23 @@ async function prepareExpenseFixtures() {
 
 async function cleanupExpenseFixtures(fixtures) {
   if (!fixtures) return;
+  // Keep the shared manifest as recovery evidence; its safe deletion ownership is not established.
+  const createdIds = Array.isArray(fixtures.createdIds)
+    ? fixtures.createdIds
+    : [];
+  if (createdIds.length === 0) {
+    throw new Error(
+      "E2E_RECOVERY_BLOCKED: exact resource IDs are unavailable; recovery manifest was preserved.",
+    );
+  }
+
+  assertRecoverableE2EOperation("unknown");
   try {
     await deleteExpenseIds(
       fixtures.client,
       fixtures.context.householdId,
-      fixtures.createdIds,
+      createdIds,
     );
-    await fs.rm(MANIFEST_PATH, { force: true });
   } catch (error) {
     const code =
       error && typeof error === "object" && "code" in error
@@ -301,7 +347,11 @@ module.exports = {
   FIXTURE_PREFIX,
   MANIFEST_PATH,
   readE2EContext,
+  assertWriteE2EContext,
+  createE2EClient,
+  authorizedAgentHouseholdId,
   assertRecoverableE2EOperation,
+  createExpense,
   prepareExpenseFixtures,
   cleanupExpenseFixtures,
 };
