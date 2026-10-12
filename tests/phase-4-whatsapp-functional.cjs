@@ -120,11 +120,12 @@ class FakeQuery {
     if (this.table === "tb_household_members") {
       return {
         data: [
-          { id: memberId, household_id: householdId, display_name: "Felipe" },
+          { id: memberId, household_id: householdId, display_name: "Felipe", status: "ACTIVE" },
           {
             id: secondMemberId,
             household_id: householdId,
             display_name: "Alejandra",
+            status: "ACTIVE",
           },
         ].filter((row) =>
           this.filters.every((filter) => row[filter.column] === filter.value),
