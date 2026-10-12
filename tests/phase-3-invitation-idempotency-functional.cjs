@@ -57,6 +57,10 @@ async function main() {
   const post = (body) => POST(new Request(`http://localhost/api/auth/households/${householdId}/invitations`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   }), { params: Promise.resolve({ householdId }) });
+  const postRaw = (body) => POST(new Request(`http://localhost/api/auth/households/${householdId}/invitations`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body,
+  }), { params: Promise.resolve({ householdId }) });
+  const validationError = { error: { code: "VALIDATION_ERROR", message: "Solicitud inválida." } };
   behavior = (parameters) => ({ data: parameters.p_token_hash === null
     ? { outcome: "NEEDS_CREATION" }
     : { outcome: "CREATED", status: "PENDING", invitationId }, error: null });
@@ -92,6 +96,15 @@ async function main() {
   assert.equal(legacy.status, 201);
   assert.ok((await legacy.json()).data.inviteUrl);
   assert.equal(calls.at(-1).parameters.p_idempotency_key, null);
+  behavior = () => { throw new SyntaxError("private internal failure"); };
+  const internalSyntaxError = await post({ email: "recipient@example.test", idempotencyKey: key });
+  assert.equal(internalSyntaxError.status, 500, "a SyntaxError outside JSON parsing must remain an internal error");
+  assert.deepEqual(await internalSyntaxError.json(), { error: { code: "INTERNAL_ERROR", message: "No fue posible crear la invitación." } });
+  const count = calls.length;
+  const malformedJson = await postRaw("{");
+  assert.equal(malformedJson.status, 400);
+  assert.deepEqual(await malformedJson.json(), validationError);
+  assert.equal(calls.length, count, "malformed JSON must not invoke persistence");
 
   behavior = () => ({ data: null, error: { code: "P0004", message: "private SQL secret" } });
   const conflict = await post({ email: "different@example.test", idempotencyKey: key });

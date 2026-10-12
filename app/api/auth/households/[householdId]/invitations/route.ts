@@ -6,7 +6,18 @@ import type { InvitationCreationResponse } from "@/modules/household-invitations
 export async function POST(request: Request, { params }: { params: Promise<{ householdId: string }> }): Promise<Response> {
   try {
     const { householdId } = await params;
-    const body = await request.json();
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch (error) {
+      // Keep this catch scoped to JSON parsing so unrelated SyntaxErrors remain 500s.
+      const isJsonSyntaxError = error instanceof SyntaxError ||
+        (typeof error === "object" && error !== null && "name" in error && error.name === "SyntaxError");
+      if (isJsonSyntaxError) {
+        return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Solicitud inválida." } }, { status: 400 });
+      }
+      throw error;
+    }
     if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "email" && key !== "idempotencyKey")) {
       return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Solicitud inválida." } }, { status: 400 });
     }
