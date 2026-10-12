@@ -94,6 +94,16 @@ function createE2EClient(context) {
   });
 }
 
+function assertRecoverableE2EOperation(operation) {
+  // No environment opt-in can manufacture missing ownership/recovery guarantees.
+  const reason = operation === "agent"
+    ? "Agent drafts and ambiguous writes have no request-owned recovery identifier."
+    : operation === "notifications"
+      ? "Invitation creation may commit without returning a recoverable identifier; administrative cleanup is not verified."
+      : "Unknown operation has no audited recovery contract.";
+  throw new Error(`E2E_RECOVERY_BLOCKED: ${reason} No scenario write is authorized until a safe recovery contract is independently audited.`);
+}
+
 function assertSupabaseResult(operation, result) {
   if (result.error) {
     const code =
@@ -291,6 +301,7 @@ module.exports = {
   FIXTURE_PREFIX,
   MANIFEST_PATH,
   readE2EContext,
+  assertRecoverableE2EOperation,
   prepareExpenseFixtures,
   cleanupExpenseFixtures,
 };
