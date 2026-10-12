@@ -27,16 +27,56 @@ type NotificationsResponse = {
 type ApiError = Error & { status?: number };
 type NotificationFilter = "all" | "unread";
 type DiagnosticReconciliation = { id: string; eventIds: string[] };
+type SubscriptionErrorCategory = "absent" | "socket_close" | "heartbeat_timeout" | "bindings_mismatch" | "error_unclassified" | "transport_event" | "opaque";
+type SubscriptionErrorDiagnostic = { category: SubscriptionErrorCategory; closeCode?: number; wasClean?: boolean };
 
 declare global {
   interface Window {
     __HOUSEMATE_REALTIME_E2E_DIAGNOSTICS__?: boolean;
+    __HOUSEMATE_REALTIME_SUBSCRIPTION_DIAGNOSTICS__?: boolean;
   }
 }
 
 function realtimeDiagnosticLog(message: string, details?: Record<string, unknown>): void {
   if (typeof window === "undefined" || window.__HOUSEMATE_REALTIME_E2E_DIAGNOSTICS__ !== true) return;
   console.info(details ? `${message} ${JSON.stringify(details)}` : message);
+}
+
+function summarizeSubscriptionError(error: unknown): SubscriptionErrorDiagnostic {
+  try {
+    if (error == null) return { category: "absent" };
+    if (typeof CloseEvent !== "undefined" && error instanceof CloseEvent) {
+      const closeCode = error.code;
+      const wasClean = error.wasClean;
+      if (Number.isInteger(closeCode) && closeCode >= 0 && closeCode <= 65535 && typeof wasClean === "boolean") {
+        return { category: "socket_close", closeCode, wasClean };
+      }
+      return { category: "opaque" };
+    }
+    if (error instanceof Error) {
+      if (error.message === "heartbeat timeout") return { category: "heartbeat_timeout" };
+      if (error.message === "mismatch between server and client bindings for postgres changes") return { category: "bindings_mismatch" };
+      return { category: "error_unclassified" };
+    }
+    if (typeof Event !== "undefined" && error instanceof Event) return { category: "transport_event" };
+    return { category: "opaque" };
+  } catch {
+    return { category: "opaque" };
+  }
+}
+
+function subscriptionDiagnosticLog(status: string, error: unknown, instanceId: string, startedAt: number): void {
+  if (typeof window === "undefined" || window.__HOUSEMATE_REALTIME_SUBSCRIPTION_DIAGNOSTICS__ !== true) return;
+  try {
+    console.info(`[notifications][realtime] subscription_status ${JSON.stringify({
+      status,
+      ...summarizeSubscriptionError(error),
+      elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      instanceId,
+    })}`);
+  } catch {
+    // Diagnostics must not interrupt subscription handling.
+  }
 }
 
 async function request<T>(path: string, options?: RequestInit, diagnostic?: Record<string, unknown>): Promise<T> {
@@ -106,7 +146,6 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
   const realtimeRefreshPending = useRef(false);
   const realtimeDiagnosticMountLogged = useRef(false);
   const realtimeDiagnosticEffectKey = useRef<string | null>(null);
-  const realtimeDiagnosticStatuses = useRef<Set<string>>(new Set());
   const realtimeDiagnosticInstanceId = useId();
   const realtimeDiagnosticReconciliationSequence = useRef(0);
   const realtimeDiagnosticPendingIds = useRef<Set<string>>(new Set());
@@ -272,21 +311,20 @@ export function NotificationsBell({ userId }: { userId?: string | null }): React
         const notificationId = typeof payload.new === "object" && payload.new !== null && "id" in payload.new && typeof payload.new.id === "string" ? payload.new.id : null;
         realtimeDiagnosticLog("[notifications][realtime] insert_received", { event: "INSERT", table: "tb_notifications", notification_id: notificationId });
         if (active) scheduleRealtimeReconciliation(notificationId ?? undefined);
-      })
-      .subscribe((status) => {
-        if (!realtimeDiagnosticStatuses.current.has(status)) {
-          realtimeDiagnosticStatuses.current.add(status);
-          realtimeDiagnosticLog("[notifications][realtime] channel_status", { status });
-        }
-        if (status === "SUBSCRIBED") {
-          setRealtimeDiagnosticError("");
-          return;
-        }
-        if (active && ["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
-          setRealtimeDiagnosticError("Las actualizaciones en tiempo real no están disponibles.");
-          scheduleRealtimeReconciliation();
-        }
       });
+    const subscriptionStartedAt = performance.now();
+    channel.subscribe((status, error) => {
+      subscriptionDiagnosticLog(status, error, realtimeDiagnosticInstanceId, subscriptionStartedAt);
+      realtimeDiagnosticLog("[notifications][realtime] channel_status", { status });
+      if (status === "SUBSCRIBED") {
+        setRealtimeDiagnosticError("");
+        return;
+      }
+      if (active && ["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+        setRealtimeDiagnosticError("Las actualizaciones en tiempo real no están disponibles.");
+        scheduleRealtimeReconciliation();
+      }
+    });
     const pendingIdsRef = realtimeDiagnosticPendingIds;
     const scheduledIdRef = realtimeDiagnosticScheduledId;
     return () => {

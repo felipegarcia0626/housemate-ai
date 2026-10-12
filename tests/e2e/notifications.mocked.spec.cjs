@@ -5,6 +5,9 @@ const { test: base, expect } = require("@playwright/test");
 const USER_ID = "00000000-0000-4000-8000-000000000501";
 const HOUSEHOLD_ID = "00000000-0000-4000-8000-000000000502";
 const SOURCE_ID = "00000000-0000-4000-8000-000000000503";
+const SUBSCRIPTION_DIAGNOSTIC_PREFIX = "[notifications][realtime] subscription_status ";
+const UNKNOWN_ERROR_MARKER = "MOCK_PRIVATE_ERROR_MESSAGE";
+const CLOSE_REASON_MARKER = "MOCK_PRIVATE_CLOSE_REASON";
 const notification = (suffix, overrides = {}) => ({
   id: `00000000-0000-4000-8000-000000000${suffix}`,
   householdId: HOUSEHOLD_ID,
@@ -18,6 +21,33 @@ const notification = (suffix, overrides = {}) => ({
   readAt: null,
   ...overrides,
 });
+
+function captureSubscriptionDiagnostics(page) {
+  const messages = [];
+  page.on("console", (message) => {
+    if (message.type() === "info" && message.text().startsWith(SUBSCRIPTION_DIAGNOSTIC_PREFIX)) {
+      messages.push(message.text());
+    }
+  });
+  return messages;
+}
+
+function subscriptionDiagnosticEntries(messages) {
+  return messages.map((message) => JSON.parse(message.slice(SUBSCRIPTION_DIAGNOSTIC_PREFIX.length)));
+}
+
+async function expectSubscriptionDiagnostic(messages, status, category) {
+  await expect.poll(() => subscriptionDiagnosticEntries(messages).some((entry) => entry.status === status && entry.category === category)).toBe(true);
+  return subscriptionDiagnosticEntries(messages).find((entry) => entry.status === status && entry.category === category);
+}
+
+function expectSubscriptionDiagnosticMetadata(entry) {
+  expect(entry.instanceId).toEqual(expect.any(String));
+  expect(entry.instanceId.length).toBeGreaterThan(0);
+  expect(Number.isFinite(entry.elapsedMs)).toBe(true);
+  expect(entry.elapsedMs).toBeGreaterThanOrEqual(0);
+  expect(entry.elapsedMs).toBeLessThan(120_000);
+}
 
 const test = base.extend({
   mockNotifications: async ({ context, baseURL }, use, testInfo) => {
@@ -33,7 +63,7 @@ const test = base.extend({
 
     const origin = new URL(baseURL).origin;
     const violations = [];
-    const state = { items: [notification("511")], gets: [], writes: [], paginated: false, failNextGet: false, channel: null };
+    const state = { items: [notification("511")], gets: [], writes: [], paginated: false, failNextGet: false, channel: null, realtimeMode: "success" };
     const expiresAt = Math.floor(Date.now() / 1000) + 3600;
     const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
     const session = {
@@ -112,8 +142,17 @@ const test = base.extend({
             violations.push("unexpected Realtime subscription"); socket.close(); return;
           }
           state.channel = { socket, topic, joinRef };
-          socket.send(JSON.stringify([joinRef, ref, topic, "phx_reply", { status: "ok", response: { postgres_changes: [{ ...filters[0], id: 1 }] } }]));
+          if (state.realtimeMode === "channel_error") {
+            socket.send(JSON.stringify([joinRef, ref, topic, "phx_reply", { status: "error", response: { reason: UNKNOWN_ERROR_MARKER, detail: "MOCK_PRIVATE_ERROR_DETAIL" } }]));
+            return;
+          }
+          const serverFilter = state.realtimeMode === "bindings_mismatch" ? { ...filters[0], event: "UPDATE" } : filters[0];
+          socket.send(JSON.stringify([joinRef, ref, topic, "phx_reply", { status: "ok", response: { postgres_changes: [{ ...serverFilter, id: 1 }] } }]));
+          if (state.realtimeMode === "close_event") {
+            setTimeout(() => { void socket.close({ code: 4001, reason: CLOSE_REASON_MARKER }); }, 0);
+          }
         } else if (event === "heartbeat" || event === "phx_leave") {
+          if (event === "heartbeat" && state.realtimeMode === "heartbeat_timeout") return;
           socket.send(JSON.stringify([joinRef, ref, topic, "phx_reply", { status: "ok", response: {} }]));
         }
       });
@@ -190,4 +229,77 @@ test("simulated INSERT reconciles the closed bell through mocked GET", async ({ 
   await expect(page.getByRole("region", { name: "Notificaciones", exact: true })).toHaveCount(0);
   await bell.click();
   await expect(page.getByText("Aviso simulado 513", { exact: true })).toBeVisible();
+});
+
+test("Realtime subscription diagnostics are opt-in and report a sanitized SUBSCRIBED event", async ({ page, mockNotifications: state }) => {
+  const messages = captureSubscriptionDiagnostics(page);
+  await page.addInitScript(() => { window.__HOUSEMATE_REALTIME_SUBSCRIPTION_DIAGNOSTICS__ = true; });
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Notificaciones", exact: true })).toBeVisible();
+
+  const entry = await expectSubscriptionDiagnostic(messages, "SUBSCRIBED", "absent");
+  expectSubscriptionDiagnosticMetadata(entry);
+  expect(messages.join("\n")).not.toContain(USER_ID);
+  expect(messages.join("\n")).not.toContain(SOURCE_ID);
+  expect(state.realtimeMode).toBe("success");
+});
+
+test("Realtime subscription diagnostics remain disabled by default", async ({ page, mockNotifications: state }) => {
+  const messages = captureSubscriptionDiagnostics(page);
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Notificaciones", exact: true })).toBeVisible();
+  await expect.poll(() => Boolean(state.channel)).toBe(true);
+  await page.waitForTimeout(100);
+
+  expect(await page.evaluate(() => window.__HOUSEMATE_REALTIME_SUBSCRIPTION_DIAGNOSTICS__)).toBeUndefined();
+  expect(messages).toEqual([]);
+});
+
+test("Realtime diagnostics classify a recognized socket CloseEvent without its reason", async ({ page, mockNotifications: state }) => {
+  state.realtimeMode = "close_event";
+  const messages = captureSubscriptionDiagnostics(page);
+  await page.addInitScript(() => { window.__HOUSEMATE_REALTIME_SUBSCRIPTION_DIAGNOSTICS__ = true; });
+  await page.goto("/");
+
+  const entry = await expectSubscriptionDiagnostic(messages, "CHANNEL_ERROR", "socket_close");
+  expect(entry.closeCode).toBe(4001);
+  expect(typeof entry.wasClean).toBe("boolean");
+  expectSubscriptionDiagnosticMetadata(entry);
+  expect(messages.join("\n")).not.toContain(CLOSE_REASON_MARKER);
+});
+
+test("Realtime diagnostics classify a heartbeat timeout without transport details", async ({ page, mockNotifications: state }) => {
+  state.realtimeMode = "heartbeat_timeout";
+  await page.clock.install();
+  const messages = captureSubscriptionDiagnostics(page);
+  await page.addInitScript(() => { window.__HOUSEMATE_REALTIME_SUBSCRIPTION_DIAGNOSTICS__ = true; });
+  await page.goto("/");
+  await expectSubscriptionDiagnostic(messages, "SUBSCRIBED", "absent");
+  await page.clock.fastForward(25_000);
+  await page.clock.fastForward(25_000);
+
+  const entry = await expectSubscriptionDiagnostic(messages, "CHANNEL_ERROR", "heartbeat_timeout");
+  expectSubscriptionDiagnosticMetadata(entry);
+});
+
+test("Realtime diagnostics classify binding mismatches and omit SDK error details", async ({ page, mockNotifications: state }) => {
+  state.realtimeMode = "bindings_mismatch";
+  const messages = captureSubscriptionDiagnostics(page);
+  await page.addInitScript(() => { window.__HOUSEMATE_REALTIME_SUBSCRIPTION_DIAGNOSTICS__ = true; });
+  await page.goto("/");
+
+  const entry = await expectSubscriptionDiagnostic(messages, "CHANNEL_ERROR", "bindings_mismatch");
+  expectSubscriptionDiagnosticMetadata(entry);
+});
+
+test("Realtime diagnostics classify unknown errors without logging messages or error objects", async ({ page, mockNotifications: state }) => {
+  state.realtimeMode = "channel_error";
+  const messages = captureSubscriptionDiagnostics(page);
+  await page.addInitScript(() => { window.__HOUSEMATE_REALTIME_SUBSCRIPTION_DIAGNOSTICS__ = true; });
+  await page.goto("/");
+
+  const entry = await expectSubscriptionDiagnostic(messages, "CHANNEL_ERROR", "error_unclassified");
+  expectSubscriptionDiagnosticMetadata(entry);
+  expect(messages.join("\n")).not.toContain(UNKNOWN_ERROR_MARKER);
+  expect(messages.join("\n")).not.toContain("MOCK_PRIVATE_ERROR_DETAIL");
 });
