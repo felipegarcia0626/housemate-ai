@@ -17,8 +17,8 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 
 - **Fecha:** 2026-08-11
 - **Área:** Tooling / formato
-- **Descripción:** `npm run format:check` reporta problemas de formato preexistentes en múltiples archivos del repositorio. La versión de `tests/phase-3-expense-api-functional.cjs` presente en `HEAD` ya fallaba la comprobación individual de Prettier antes de incorporar la cobertura de `GET /api/expenses/{id}`. La comprobación global actual continúa reportando 47 archivos, incluidos archivos fuera del alcance de este incremento.
-- **Impacto:** La validación global de formato no puede usarse como PASS del repositorio completo sin modificar deuda preexistente ajena al incremento.
+- **Descripción:** En la auditoría de `GET /api/expenses/{id}` del 2026-08-11, `npm run format:check` reportó problemas de formato preexistentes en múltiples archivos; el reporte de entonces enumeró 47. La versión de `tests/phase-3-expense-api-functional.cjs` comparada en esa auditoría ya fallaba la comprobación individual de Prettier antes de incorporar la cobertura de `GET /api/expenses/{id}`. Ese recuento es histórico: el estado global actual de formato queda pendiente y no se volvió a comprobar en esta actualización.
+- **Impacto:** La ejecución del 2026-08-11 no fue PASS para el repositorio completo. El resultado global de formato en el estado actual es desconocido y requiere una comprobación futura; cualquier deuda que persista debe abordarse en un incremento separado, sin mezclarla con funcionalidades del MVP.
 - **Prioridad:** MENOR
 - **Estado:** ACCEPTED
 - **Origen/detección:** Auditoría de `GET /api/expenses/{id}` del 2026-08-11 mediante `npm run format:check` y comparación de Prettier contra `HEAD`.
@@ -39,12 +39,12 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 
 - **Fecha:** 2026-08-13
 - **Área:** Web/PWA / Categories
-- **Descripción:** Existe únicamente `GET /api/categories`; no existe Service, Repository ni endpoint HTTP para crear categorías. Categories permanece como catálogo global durante el MVP, sin `household_id` ni ownership por hogar. Una futura escritura podrá operar sobre el catálogo global; las categorías privadas por household quedan fuera de este alcance y requerirán una decisión posterior.
-- **Impacto:** La UI no puede crear una categoría nueva cuando el catálogo seed no contiene una opción adecuada.
+- **Descripción:** Las rutas HTTP de Categories inspeccionadas para Web/PWA son de lectura y no hay un endpoint HTTP directo para administrar o crear categorías desde esa UI. No es correcto afirmar que no exista lógica de creación: `modules/categories/category.service.ts` y su repositorio implementan crear o reutilizar microcategorías, invocadas por el flujo de confirmación del Agent. Ese flujo no equivale a una API CRUD directa para Web/PWA. El catálogo continúa siendo global durante el MVP, sin `household_id` ni ownership por hogar; las categorías privadas requieren una decisión posterior.
+- **Impacto:** La UI no tiene un endpoint directo para administrar o crear una categoría cuando el catálogo seed no contiene una opción adecuada. El flujo Agent de microcategorías no demuestra que ese requisito de UI esté cubierto.
 - **Prioridad:** MENOR
 - **Estado:** OPEN
 - **Origen/detección:** Auditoría de APIs y módulos durante la validación manual de Web/PWA del 2026-08-13.
-- **Criterio de resolución:** Aprobar un incremento independiente de escritura sobre el catálogo global y decidir posteriormente si se requieren categorías privadas por household.
+- **Criterio de resolución:** Definir un incremento independiente para la administración directa desde Web/PWA, aclarando si opera sobre el catálogo global o requiere categorías privadas por household; mantener separado el flujo de microcategorías del Agent.
 
 ### FINDING-004
 
@@ -61,8 +61,8 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 
 - **Fecha:** 2026-08-13
 - **Área:** Web/PWA / Agent HTTP
-- **Descripción:** La interfaz Web utiliza el `HOUSEMATE_MVP_CONVERSATION_KEY` configurado server-side; no existe una sesión Web independiente ni historial persistente.
-- **Impacto:** Las conversaciones Web comparten la continuidad limitada por la configuración del MVP.
+- **Descripción:** `POST /api/agent` genera `conversationKey` como `web:${householdId}:${memberId}`; no usa `HOUSEMATE_MVP_CONVERSATION_KEY` ni separa el contexto por sesión de navegador. El esquema persiste propuestas pendientes y borradores asociados a `conversation_key`, pero esas filas no son una transcripción completa de mensajes. No se encontró una tabla de transcripción en el esquema inspeccionado.
+- **Impacto:** Las propuestas y los borradores pueden continuar asociados al mismo hogar y miembro entre sesiones de navegador; no hay aislamiento de continuidad por sesión Web. La persistencia de ese estado no demuestra que se guarde una transcripción completa.
 - **Prioridad:** MENOR
 - **Estado:** OPEN
 - **Origen/detección:** Implementación de `POST /api/agent` del 2026-08-13.
@@ -72,12 +72,36 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 
 - **Fecha:** 2026-08-13
 - **Área:** Agent / Expense UX
-- **Descripción:** El Agent asume que el pagador es el actor controlado cuando el mensaje no especifica otro pagador. La interpretación de pagadores distintos por nombre o identificador permanece fuera del MVP.
-- **Impacto:** No es posible registrar mediante Agent un gasto pagado por un integrante distinto del actor actual.
+- **Descripción:** Si no se especifica otro pagador, el Agent usa el actor controlado. Cuando se indica otro integrante por nombre, resuelve el nombre normalizado contra los miembros del household controlado y requiere una coincidencia única. Un nombre ausente o ambiguo produce una solicitud de aclaración; no se acepta un identificador arbitrario de miembro como identidad enviada por el cliente.
+- **Impacto:** Ya es posible registrar un gasto pagado por otro miembro con nombre único. Siguen requiriendo aclaración los nombres ausentes, desconocidos o ambiguos; no existe selección basada en un ID suministrado por el cliente.
 - **Prioridad:** MENOR
-- **Estado:** OPEN
-- **Origen/detección:** Implementación de defaults de `CREATE_EXPENSE` del 2026-08-13.
-- **Criterio de resolución:** Aprobar un incremento independiente que defina y valide la resolución segura de pagadores distintos sin aceptar identidad desde el cliente.
+- **Estado:** IN_PROGRESS
+- **Origen/detección:** Implementación de defaults de `CREATE_EXPENSE` del 2026-08-13 y revisión del flujo posterior de resolución de pagadores por nombre.
+- **Criterio de resolución:** Confirmar si la resolución por nombre único cubre el requisito del MVP y conservar las aclaraciones para entradas ausentes o ambiguas. Cualquier soporte futuro de selección por identificador debe resolverlo contra el contexto controlado, sin confiar en identidad suministrada por el cliente.
+
+### FINDING-007
+
+- **Fecha:** 2026-10-09
+- **Área:** E2E / household autorizado
+- **Descripción:** Una auditoría previa encontró que la selección de `E2E_AGENT_HOUSEHOLD_ID` no estaba suficientemente vinculada al contexto central y que una comparación de UUID sensible a mayúsculas podía eludir el veto del household MVP. El código actual normaliza los UUID y exige que el household Agent coincida con el autorizado centralmente.
+- **Impacto:** Antes de la corrección, la selección podía eludir el household permitido o el veto MVP antes de operaciones de prueba.
+- **Prioridad:** BLOCKER (defecto específico corregido)
+- **Estado:** RESOLVED
+- **Origen/detección:** Auditoría local de aislamiento E2E; la corrección en `fixtures.cjs` normaliza y valida el contexto, y `authorizedAgentHouseholdId()` normaliza el ID Agent y exige igualdad con el household autorizado antes de su uso. El harness local `write-context-functional.cjs` cubre la normalización y el rechazo de un household distinto; el usuario comunicó previamente que pasó. No se volvió a ejecutar durante esta actualización.
+- **Límites:** Este cierre cubre la comparación del household; no demuestra que la URL o referencia configurada apunte a un proyecto de pruebas aislado. `createE2EClient()` sigue construyendo un cliente Supabase con `service_role`; validar el household no reduce las capacidades administrativas de ese cliente.
+
+### FINDING-008
+
+- **Fecha:** 2026-10-09
+- **Área:** E2E / propiedad y recuperación de recursos
+- **Descripción:** La auditoría previa encontró cleanup Agent basado en diferencias de snapshots y una ruta Direct Split que podía fallar antes de registrar referencias. Se retiró la selección por snapshots y ahora se registran las referencias devueltas antes de assertions, pero una referencia no prueba propiedad. Agent puede persistir drafts sin exponer su ID. Una invitación puede confirmarse sin que el cliente reciba un identificador recuperable si no reintenta con la misma clave de idempotencia; el spec actual no ejercita ese contrato. El cleanup de Notifications depende de permisos DELETE no verificados.
+- **Impacto:** Riesgo de eliminar datos concurrentes ajenos o dejar recursos sin recuperación segura.
+- **Prioridad:** HIGH / BLOCKER para cleanup por snapshots
+- **Estado:** IN_PROGRESS
+- **Origen/detección:** Auditoría local y contrato actual de las rutas. Mientras el hold permanezca, los entrypoints Agent y el helper de solicitudes POST rechazan las escrituras conocidas, y el spec de creación Realtime lanza `E2E_RECOVERY_BLOCKED` al importarse. La configuración estándar bloquea antes de cargar entorno, iniciar servidor o registrar `globalSetup`; si una configuración alternativa invoca directamente `globalSetup`, `prepareExpenseFixtures()` conserva su propio guard antes del cliente y del RPC. Esto no constituye una barrera universal de solo lectura. Las referencias recogidas no prueban propiedad y `requireAdministrativeRecovery()` rechaza una recuperación no acreditada en vez de ejecutar DELETE automático. Al entrar en `main()` de `provision-test-user.cjs` con contexto válido, el script puede construir el cliente administrativo y ejecutar `auth.admin.listUsers` antes de alcanzar el guard que bloquea la creación; su helper de creación mantiene otro guard antes de crear el usuario.
+- **Criterio de resolución:** Contrato de recuperación con propiedad inequívoca, mecanismo administrativo autorizado y verificación de cleanup por IDs exactos, seguido de auditoría independiente. Los dos IDs registrados en `tests/e2e/README.md` siguen pendientes de reconciliación administrativa; su existencia actual no se consultó. Ninguna variable de entorno desbloquea estos escenarios.
+- **Incremento 1 (validación local comunicada):** `0038` y el backend de invitaciones añaden correlación por actor/clave y recuperación del ID sin regenerar el enlace cuando el cliente reutiliza la misma clave. Un registro previo documenta un bloqueo al arrancar Node por `EPERM ... lstat C:\Users\user`; posteriormente, el usuario comunicó que el harness HTTP pasó y que las dos fases del runner SQL/concurrencia terminaron sin error de cleanup. Esos resultados no se volvieron a ejecutar ni verificar en esta actualización, y no prueban el estado remoto de la migración. El hallazgo sigue `IN_PROGRESS`: recuperación administrativa, cleanup real y permisos efectivos no están verificados; `E2E_RECOVERY_BLOCKED` permanece activo.
+- **Evidencia adicional:** La configuración de integración aplica el bloqueo central antes de cargar dotenv o iniciar servidor/fixtures; los helpers conocidos de escritura mantienen guards propios. El usuario comunicó previamente PASS para `write-context-functional.cjs`, `recovery-context-functional.cjs` y la suite Notifications mockeada de nueve casos; no se ejecutaron aquí y no prueban operaciones reales de Supabase. La suite de creación Realtime sigue bloqueada. El provisioning puede realizar la lectura administrativa indicada arriba antes del guard de creación.
 
 ### FINDING-009
 
@@ -86,7 +110,7 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 - **Descripción:** La política SELECT de `0031` consultaba `tb_users` directamente y obtenía la identidad solo de `request.jwt.claim.sub`. En el proyecto de desarrollo, `authenticated` no tenía SELECT sobre esa tabla ni sobre las columnas utilizadas; una lectura bajo ese rol falló con `42501: permission denied for table tb_users`. La función desplegada `realtime.apply_rls` configuraba `request.jwt.claims`, mientras la política no contemplaba ese formato JSON.
 - **Impacto:** La unión del canal y los heartbeats funcionaban, pero un INSERT confirmado para el receptor correcto no producía un frame `postgres_changes` ni ejecutaba el callback. El GET administrativo recuperaba la notificación y no demostraba autorización Realtime.
 - **Prioridad:** HIGH
-- **Estado:** RESOLVED (política SELECT y entrega observada en desarrollo)
+- **Estado:** RESOLVED (política SELECT en el código local; entrega real reportada por el usuario en desarrollo, no verificada en esta actualización)
 - **Corrección:** `0039_fix_notifications_realtime_select_policy.sql` añade `fn_notifications_current_user_id()`, sin parámetros, con `SECURITY DEFINER`, referencias calificadas y `search_path` vacío. Resuelve únicamente la identidad propia mediante `auth.uid()` y cambia la condición SELECT para comparar `recipient_user_id` con ese resultado, sin conceder SELECT general de `tb_users`. Las migraciones anteriores permanecen intactas.
-- **Evidencia de resolución:** El usuario aplicó 0039 manualmente y comunicó la política y el helper desplegados; EXECUTE estaba permitido a `authenticated` y denegado a `anon` y PUBLIC. Una lectura simulando el formato JSON bajo `authenticated` resolvió la identidad, mostró notificaciones propias y no mostró ajenas. Después, el usuario observó un INSERT controlado en el WebSocket, callback INSERT, reconciliación, carga HTTP, actualización de estado y aumento del contador sin abrir la campana; también reportó llegada inmediata en una prueba funcional real adicional.
-- **Límites:** La evidencia remota procede de resultados y observaciones aportados por el usuario; el agente no ejecutó consultas remotas ni pruebas automatizadas. No se validaron todos los escenarios de negocio. 0039 no cambia la política UPDATE de lectura definida en 0031, que conserva el patrón anterior.
+- **Evidencia de resolución:** El archivo local 0039 define el helper `SECURITY DEFINER` con `search_path` vacío, revoca EXECUTE a `PUBLIC`, lo concede a `authenticated` y actualiza la política SELECT para usar `recipient_user_id`. El usuario comunicó haber aplicado la migración en desarrollo y haber observado una lectura propia sin filas ajenas, además de un INSERT controlado que llegó por WebSocket, ejecutó el callback, reconcilió el estado HTTP y actualizó el contador; también reportó llegada inmediata en otra prueba funcional. Estos son reportes del usuario: esta auditoría no consultó el entorno ni confirma el estado remoto actual.
+- **Límites:** La evidencia remota procede de resultados y observaciones aportados por el usuario; no se verificó el entorno remoto en esta actualización ni se validaron todos los escenarios de negocio o permisos efectivos. El spec local de suscripción comprueba que los navegadores alcanzan `SUBSCRIBED`, pero no envía un INSERT ni comprueba su entrega. La suite mockeada simula los eventos y tampoco demuestra entrega real ni aislamiento RLS. La presencia local de 0039 no acredita que esté aplicada actualmente en el entorno remoto. 0039 no cambia la política UPDATE definida en 0031, que conserva el patrón anterior. Esta evidencia no desbloquea FINDING-008 ni acredita recuperación administrativa.
