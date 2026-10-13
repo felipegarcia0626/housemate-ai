@@ -141,20 +141,28 @@ el hogar corresponda al contexto actual;
 los recursos utilizados pertenezcan al mismo hogar;
 los miembros utilizados en una operación pertenezcan al hogar correspondiente.
 
-La selección explícita de hogar para usuarios con múltiples memberships aún no
-está implementada. El cliente no puede seleccionar arbitrariamente un hogar;
-la ausencia de selección para múltiples memberships se rechaza en Balance.
+Para usuarios autenticados con múltiples memberships activas, la API permite
+seleccionar un hogar mediante `POST /api/auth/household-selection` con
+`{ "householdId": "..." }`. La ruta resuelve al usuario de aplicación desde la
+sesión Auth y acepta el hogar solo si ese usuario tiene allí una membership
+`ACTIVE`; el identificador enviado por el cliente no es autoridad por sí solo.
+Una selección válida se guarda por 30 días en la cookie HttpOnly
+`housemate_selected_household`, no en la tabla de memberships. El `DELETE` de la
+misma ruta, también autenticado, limpia esa cookie.
 
-No se implementarán durante el MVP:
+`GET /api/auth/households` devuelve los hogares con membership activa e indica
+`selected` cuando su identificador coincide con la cookie. El resolver usa la
+selección solo si hay más de una membership activa y la cookie corresponde a
+una de ellas; con una sola membership usa esa directamente. Una cookie ausente,
+obsoleta o que no corresponda a una membership activa no satisface la selección
+y, ante varias memberships, el resolver rechaza el contexto con
+`HOUSEHOLD_SELECTION_REQUIRED`, que las rutas que usan este contrato traducen a
+`409`. La interfaz Web invoca esta ruta; esto
+documenta el comportamiento presente en el código, no una verificación de
+despliegue o ejecución en un entorno remoto.
 
-creación de hogares;
-selección de hogar;
-invitaciones;
-gestión avanzada de miembros;
-múltiples hogares activos;
+La selección no introduce administración avanzada de memberships ni modelos de
 permisos avanzados.
-
-El diseño deberá permitir incorporar estas capacidades posteriormente sin modificar el contrato fundamental de las operaciones financieras.
 
 # 5. Respuestas
 
@@ -853,7 +861,7 @@ Errores de contexto y proveedor:
 - `403 NO_ACTIVE_MEMBERSHIP` cuando el usuario de la aplicación no tiene una
   membership activa.
 - `409 HOUSEHOLD_SELECTION_REQUIRED` cuando la identidad tiene más de una
-  membership y aún no existe selección de hogar.
+  membership activa y no hay una selección que corresponda a una de ellas.
 - `500 INTERNAL_ERROR` para errores técnicos, de persistencia o del proveedor,
   siempre con mensaje sanitizado.
 
@@ -896,8 +904,8 @@ Los ingresos no serán consultados ni incluidos por `GET /api/balance`. Este end
 para consultar el balance. No acepta `householdId`, `memberId` ni `userId` desde
 query string, body, headers o cookies arbitrarias. Una sesión ausente o inválida
 devuelve `401 UNAUTHENTICATED`; una identidad sin usuario de aplicación o sin
-membership devuelve `403`; múltiples memberships sin selección explícita
-devuelven `409 HOUSEHOLD_SELECTION_REQUIRED`. Los errores técnicos se
+membership devuelve `403`; múltiples memberships activas sin una selección
+válida devuelven `409 HOUSEHOLD_SELECTION_REQUIRED`. Los errores técnicos se
 responden como `500 INTERNAL_ERROR` sin detalles internos. Los demás endpoints
 Web permanecen en migración gradual y pueden continuar usando el contexto MVP.
 
@@ -912,7 +920,7 @@ sesión autenticada. Ambos utilizan únicamente `AuthenticatedContext.householdI
 y no aceptan un household proporcionado por el cliente. Dashboard conserva los
 filtros `from` y `to`, el DTO existente y el siguiente mapping HTTP: sesión
 ausente o inválida `401 UNAUTHENTICATED`; identidad sin usuario de aplicación o
-sin membership `403`; múltiples memberships sin selección `409
+sin membership `403`; múltiples memberships activas sin selección válida `409
 HOUSEHOLD_SELECTION_REQUIRED`; errores técnicos `500 INTERNAL_ERROR` con mensaje
 sanitizado.
 

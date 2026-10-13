@@ -1206,17 +1206,21 @@ Los siguientes tipos enum de PostgreSQL serán definidos en `public`:
 | `user_id` | `UUID` | NOT NULL | — | FK |
 | `display_name` | `TEXT` | NOT NULL | — | — |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | — |
+| `role` | `TEXT` | NOT NULL | `'MEMBER'` | `CHECK (role IN ('OWNER','MEMBER'))` |
+| `status` | `TEXT` | NOT NULL | `'ACTIVE'` | `CHECK (status IN ('ACTIVE','LEFT','REMOVED'))` |
 
 Constraints adicionales:
 
 - `uq_tb_household_members_household_user UNIQUE (household_id, user_id)` impide representar dos veces al mismo usuario dentro del mismo hogar.
 - `uq_tb_household_members_household_id UNIQUE (household_id, id)` permite FK compuestas que garanticen pertenencia al hogar.
 
-En el contexto autenticado, las filas de `tb_household_members` se consideran
-memberships activas porque el esquema actual todavía no tiene una columna de
-estado. La revocación o desactivación explícita requiere un incremento
-posterior; el resolver no selecciona un hogar arbitrariamente cuando encuentra
-más de una fila.
+La migración versionada `0030_household_membership_lifecycle.sql` añade las
+columnas `role` y `status`, ambas `NOT NULL`, con defaults `MEMBER` y `ACTIVE`,
+respectivamente, y restricciones para sus valores permitidos. El repositorio
+consulta `tb_household_members` filtrando `status = 'ACTIVE'`; las memberships
+`LEFT` y `REMOVED` no forman parte del contexto autenticado. Esta descripción
+refleja las migraciones presentes en el repositorio y el código actual; no
+confirma que la migración esté aplicada en un entorno remoto.
 
 ### 28.2.4 `public.tb_categories`
 
