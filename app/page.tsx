@@ -1,6 +1,14 @@
 "use client";
 
-import { FormEvent, startTransition, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  startTransition,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { HierarchicalCategory } from "@/modules/categories/category.types";
 import { createSupabaseBrowserClient } from "@/infrastructure/auth/supabase-browser.client";
 import { LoginForm } from "@/components/auth/login-form";
@@ -10,10 +18,10 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { createHouseholdRequest } from "@/components/household/household-client";
 import { NotificationsBell } from "@/components/notifications/notifications-bell";
+import FinancialDashboard from "@/components/dashboard-financial-view";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
 type ResourceKey =
-  | "dashboard"
   | "expenses"
   | "incomes"
   | "categories"
@@ -89,23 +97,15 @@ type IncomeCollection = {
 type Category = { id: string; name: string };
 type HouseholdMember = { id: string; displayName: string };
 type ExpenseSplitDraft = { memberId: string; percentage: number | string };
-type SelectableHousehold = { householdId: string; householdName: string; selected?: boolean };
+type SelectableHousehold = {
+  householdId: string;
+  householdName: string;
+  selected?: boolean;
+};
 type SharingRule = {
   id: string;
   name: string;
   splits: { memberId: string; percentage: number }[];
-};
-type Dashboard = {
-  totalIncome: number;
-  totalSpent: number;
-  netAmount: number;
-  expenseCount: number;
-  memberIncome: { memberId: string; amount: number }[];
-  byCategory: {
-    categoryId: string | null;
-    categoryName: string | null;
-    amount: number;
-  }[];
 };
 type Balance = {
   members: { memberId: string; paid: number; share: number; balance: number }[];
@@ -185,22 +185,24 @@ type JsonResponseObserver = (response: {
 }) => void;
 
 function percentageBasisPoints(value: unknown): bigint | null {
-  const text = typeof value === "number" ? String(value) : String(value ?? "").trim();
+  const text =
+    typeof value === "number" ? String(value) : String(value ?? "").trim();
   if (!/^\d+(?:\.\d{1,2})?$/.test(text)) return null;
   const [whole, fraction = ""] = text.split(".");
-  const basisPoints = BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, "0"));
+  const basisPoints =
+    BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, "0"));
   return basisPoints <= BigInt(10000) ? basisPoints : null;
 }
 
-function splitTotalMessage(
-  splits: readonly ExpenseSplitDraft[],
-): string {
+function splitTotalMessage(splits: readonly ExpenseSplitDraft[]): string {
   const total = splits.reduce(
-    (sum, split) => sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)),
+    (sum, split) =>
+      sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)),
     BigInt(0),
   );
   if (total === BigInt(10000)) return "Total: 100.00% ✓";
-  const difference = total > BigInt(10000) ? total - BigInt(10000) : BigInt(10000) - total;
+  const difference =
+    total > BigInt(10000) ? total - BigInt(10000) : BigInt(10000) - total;
   const amount = `${difference / BigInt(100)}.${String(difference % BigInt(100)).padStart(2, "0")}`;
   return total > BigInt(10000)
     ? `Total: ${Number(total) / 100}% — Hay ${amount}% de más`
@@ -214,11 +216,15 @@ function normalizeExpenseSplits(splits: readonly ExpenseSplitDraft[]) {
   }));
 }
 
-function equalSplits(memberIds: readonly string[]): { memberId: string; percentage: number }[] {
+function equalSplits(
+  memberIds: readonly string[],
+): { memberId: string; percentage: number }[] {
   if (memberIds.length === 0) return [];
   const base = Math.floor(10000 / memberIds.length);
   const remainder = 10000 - base * memberIds.length;
-  const bonusIds = [...memberIds].sort((left, right) => left.localeCompare(right));
+  const bonusIds = [...memberIds].sort((left, right) =>
+    left.localeCompare(right),
+  );
   const bonuses = new Set(bonusIds.slice(0, remainder));
   return memberIds.map((memberId) => ({
     memberId,
@@ -287,8 +293,7 @@ function summarizeExpenseEditResponse(
   body: unknown,
   targetExpenseId?: string | null,
 ): Record<string, unknown> {
-  if (!body || typeof body !== "object")
-    return { bodyType: typeof body };
+  if (!body || typeof body !== "object") return { bodyType: typeof body };
 
   const record = body as {
     data?: unknown;
@@ -317,7 +322,9 @@ function summarizeExpenseEditResponse(
   return {
     bodyKind: items ? "array" : item ? "object" : typeof data,
     errorCode:
-      typeof error?.code === "string" ? diagnosticMessage(error.code) : undefined,
+      typeof error?.code === "string"
+        ? diagnosticMessage(error.code)
+        : undefined,
     errorMessage: diagnosticMessage(error?.message),
     dataCount: items?.length,
     targetExpenseFound: Boolean(
@@ -325,10 +332,12 @@ function summarizeExpenseEditResponse(
     ),
     expenseIdPresent: typeof item?.id === "string",
     totalAmountPresent: typeof item?.totalAmount === "number",
-    merchantPresent: typeof item?.merchant === "string" || item?.merchant === null,
+    merchantPresent:
+      typeof item?.merchant === "string" || item?.merchant === null,
     descriptionPresent:
       typeof item?.description === "string" || item?.description === null,
-    categoryIdPresent: typeof category?.id === "string" || category?.id === null,
+    categoryIdPresent:
+      typeof category?.id === "string" || category?.id === null,
     paidByMemberIdPresent: typeof item?.paidByMemberId === "string",
   };
 }
@@ -391,8 +400,7 @@ async function requestJson<T>(
         ? errorPayload.message
         : "No fue posible completar la operación.",
     ) as Error & { code?: string; status?: number };
-    if (typeof errorPayload?.code === "string")
-      error.code = errorPayload.code;
+    if (typeof errorPayload?.code === "string") error.code = errorPayload.code;
     error.status = response.status;
     throw error;
   }
@@ -492,7 +500,13 @@ function percentage(value: number): string {
 
 function EditIcon() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    >
       <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3Z" />
       <path d="m14.5 7.5 2 2" />
     </svg>
@@ -501,7 +515,13 @@ function EditIcon() {
 
 function TrashIcon() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    >
       <path d="M4 7h16M10 11v5M14 11v5M6 7l1 13h10l1-13M9 7V4h6v3" />
     </svg>
   );
@@ -509,7 +529,13 @@ function TrashIcon() {
 
 function FilterIcon() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    >
       <path d="M4 6h16M7 12h10M10 18h4" />
     </svg>
   );
@@ -539,13 +565,14 @@ function SortIcon({
 function formatDistribution(distributions?: Expense["distributions"]): string {
   if (!distributions || distributions.length === 0) return "—";
   return distributions
-    .map(({ percentage: share, memberName }) => `${percentage(share)} ${memberName}`)
+    .map(
+      ({ percentage: share, memberName }) =>
+        `${percentage(share)} ${memberName}`,
+    )
     .join(" · ");
 }
 
-function formatExpenseSplitRule(
-  splits?: { percentage: number }[],
-): string {
+function formatExpenseSplitRule(splits?: { percentage: number }[]): string {
   if (!splits || splits.length === 0) return "—";
   const percentages = splits.slice(0, 2).map(({ percentage: share }) => share);
   if (percentages.length === 1) return `${percentages[0]}/0`;
@@ -578,8 +605,7 @@ function sharingRuleMatchesSplits(
     ) &&
     ruleSplits.some(
       (split) =>
-        split.memberId !== expenseSplits[0].memberId &&
-        split.percentage === 0,
+        split.memberId !== expenseSplits[0].memberId && split.percentage === 0,
     )
   );
 }
@@ -593,7 +619,10 @@ function findSharingRuleForSplits(
   );
 }
 
-function paginationItems(current: number, total: number): (number | "ellipsis")[] {
+function paginationItems(
+  current: number,
+  total: number,
+): (number | "ellipsis")[] {
   if (total <= 1) return [1];
   const items: (number | "ellipsis")[] = [1];
   const start = Math.max(2, current - 1);
@@ -621,7 +650,11 @@ function HomePageContent() {
   const [section, setSection] = useState<Section>(() => {
     if (typeof window === "undefined") return "dashboard";
     const value = new URLSearchParams(window.location.search).get("section");
-    return value === "dashboard" || value === "expenses" || value === "incomes" || value === "balance" || value === "agent"
+    return value === "dashboard" ||
+      value === "expenses" ||
+      value === "incomes" ||
+      value === "balance" ||
+      value === "agent"
       ? value
       : "dashboard";
   });
@@ -631,27 +664,40 @@ function HomePageContent() {
     if (value === null) return;
     if (consumedSectionParam.current === value) return;
     consumedSectionParam.current = value;
-    const nextSection = value === "dashboard" || value === "expenses" || value === "incomes" || value === "balance" || value === "agent" ? value : "dashboard";
+    const nextSection =
+      value === "dashboard" ||
+      value === "expenses" ||
+      value === "incomes" ||
+      value === "balance" ||
+      value === "agent"
+        ? value
+        : "dashboard";
     if (nextSection !== section) startTransition(() => setSection(nextSection));
     const url = new URL(window.location.href);
     url.searchParams.delete("section");
-    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    window.history.replaceState(
+      {},
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
   }, [searchParams, section]);
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [dashboardRefreshVersion, setDashboardRefreshVersion] = useState(0);
   const [balance, setBalance] = useState<Balance | null>(null);
   const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [expenseListPagination, setExpenseListPagination] =
-    useState<ExpenseCollection["pagination"]>({
-      page: 1,
-      pageSize: 25,
-      total: 0,
-      totalPages: 0,
-    });
-  const [expenseListSummary, setExpenseListSummary] =
-    useState<ExpenseCollection["summary"]>({
-      totalCount: 0,
-      totalAmount: 0,
-    });
+  const [expenseListPagination, setExpenseListPagination] = useState<
+    ExpenseCollection["pagination"]
+  >({
+    page: 1,
+    pageSize: 25,
+    total: 0,
+    totalPages: 0,
+  });
+  const [expenseListSummary, setExpenseListSummary] = useState<
+    ExpenseCollection["summary"]
+  >({
+    totalCount: 0,
+    totalAmount: 0,
+  });
   const [expenseListSearch, setExpenseListSearch] = useState("");
   const [expenseListFrom, setExpenseListFrom] = useState("");
   const [expenseListTo, setExpenseListTo] = useState("");
@@ -685,15 +731,17 @@ function HomePageContent() {
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [incomes, setIncomes] = useState<Income[]>([]);
   const [showIncomeForm, setShowIncomeForm] = useState(false);
-  const [incomeListPagination, setIncomeListPagination] =
-    useState<IncomeCollection["pagination"]>({
-      page: 1,
-      pageSize: 25,
-      total: 0,
-      totalPages: 0,
-    });
-  const [incomeListSummary, setIncomeListSummary] =
-    useState<IncomeCollection["summary"]>({ totalIncome: 0 });
+  const [incomeListPagination, setIncomeListPagination] = useState<
+    IncomeCollection["pagination"]
+  >({
+    page: 1,
+    pageSize: 25,
+    total: 0,
+    totalPages: 0,
+  });
+  const [incomeListSummary, setIncomeListSummary] = useState<
+    IncomeCollection["summary"]
+  >({ totalIncome: 0 });
   const [incomeListSearch, setIncomeListSearch] = useState("");
   const [incomeListFrom, setIncomeListFrom] = useState("");
   const [incomeListTo, setIncomeListTo] = useState("");
@@ -760,11 +808,14 @@ function HomePageContent() {
   const [expenseFormError, setExpenseFormError] = useState("");
   const [editExpenseFormError, setEditExpenseFormError] = useState("");
   const [authBoundaryError, setAuthBoundaryError] = useState("");
-  const [householdOptions, setHouseholdOptions] = useState<SelectableHousehold[]>([]);
+  const [householdOptions, setHouseholdOptions] = useState<
+    SelectableHousehold[]
+  >([]);
   const [householdOptionsLoading, setHouseholdOptionsLoading] = useState(false);
   const [householdSelectionBusy, setHouseholdSelectionBusy] = useState(false);
   const [householdSelectionError, setHouseholdSelectionError] = useState("");
-  const [householdSelectionRequired, setHouseholdSelectionRequired] = useState(false);
+  const [householdSelectionRequired, setHouseholdSelectionRequired] =
+    useState(false);
   const [householdCreateOpen, setHouseholdCreateOpen] = useState(false);
   const [householdModuleOpen, setHouseholdModuleOpen] = useState(false);
   const [householdCreateName, setHouseholdCreateName] = useState("");
@@ -779,7 +830,6 @@ function HomePageContent() {
   }
 
   function clearHouseholdData(): void {
-    setDashboard(null);
     setBalance(null);
     setExpenses([]);
     setIncomes([]);
@@ -798,7 +848,12 @@ function HomePageContent() {
     setEditingIncome(null);
     setEditExpenseForm(initialExpenseEdit);
     setEditIncomeForm(initialIncomeEdit);
-    setExpenseListPagination({ page: 1, pageSize: 25, total: 0, totalPages: 0 });
+    setExpenseListPagination({
+      page: 1,
+      pageSize: 25,
+      total: 0,
+      totalPages: 0,
+    });
     setExpenseListSummary({ totalCount: 0, totalAmount: 0 });
     setIncomeListPagination({ page: 1, pageSize: 25, total: 0, totalPages: 0 });
     setIncomeListSummary({ totalIncome: 0 });
@@ -823,7 +878,9 @@ function HomePageContent() {
     setIncomeListReady(false);
   }
 
-  async function loadHouseholdOptions(generation = householdGeneration.current): Promise<void> {
+  async function loadHouseholdOptions(
+    generation = householdGeneration.current,
+  ): Promise<void> {
     if (generation !== householdGeneration.current) return;
     setHouseholdOptionsLoading(true);
     setHouseholdSelectionError("");
@@ -835,12 +892,16 @@ function HomePageContent() {
       if (generation !== householdGeneration.current) return;
       setHouseholdSelectionError("No fue posible cargar tus hogares.");
     } finally {
-      if (generation === householdGeneration.current) setHouseholdOptionsLoading(false);
+      if (generation === householdGeneration.current)
+        setHouseholdOptionsLoading(false);
     }
   }
 
   useEffect(() => {
-    if (typeof window !== "undefined" && window.location.search.includes("authError=oauth_callback")) {
+    if (
+      typeof window !== "undefined" &&
+      window.location.search.includes("authError=oauth_callback")
+    ) {
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
@@ -888,9 +949,9 @@ function HomePageContent() {
   const expenseFilterMacros = useMemo(
     () =>
       expenseMacros.filter((macro) =>
-        macro.name.toLocaleLowerCase("es").includes(
-          expenseMacroFilterQuery.trim().toLocaleLowerCase("es"),
-        ),
+        macro.name
+          .toLocaleLowerCase("es")
+          .includes(expenseMacroFilterQuery.trim().toLocaleLowerCase("es")),
       ),
     [expenseMacroFilterQuery, expenseMacros],
   );
@@ -930,9 +991,7 @@ function HomePageContent() {
 
   const incomeMicros = useMemo(
     () =>
-      incomeCategories.filter(
-        (category) => category.macroId === incomeMacroId,
-      ),
+      incomeCategories.filter((category) => category.macroId === incomeMacroId),
     [incomeCategories, incomeMacroId],
   );
 
@@ -976,9 +1035,7 @@ function HomePageContent() {
     [editIncomeMacroId, incomeCategories],
   );
 
-  function expenseCategoryLabel(
-    category: Expense["category"],
-  ): string {
+  function expenseCategoryLabel(category: Expense["category"]): string {
     if (category === null) return "Sin categoría";
     const hierarchicalCategory = expenseCategories.find(
       (candidate) => candidate.id === category.id,
@@ -1011,8 +1068,10 @@ function HomePageContent() {
     );
     if (hierarchicalCategory)
       return `${hierarchicalCategory.macroName} → ${hierarchicalCategory.name}`;
-    return categories.find((category) => category.id === categoryId)?.name ??
-      "Sin categoría";
+    return (
+      categories.find((category) => category.id === categoryId)?.name ??
+      "Sin categoría"
+    );
   }
 
   function incomeCategoryParts(categoryId: string | null): {
@@ -1037,20 +1096,9 @@ function HomePageContent() {
     };
   }
 
-  const topCategory = useMemo(() => {
-    if (!dashboard || dashboard.byCategory.length === 0) return null;
-    return dashboard.byCategory.reduce((top, current) =>
-      current.amount > top.amount ? current : top,
-    );
-  }, [dashboard]);
-  const activeHousehold = householdOptions.find((household) => household.selected)
-    ?? (householdOptions.length === 1 ? householdOptions[0] : undefined);
-
-  const maxCategoryAmount = useMemo(
-    () =>
-      Math.max(1, ...(dashboard?.byCategory.map((item) => item.amount) ?? [])),
-    [dashboard],
-  );
+  const activeHousehold =
+    householdOptions.find((household) => household.selected) ??
+    (householdOptions.length === 1 ? householdOptions[0] : undefined);
 
   const expenseFilterCount = [
     expenseListFrom,
@@ -1065,13 +1113,13 @@ function HomePageContent() {
 
   const incomeHasActiveFilters = Boolean(
     incomeListSearch.trim() ||
-      incomeListFrom ||
-      incomeListTo ||
-      incomeListMemberId ||
-      incomeListMacroId ||
-      incomeListMicroId ||
-      incomeListMinAmount ||
-      incomeListMaxAmount,
+    incomeListFrom ||
+    incomeListTo ||
+    incomeListMemberId ||
+    incomeListMacroId ||
+    incomeListMicroId ||
+    incomeListMinAmount ||
+    incomeListMaxAmount,
   );
 
   function memberLabel(memberId: string): string {
@@ -1239,21 +1287,36 @@ function HomePageContent() {
   useEffect(() => {
     if (!supabase) return;
     let mounted = true;
-    const sessionDiagnosticsEnabled = window.__HOUSEMATE_REALTIME_E2E_DIAGNOSTICS__ === true;
+    const sessionDiagnosticsEnabled =
+      window.__HOUSEMATE_REALTIME_E2E_DIAGNOSTICS__ === true;
     const sessionStartedAt = performance.now();
-    if (sessionDiagnosticsEnabled) console.info("[notifications][session] get_session_started");
-    void supabase.auth.getSession().then(({ data, error: sessionError }) => {
-      if (!mounted) return;
-      if (sessionError) setAuthError("No fue posible recuperar la sesión.");
-      setSession(data.session);
-      setAuthReady(true);
-    }).finally(() => {
-      if (sessionDiagnosticsEnabled) console.info("[notifications][session] get_session_finished", JSON.stringify({ durationMs: Math.round(performance.now() - sessionStartedAt) }));
-    });
+    if (sessionDiagnosticsEnabled)
+      console.info("[notifications][session] get_session_started");
+    void supabase.auth
+      .getSession()
+      .then(({ data, error: sessionError }) => {
+        if (!mounted) return;
+        if (sessionError) setAuthError("No fue posible recuperar la sesión.");
+        setSession(data.session);
+        setAuthReady(true);
+      })
+      .finally(() => {
+        if (sessionDiagnosticsEnabled)
+          console.info(
+            "[notifications][session] get_session_finished",
+            JSON.stringify({
+              durationMs: Math.round(performance.now() - sessionStartedAt),
+            }),
+          );
+      });
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      if (sessionDiagnosticsEnabled) console.info("[notifications][session] auth_state_changed", JSON.stringify({ authEvent: event }));
+      if (sessionDiagnosticsEnabled)
+        console.info(
+          "[notifications][session] auth_state_changed",
+          JSON.stringify({ authEvent: event }),
+        );
       if (!mounted) return;
       setSession(nextSession);
       setAuthReady(true);
@@ -1272,9 +1335,7 @@ function HomePageContent() {
     };
   }, [supabase]);
 
-  async function refresh(
-    householdOptionsOverride?: SelectableHousehold[],
-  ) {
+  async function refresh(householdOptionsOverride?: SelectableHousehold[]) {
     if (!session || !supabase) return;
     const generation = householdGeneration.current;
     setLoading(true);
@@ -1283,7 +1344,6 @@ function HomePageContent() {
     let authRefreshAborted = false;
     try {
       const [
-        dashboardResult,
         categoryResult,
         expenseCategoryResult,
         incomeCategoryResult,
@@ -1291,7 +1351,6 @@ function HomePageContent() {
         ruleResult,
         balanceResult,
       ] = await Promise.allSettled([
-        api<Dashboard>("/api/dashboard/summary"),
         api<Category[]>("/api/categories"),
         api<HierarchicalCategory[]>(
           "/api/categories/hierarchical?movementType=EXPENSE",
@@ -1310,26 +1369,18 @@ function HomePageContent() {
         result.status === "rejected" && result.reason instanceof Error
           ? (result.reason as Error & { status?: number }).status
           : undefined;
-      const authFailure = [
-        dashboardResult,
-        memberResult,
-        ruleResult,
-        balanceResult,
-      ].find(
+      const authFailure = [memberResult, ruleResult, balanceResult].find(
         (result) => rejectionStatus(result) === 401,
       );
       if (authFailure) {
         authRefreshAborted = true;
         setSession(null);
-        setAuthBoundaryError("Tu sesión ya no es válida. Inicia sesión nuevamente.");
+        setAuthBoundaryError(
+          "Tu sesión ya no es válida. Inicia sesión nuevamente.",
+        );
         return;
       }
-      const contextFailure = [
-        dashboardResult,
-        memberResult,
-        ruleResult,
-        balanceResult,
-      ].find(
+      const contextFailure = [memberResult, ruleResult, balanceResult].find(
         (result) => [403, 409].includes(rejectionStatus(result) ?? 0),
       );
       if (contextFailure) {
@@ -1354,9 +1405,6 @@ function HomePageContent() {
       const failed = (key: ResourceKey) => {
         nextErrors[key] = "No fue posible cargar esta secciÃ³n.";
       };
-      if (dashboardResult.status === "fulfilled")
-        setDashboard(dashboardResult.value);
-      else failed("dashboard");
       if (categoryResult.status === "fulfilled")
         setCategories(categoryResult.value);
       else failed("categories");
@@ -1376,9 +1424,10 @@ function HomePageContent() {
         setExpenseForm((current) => ({
           ...current,
           paidByMemberId: current.paidByMemberId || firstMemberId,
-          splits: current.splits.length > 0
-            ? current.splits
-            : equalSplits(memberResult.value.map((member) => member.id)),
+          splits:
+            current.splits.length > 0
+              ? current.splits
+              : equalSplits(memberResult.value.map((member) => member.id)),
         }));
       } else failed("members");
       if (ruleResult.status === "fulfilled") {
@@ -1414,6 +1463,7 @@ function HomePageContent() {
       if (generation !== householdGeneration.current) return;
       setLoading(false);
       if (!authRefreshAborted) {
+        setDashboardRefreshVersion((value) => value + 1);
         setExpenseListReady(true);
         setExpenseListRefreshToken((value) => value + 1);
         setIncomeListReady(true);
@@ -1437,12 +1487,14 @@ function HomePageContent() {
       await refresh(householdOptions);
     } catch (cause) {
       if (generation !== householdGeneration.current) return;
-      const status = cause instanceof Error
-        ? (cause as Error & { status?: number }).status
-        : undefined;
-      const code = cause instanceof Error
-        ? (cause as Error & { code?: string }).code
-        : undefined;
+      const status =
+        cause instanceof Error
+          ? (cause as Error & { status?: number }).status
+          : undefined;
+      const code =
+        cause instanceof Error
+          ? (cause as Error & { code?: string }).code
+          : undefined;
       if (status === 401 || code === "UNAUTHENTICATED") {
         setSession(null);
         setAuthError("Tu sesión ya no es válida. Inicia sesión nuevamente.");
@@ -1468,7 +1520,9 @@ function HomePageContent() {
   async function signOut(): Promise<void> {
     if (!supabase) return;
     invalidateHouseholdOperations();
-    await fetch("/api/auth/household-selection", { method: "DELETE" }).catch(() => undefined);
+    await fetch("/api/auth/household-selection", { method: "DELETE" }).catch(
+      () => undefined,
+    );
     await supabase.auth.signOut();
     setSession(null);
     setAuthBoundaryError("");
@@ -1495,7 +1549,8 @@ function HomePageContent() {
       if (generation !== householdGeneration.current) return;
       setHouseholdSelectionError("No fue posible seleccionar ese hogar.");
     } finally {
-      if (generation === householdGeneration.current) setHouseholdSelectionBusy(false);
+      if (generation === householdGeneration.current)
+        setHouseholdSelectionBusy(false);
     }
   }
 
@@ -1524,9 +1579,11 @@ function HomePageContent() {
       clearHouseholdData();
       await refresh(options);
     } catch {
-      if (generation === householdGeneration.current) setHouseholdCreateError("No fue posible crear el hogar.");
+      if (generation === householdGeneration.current)
+        setHouseholdCreateError("No fue posible crear el hogar.");
     } finally {
-      if (generation === householdGeneration.current) setHouseholdSelectionBusy(false);
+      if (generation === householdGeneration.current)
+        setHouseholdSelectionBusy(false);
     }
   }
 
@@ -1542,7 +1599,7 @@ function HomePageContent() {
   }, [authReady, session?.user.id]);
 
   useEffect(() => {
-    if (!expenseListReady || !session) return;
+    if (!expenseListReady || !session || section !== "expenses") return;
     const controller = new AbortController();
     const generation = householdGeneration.current;
     const timer = window.setTimeout(() => {
@@ -1616,7 +1673,10 @@ function HomePageContent() {
           );
         })
         .finally(() => {
-          if (!controller.signal.aborted && generation === householdGeneration.current)
+          if (
+            !controller.signal.aborted &&
+            generation === householdGeneration.current
+          )
             setExpenseListLoading(false);
         });
     }, 250);
@@ -1638,11 +1698,12 @@ function HomePageContent() {
     expenseListSort,
     expenseListSortDirection,
     expenseListTo,
+    section,
     session?.user.id,
   ]);
 
   useEffect(() => {
-    if (!incomeListReady || !session) return;
+    if (!incomeListReady || !session || section !== "incomes") return;
     const controller = new AbortController();
     const generation = householdGeneration.current;
     const timer = window.setTimeout(() => {
@@ -1664,10 +1725,9 @@ function HomePageContent() {
 
       setIncomeListLoading(true);
       setIncomeListError("");
-      void requestJson<IncomeCollection>(
-        `/api/incomes?${params.toString()}`,
-        { signal: controller.signal },
-      )
+      void requestJson<IncomeCollection>(`/api/incomes?${params.toString()}`, {
+        signal: controller.signal,
+      })
         .then((result) => {
           if (generation !== householdGeneration.current) return;
           const nextPage =
@@ -1690,7 +1750,10 @@ function HomePageContent() {
           );
         })
         .finally(() => {
-          if (!controller.signal.aborted && generation === householdGeneration.current)
+          if (
+            !controller.signal.aborted &&
+            generation === householdGeneration.current
+          )
             setIncomeListLoading(false);
         });
     }, 250);
@@ -1713,6 +1776,7 @@ function HomePageContent() {
     incomeListSort,
     incomeListSortOrder,
     incomeListTo,
+    section,
     session?.user.id,
   ]);
 
@@ -1722,11 +1786,22 @@ function HomePageContent() {
       setExpenseFormError("Selecciona un pagador.");
       return;
     }
-    if (expenseForm.splits.length === 0 || expenseForm.splits.some((split) => percentageBasisPoints(split.percentage) === null)) {
+    if (
+      expenseForm.splits.length === 0 ||
+      expenseForm.splits.some(
+        (split) => percentageBasisPoints(split.percentage) === null,
+      )
+    ) {
       setExpenseFormError("Ingresa porcentajes válidos entre 0 y 100.");
       return;
     }
-    if (expenseForm.splits.reduce((sum, split) => sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)), BigInt(0)) !== BigInt(10000)) {
+    if (
+      expenseForm.splits.reduce(
+        (sum, split) =>
+          sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)),
+        BigInt(0),
+      ) !== BigInt(10000)
+    ) {
       setExpenseFormError("El reparto debe sumar exactamente 100.00%.");
       return;
     }
@@ -1822,11 +1897,22 @@ function HomePageContent() {
       setError("Usa una fecha válida con el formato DD/MM/AAAA.");
       return;
     }
-    if (editExpenseForm.splits.length === 0 || editExpenseForm.splits.some((split) => percentageBasisPoints(split.percentage) === null)) {
+    if (
+      editExpenseForm.splits.length === 0 ||
+      editExpenseForm.splits.some(
+        (split) => percentageBasisPoints(split.percentage) === null,
+      )
+    ) {
       setEditExpenseFormError("Ingresa porcentajes válidos entre 0 y 100.");
       return;
     }
-    if (editExpenseForm.splits.reduce((sum, split) => sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)), BigInt(0)) !== BigInt(10000)) {
+    if (
+      editExpenseForm.splits.reduce(
+        (sum, split) =>
+          sum + (percentageBasisPoints(split.percentage) ?? BigInt(0)),
+        BigInt(0),
+      ) !== BigInt(10000)
+    ) {
       setEditExpenseFormError("El reparto debe sumar exactamente 100.00%.");
       return;
     }
@@ -1855,14 +1941,18 @@ function HomePageContent() {
         url: expenseEditUrl,
         payload: summarizeExpenseEditPayload(payload),
       });
-      await api<Expense>(expenseEditUrl, {
-        method: "PATCH",
-        body: JSON.stringify(payload),
-      }, createExpenseEditResponseObserver({
-        expenseId,
-        method: "PATCH",
-        url: expenseEditUrl,
-      }));
+      await api<Expense>(
+        expenseEditUrl,
+        {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        },
+        createExpenseEditResponseObserver({
+          expenseId,
+          method: "PATCH",
+          url: expenseEditUrl,
+        }),
+      );
       setEditingExpense(null);
       setEditExpenseForm(initialExpenseEdit);
       setEditExpenseFormError("");
@@ -1975,7 +2065,7 @@ function HomePageContent() {
     setEditIncomeLegacyCategoryName(
       hierarchicalCategory || !income.categoryId
         ? null
-        : legacyCategory?.name ?? "Categoría histórica",
+        : (legacyCategory?.name ?? "Categoría histórica"),
     );
     setEditIncomeForm({
       memberId: income.memberId,
@@ -2115,7 +2205,9 @@ function HomePageContent() {
     if (!proposal) return describeAgentResult(result);
 
     if (isExpense) {
-      const expense = proposal as NonNullable<AgentResult["payload"]>["expense"];
+      const expense = proposal as NonNullable<
+        AgentResult["payload"]
+      >["expense"];
       if (expense?.merchant?.trim())
         lines.push(`Comercio: ${expense.merchant.trim()}`);
       if (typeof expense?.totalAmount === "number")
@@ -2125,7 +2217,8 @@ function HomePageContent() {
       if (expense?.description?.trim())
         lines.push(`Descripción: ${expense.description.trim()}`);
       const categoryName = expense?.categoryId
-        ? categories.find((category) => category.id === expense.categoryId)?.name
+        ? categories.find((category) => category.id === expense.categoryId)
+            ?.name
         : undefined;
       if (categoryName) lines.push(`Categoría: ${categoryName}`);
       const payerName = expense?.paidByMemberId
@@ -2167,11 +2260,11 @@ function HomePageContent() {
       : result.payload?.income;
     if (!proposal) return describeAgentResult(result);
 
-    const lines = [
-      `Voy a guardar este ${isExpense ? "gasto" : "ingreso"}:`,
-    ];
+    const lines = [`Voy a guardar este ${isExpense ? "gasto" : "ingreso"}:`];
     if (isExpense) {
-      const expense = proposal as NonNullable<AgentResult["payload"]>["expense"];
+      const expense = proposal as NonNullable<
+        AgentResult["payload"]
+      >["expense"];
       if (typeof expense?.totalAmount === "number")
         lines.push(`💰 Monto: ${money(expense.totalAmount)}`);
       if (expense?.expenseDate?.trim())
@@ -2184,10 +2277,12 @@ function HomePageContent() {
         ? memberNames[expense.paidByMemberId]
         : undefined;
       if (payerName) lines.push(`👤 Pagado por: ${payerName}`);
-      const categoryName = expense?.categoryPath ??
+      const categoryName =
+        expense?.categoryPath ??
         (expense?.categoryId
-          ? expenseCategories.find((category) => category.id === expense.categoryId)
-              ?.path
+          ? expenseCategories.find(
+              (category) => category.id === expense.categoryId,
+            )?.path
           : undefined);
       if (categoryName) lines.push(`📂 Categoría: ${categoryName}`);
     } else {
@@ -2198,7 +2293,8 @@ function HomePageContent() {
         lines.push(`📅 Fecha: ${humanDate(income.incomeDate)}`);
       if (income?.description?.trim())
         lines.push(`📝 Descripción: ${income.description.trim()}`);
-      const categoryName = income?.categoryPath ??
+      const categoryName =
+        income?.categoryPath ??
         (income?.categoryId
           ? incomeCategoryLabel(income.categoryId)
           : undefined);
@@ -2208,7 +2304,7 @@ function HomePageContent() {
         : undefined;
       if (memberName) lines.push(`👤 Integrante: ${memberName}`);
     }
-    lines.push('Escribe “Sí, confirmar” para continuar o “No” para rechazar.');
+    lines.push("Escribe “Sí, confirmar” para continuar o “No” para rechazar.");
     return lines.join("\n");
   }
 
@@ -2424,7 +2520,9 @@ function HomePageContent() {
             <fieldset className="expense-split-editor">
               <legend>¿Cómo se reparte este gasto?</legend>
               {members.map((member) => {
-                const split = editExpenseForm.splits.find((item) => item.memberId === member.id);
+                const split = editExpenseForm.splits.find(
+                  (item) => item.memberId === member.id,
+                );
                 return (
                   <label key={member.id}>
                     {member.displayName}
@@ -2439,18 +2537,46 @@ function HomePageContent() {
                         setEditExpenseFormError("");
                         setEditExpenseForm((current) => ({
                           ...current,
-                          splits: current.splits.some((item) => item.memberId === member.id)
-                            ? current.splits.map((item) => item.memberId === member.id ? { ...item, percentage: event.target.value } : item)
-                            : [...current.splits, { memberId: member.id, percentage: event.target.value }],
+                          splits: current.splits.some(
+                            (item) => item.memberId === member.id,
+                          )
+                            ? current.splits.map((item) =>
+                                item.memberId === member.id
+                                  ? { ...item, percentage: event.target.value }
+                                  : item,
+                              )
+                            : [
+                                ...current.splits,
+                                {
+                                  memberId: member.id,
+                                  percentage: event.target.value,
+                                },
+                              ],
                         }));
                       }}
-                    /> %
+                    />{" "}
+                    %
                   </label>
                 );
               })}
-              <p className={editExpenseFormError ? "alert" : "muted"}>{splitTotalMessage(editExpenseForm.splits)}</p>
-              {editExpenseFormError && <p className="alert" role="alert">{editExpenseFormError}</p>}
-              <button type="button" onClick={() => setEditExpenseForm((current) => ({ ...current, splits: equalSplits(members.map((member) => member.id)) }))} disabled={busy || members.length === 0}>
+              <p className={editExpenseFormError ? "alert" : "muted"}>
+                {splitTotalMessage(editExpenseForm.splits)}
+              </p>
+              {editExpenseFormError && (
+                <p className="alert" role="alert">
+                  {editExpenseFormError}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() =>
+                  setEditExpenseForm((current) => ({
+                    ...current,
+                    splits: equalSplits(members.map((member) => member.id)),
+                  }))
+                }
+                disabled={busy || members.length === 0}
+              >
                 Repartir por partes iguales
               </button>
             </fieldset>
@@ -2517,11 +2643,7 @@ function HomePageContent() {
               />
             </label>
             <div className="expense-create-modal-actions">
-              <button
-                type="button"
-                onClick={cancelExpenseEdit}
-                disabled={busy}
-              >
+              <button type="button" onClick={cancelExpenseEdit} disabled={busy}>
                 Cancelar
               </button>
               <button
@@ -2718,54 +2840,103 @@ function HomePageContent() {
 
   if (onboardingRequired) {
     return (
-      <OnboardingForm
-        onComplete={completeOnboarding}
-        onLogout={signOut}
-      />
+      <OnboardingForm onComplete={completeOnboarding} onLogout={signOut} />
     );
   }
 
   if (householdSelectionRequired) {
     return (
       <main className="shell">
-        <section className="panel auth-panel" aria-labelledby="household-selection-title">
+        <section
+          className="panel auth-panel"
+          aria-labelledby="household-selection-title"
+        >
           <p className="eyebrow">HOUSEMATE AI</p>
           <h1 id="household-selection-title">Selecciona tu hogar</h1>
-          <p className="muted">Elige el hogar que quieres utilizar en esta sesión.</p>
-          {householdSelectionError && <p className="alert" role="alert">{householdSelectionError}</p>}
+          <p className="muted">
+            Elige el hogar que quieres utilizar en esta sesión.
+          </p>
+          {householdSelectionError && (
+            <p className="alert" role="alert">
+              {householdSelectionError}
+            </p>
+          )}
           {householdOptionsLoading ? (
-            <p className="loading" role="status">Cargando tus hogares…</p>
+            <p className="loading" role="status">
+              Cargando tus hogares…
+            </p>
           ) : householdOptions.length === 0 ? (
             <div className="form">
-              <p className="muted">No hay hogares disponibles para esta cuenta.</p>
-              <button className="refresh" type="button" onClick={() => void loadHouseholdOptions()}>Reintentar</button>
+              <p className="muted">
+                No hay hogares disponibles para esta cuenta.
+              </p>
+              <button
+                className="refresh"
+                type="button"
+                onClick={() => void loadHouseholdOptions()}
+              >
+                Reintentar
+              </button>
             </div>
           ) : (
-          <div className="form">
-            {householdOptions.map((household) => (
-              <button
-                className="primary"
-                key={household.householdId}
-                type="button"
-                disabled={householdSelectionBusy}
-                onClick={() => void selectHousehold(household.householdId)}
-              >
-                {household.householdName}
-              </button>
-            ))}
-          </div>
+            <div className="form">
+              {householdOptions.map((household) => (
+                <button
+                  className="primary"
+                  key={household.householdId}
+                  type="button"
+                  disabled={householdSelectionBusy}
+                  onClick={() => void selectHousehold(household.householdId)}
+                >
+                  {household.householdName}
+                </button>
+              ))}
+            </div>
           )}
-          <button className="refresh" type="button" onClick={() => { setHouseholdCreateOpen(true); setHouseholdCreateError(""); }} disabled={householdSelectionBusy}>
+          <button
+            className="refresh"
+            type="button"
+            onClick={() => {
+              setHouseholdCreateOpen(true);
+              setHouseholdCreateError("");
+            }}
+            disabled={householdSelectionBusy}
+          >
             + Crear household
           </button>
           {householdCreateOpen && (
             <div className="form" aria-label="Crear household">
-              {householdCreateError && <p className="alert" role="alert">{householdCreateError}</p>}
-              <label>Nombre del household<input value={householdCreateName} onChange={(event) => setHouseholdCreateName(event.target.value)} disabled={householdSelectionBusy} /></label>
-              <button className="primary" type="button" onClick={() => void createHousehold()} disabled={householdSelectionBusy}>Crear</button>
+              {householdCreateError && (
+                <p className="alert" role="alert">
+                  {householdCreateError}
+                </p>
+              )}
+              <label>
+                Nombre del household
+                <input
+                  value={householdCreateName}
+                  onChange={(event) =>
+                    setHouseholdCreateName(event.target.value)
+                  }
+                  disabled={householdSelectionBusy}
+                />
+              </label>
+              <button
+                className="primary"
+                type="button"
+                onClick={() => void createHousehold()}
+                disabled={householdSelectionBusy}
+              >
+                Crear
+              </button>
             </div>
           )}
-          <button className="refresh" type="button" onClick={() => void signOut()} disabled={householdSelectionBusy}>
+          <button
+            className="refresh"
+            type="button"
+            onClick={() => void signOut()}
+            disabled={householdSelectionBusy}
+          >
             Cerrar sesión
           </button>
         </section>
@@ -2778,7 +2949,11 @@ function HomePageContent() {
       <main className="shell">
         <section className="panel auth-panel" role="alert">
           <p className="alert">{authBoundaryError}</p>
-          <button className="primary" type="button" onClick={() => void signOut()}>
+          <button
+            className="primary"
+            type="button"
+            onClick={() => void signOut()}
+          >
             Cerrar sesión
           </button>
         </section>
@@ -2805,21 +2980,36 @@ function HomePageContent() {
         >
           Actualizar
         </button>
-        <button className="refresh" type="button" onClick={() => void signOut()}>
+        <button
+          className="refresh"
+          type="button"
+          onClick={() => void signOut()}
+        >
           Cerrar sesión
         </button>
         <Link
           className="refresh"
           href="/household"
           onClick={() => {
-            const validSection = section === "dashboard" || section === "expenses" || section === "incomes" || section === "balance" || section === "agent";
+            const validSection =
+              section === "dashboard" ||
+              section === "expenses" ||
+              section === "incomes" ||
+              section === "balance" ||
+              section === "agent";
             if (!validSection) return;
-            window.sessionStorage.setItem("housemate.household.returnTo", section);
+            window.sessionStorage.setItem(
+              "housemate.household.returnTo",
+              section,
+            );
           }}
         >
           Household
         </Link>
-        <NotificationsBell key={session?.user.id ?? "signed-out"} userId={session?.user.id} />
+        <NotificationsBell
+          key={session?.user.id ?? "signed-out"}
+          userId={session?.user.id}
+        />
       </header>
       <nav className="nav" aria-label="Navegación principal">
         {(
@@ -2848,97 +3038,43 @@ function HomePageContent() {
         </p>
       )}
       {loading && <p className="loading">Cargando información…</p>}
-      {!loading && section === "dashboard" && dashboard && (
-        <section>
-          <div className="dashboard-heading">
-            <div>
-              <p className="section-kicker">RESUMEN DEL HOGAR</p>
-              <h2>Tu dinero, en una sola vista</h2>
-              <p className="muted">
-                Una lectura rápida de los ingresos, gastos y categorías que
-                alimentan tu balance.
-              </p>
-            </div>
-            <div className="dashboard-insight">
-              <span className="insight-label">Lectura principal</span>
-              <strong>
-                {dashboard.netAmount > 0
-                  ? "Los ingresos superan los gastos"
-                  : dashboard.netAmount < 0
-                    ? "Los gastos superan los ingresos"
-                    : "Los ingresos y los gastos son iguales"}
-              </strong>
-              {topCategory && (
-                <small>
-                  Mayor categoría: {topCategory.categoryName ?? "Sin categoría"}
-                </small>
-              )}
-            </div>
-          </div>
-          <div className="cards">
-            {[
-              ["Ingresos", dashboard.totalIncome],
-              ["Gastos", dashboard.totalSpent],
-              ["Neto", dashboard.netAmount],
-              ["Gastos registrados", dashboard.expenseCount],
-            ].map(([label, value]) => (
-              <article className="card" key={String(label)}>
-                <span>{label}</span>
-                <strong>
-                  {typeof value === "number" && label !== "Gastos registrados"
-                    ? money(value)
-                    : value}
-                </strong>
-              </article>
-            ))}
-          </div>
-          <div className="columns">
-            <article className="panel">
-              <h2>Ingresos por integrante</h2>
-              {dashboard.memberIncome.map((item) => (
-                <p className="row" key={item.memberId}>
-                  <span>{memberLabel(item.memberId)}</span>
-                  <strong>{money(item.amount)}</strong>
-                </p>
-              ))}
-            </article>
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>Gastos por categoría</h2>
-                  <p className="muted">Distribución del gasto confirmado</p>
-                </div>
-                <span className="panel-tag">Detalle</span>
-              </div>
-              <div className="category-list">
-                {dashboard.byCategory.map((item) => (
-                  <div
-                    className="category-item"
-                    key={item.categoryId ?? "none"}
-                  >
-                    <div className="category-item-heading">
-                      <span>{item.categoryName ?? "Sin categoría"}</span>
-                      <strong>{money(item.amount)}</strong>
-                    </div>
-                    <div className="bar-track" aria-hidden="true">
-                      <span
-                        className="bar-fill"
-                        style={{
-                          width: `${Math.max(6, (item.amount / maxCategoryAmount) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </article>
-          </div>
-        </section>
-      )}
-      {!loading && section === "dashboard" && !dashboard && (
-        <section className="panel">
-          <p className="alert">{resourceErrors.dashboard}</p>
-        </section>
+      {!loading && section === "dashboard" && (
+        <FinancialDashboard
+          householdName={activeHousehold?.householdName}
+          refreshVersion={dashboardRefreshVersion}
+          members={members}
+          expenseCategories={expenseCategories}
+          balance={balance}
+          balanceError={resourceErrors.balance}
+          onOpenExpenses={(range) => {
+            setExpenseListFrom(range.from);
+            setExpenseListTo(range.to);
+            setExpenseListSearch("");
+            setExpenseListMacroId("");
+            setExpenseListMicroId("");
+            setExpenseListMinAmount("");
+            setExpenseListMaxAmount("");
+            setExpenseListPage(1);
+            setExpenseListSort("date");
+            setExpenseListSortDirection("desc");
+            setSection("expenses");
+          }}
+          onOpenIncomes={(range) => {
+            setIncomeListFrom(range.from);
+            setIncomeListTo(range.to);
+            setIncomeListSearch("");
+            setIncomeListMemberId("");
+            setIncomeListMacroId("");
+            setIncomeListMicroId("");
+            setIncomeListMinAmount("");
+            setIncomeListMaxAmount("");
+            setIncomeListPage(1);
+            setIncomeListSort("incomeDate");
+            setIncomeListSortOrder("desc");
+            setSection("incomes");
+          }}
+          onOpenBalance={() => setSection("balance")}
+        />
       )}
       {!loading && section === "expenses" && (
         <section className="expenses-page">
@@ -2951,7 +3087,10 @@ function HomePageContent() {
             <button
               className="primary expenses-create-button"
               type="button"
-              onClick={() => { setExpenseFormError(""); setShowExpenseForm(true); }}
+              onClick={() => {
+                setExpenseFormError("");
+                setShowExpenseForm(true);
+              }}
             >
               + Registrar gasto
             </button>
@@ -3003,14 +3142,19 @@ function HomePageContent() {
               </div>
               <button
                 type="button"
-                className={expenseFiltersOpen ? "secondary-control is-active" : "secondary-control"}
+                className={
+                  expenseFiltersOpen
+                    ? "secondary-control is-active"
+                    : "secondary-control"
+                }
                 onClick={() => {
                   if (expenseFiltersOpen) setExpenseFiltersOpen(false);
                   else openExpenseFilters();
                 }}
               >
                 <FilterIcon />
-                Más filtros{expenseFilterCount > 0 ? ` · ${expenseFilterCount}` : ""}
+                Más filtros
+                {expenseFilterCount > 0 ? ` · ${expenseFilterCount}` : ""}
               </button>
             </div>
             {expenseFiltersOpen && (
@@ -3092,190 +3236,230 @@ function HomePageContent() {
                 aria-labelledby="expense-create-title"
               >
                 <div className="expense-create-modal">
-                <form className="panel form" onSubmit={submitExpense}>
-              <div className="expense-create-modal-header">
-                <div>
-                  <p className="section-kicker">NUEVO MOVIMIENTO</p>
-                  <h2 id="expense-create-title">Registrar gasto</h2>
-                </div>
-                <button
-                  type="button"
-                  className="filter-panel-close"
-                  aria-label="Cerrar formulario de gasto"
-                  onClick={() => setShowExpenseForm(false)}
-                >
-                  ×
-                </button>
-              </div>
-              {resourceErrors.sharingRules && (
-                <p className="muted">{resourceErrors.sharingRules}</p>
-              )}
-              {resourceErrors.expenseCategories && (
-                <p className="muted">{resourceErrors.expenseCategories}</p>
-              )}
-              {resourceErrors.members && (
-                <p className="muted">{resourceErrors.members}</p>
-              )}
-              <label>
-                Comercio
-                <input
-                  value={expenseForm.merchant}
-                  onChange={(e) =>
-                    setExpenseForm({ ...expenseForm, merchant: e.target.value })
-                  }
-                />
-              </label>
-              <label>
-                Total
-                <input
-                  required
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={expenseForm.totalAmount}
-                  onChange={(e) =>
-                    setExpenseForm({
-                      ...expenseForm,
-                      totalAmount: e.target.value,
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Fecha
-                <input
-                  required
-                  type="date"
-                  value={expenseForm.expenseDate}
-                  onChange={(e) =>
-                    setExpenseForm({
-                      ...expenseForm,
-                      expenseDate: e.target.value,
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Pagado por
-                <select
-                  required
-                  value={expenseForm.paidByMemberId}
-                  onChange={(e) =>
-                    setExpenseForm({
-                      ...expenseForm,
-                      paidByMemberId: e.target.value,
-                    })
-                  }
-                >
-                  <option value="">Seleccionar</option>
-                  {memberIds.map((id) => (
-                    <option key={id} value={id}>
-                      {memberLabel(id)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <fieldset className="expense-split-editor">
-                <legend>¿Cómo se reparte este gasto?</legend>
-                {members.map((member) => {
-                  const split = expenseForm.splits.find((item) => item.memberId === member.id);
-                  return (
-                    <label key={member.id}>
-                      {member.displayName}
+                  <form className="panel form" onSubmit={submitExpense}>
+                    <div className="expense-create-modal-header">
+                      <div>
+                        <p className="section-kicker">NUEVO MOVIMIENTO</p>
+                        <h2 id="expense-create-title">Registrar gasto</h2>
+                      </div>
+                      <button
+                        type="button"
+                        className="filter-panel-close"
+                        aria-label="Cerrar formulario de gasto"
+                        onClick={() => setShowExpenseForm(false)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    {resourceErrors.sharingRules && (
+                      <p className="muted">{resourceErrors.sharingRules}</p>
+                    )}
+                    {resourceErrors.expenseCategories && (
+                      <p className="muted">
+                        {resourceErrors.expenseCategories}
+                      </p>
+                    )}
+                    {resourceErrors.members && (
+                      <p className="muted">{resourceErrors.members}</p>
+                    )}
+                    <label>
+                      Comercio
                       <input
-                        aria-label={`Porcentaje de ${member.displayName}`}
+                        value={expenseForm.merchant}
+                        onChange={(e) =>
+                          setExpenseForm({
+                            ...expenseForm,
+                            merchant: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Total
+                      <input
+                        required
                         type="number"
-                        min="0"
-                        max="100"
+                        min="0.01"
                         step="0.01"
-                        value={split?.percentage ?? 0}
-                        onChange={(event) => {
-                          setExpenseFormError("");
+                        value={expenseForm.totalAmount}
+                        onChange={(e) =>
+                          setExpenseForm({
+                            ...expenseForm,
+                            totalAmount: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Fecha
+                      <input
+                        required
+                        type="date"
+                        value={expenseForm.expenseDate}
+                        onChange={(e) =>
+                          setExpenseForm({
+                            ...expenseForm,
+                            expenseDate: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Pagado por
+                      <select
+                        required
+                        value={expenseForm.paidByMemberId}
+                        onChange={(e) =>
+                          setExpenseForm({
+                            ...expenseForm,
+                            paidByMemberId: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="">Seleccionar</option>
+                        {memberIds.map((id) => (
+                          <option key={id} value={id}>
+                            {memberLabel(id)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <fieldset className="expense-split-editor">
+                      <legend>¿Cómo se reparte este gasto?</legend>
+                      {members.map((member) => {
+                        const split = expenseForm.splits.find(
+                          (item) => item.memberId === member.id,
+                        );
+                        return (
+                          <label key={member.id}>
+                            {member.displayName}
+                            <input
+                              aria-label={`Porcentaje de ${member.displayName}`}
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.01"
+                              value={split?.percentage ?? 0}
+                              onChange={(event) => {
+                                setExpenseFormError("");
+                                setExpenseForm((current) => ({
+                                  ...current,
+                                  splits: current.splits.some(
+                                    (item) => item.memberId === member.id,
+                                  )
+                                    ? current.splits.map((item) =>
+                                        item.memberId === member.id
+                                          ? {
+                                              ...item,
+                                              percentage: event.target.value,
+                                            }
+                                          : item,
+                                      )
+                                    : [
+                                        ...current.splits,
+                                        {
+                                          memberId: member.id,
+                                          percentage: event.target.value,
+                                        },
+                                      ],
+                                }));
+                              }}
+                            />{" "}
+                            %
+                          </label>
+                        );
+                      })}
+                      <p className={expenseFormError ? "alert" : "muted"}>
+                        {splitTotalMessage(expenseForm.splits)}
+                      </p>
+                      {expenseFormError && (
+                        <p className="alert" role="alert">
+                          {expenseFormError}
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
                           setExpenseForm((current) => ({
                             ...current,
-                            splits: current.splits.some((item) => item.memberId === member.id)
-                              ? current.splits.map((item) => item.memberId === member.id ? { ...item, percentage: event.target.value } : item)
-                              : [...current.splits, { memberId: member.id, percentage: event.target.value }],
-                          }));
+                            splits: equalSplits(
+                              members.map((member) => member.id),
+                            ),
+                          }))
+                        }
+                        disabled={busy || members.length === 0}
+                      >
+                        Repartir por partes iguales
+                      </button>
+                    </fieldset>
+                    <label>
+                      Categoría principal
+                      <select
+                        aria-label="Categoría principal del gasto"
+                        value={expenseMacroId}
+                        onChange={(e) => {
+                          setExpenseMacroId(e.target.value);
+                          setExpenseForm({ ...expenseForm, categoryId: "" });
                         }}
-                      /> %
+                      >
+                        <option value="">Sin categoría</option>
+                        {expenseMacros.map((macro) => (
+                          <option key={macro.id} value={macro.id}>
+                            {macro.name}
+                          </option>
+                        ))}
+                      </select>
                     </label>
-                  );
-                })}
-                <p className={expenseFormError ? "alert" : "muted"}>{splitTotalMessage(expenseForm.splits)}</p>
-                {expenseFormError && <p className="alert" role="alert">{expenseFormError}</p>}
-                <button type="button" onClick={() => setExpenseForm((current) => ({ ...current, splits: equalSplits(members.map((member) => member.id)) }))} disabled={busy || members.length === 0}>
-                  Repartir por partes iguales
-                </button>
-              </fieldset>
-              <label>
-                Categoría principal
-                <select
-                  aria-label="Categoría principal del gasto"
-                  value={expenseMacroId}
-                  onChange={(e) => {
-                    setExpenseMacroId(e.target.value);
-                    setExpenseForm({ ...expenseForm, categoryId: "" });
-                  }}
-                >
-                  <option value="">Sin categoría</option>
-                  {expenseMacros.map((macro) => (
-                    <option key={macro.id} value={macro.id}>
-                      {macro.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Categoría específica
-                <select
-                  aria-label="Categoría específica del gasto"
-                  disabled={expenseMacroId === ""}
-                  value={expenseForm.categoryId}
-                  onChange={(e) =>
-                    setExpenseForm({
-                      ...expenseForm,
-                      categoryId: e.target.value,
-                    })
-                  }
-                >
-                  <option value="">
-                    {expenseMacroId === ""
-                      ? "Selecciona una categoría principal"
-                      : "Sin categoría específica"}
-                  </option>
-                  {expenseMicros.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Descripción
-                <textarea
-                  value={expenseForm.description}
-                  onChange={(e) =>
-                    setExpenseForm({
-                      ...expenseForm,
-                      description: e.target.value,
-                    })
-                  }
-                />
-              </label>
-              <div className="expense-create-modal-actions">
-                <button
-                  type="button"
-                  onClick={() => setShowExpenseForm(false)}
-                  disabled={busy}
-                >
-                  Cancelar
-                </button>
-                <button className="primary" disabled={busy}>
-                  Crear gasto
-                </button>
-              </div>
-                </form>
+                    <label>
+                      Categoría específica
+                      <select
+                        aria-label="Categoría específica del gasto"
+                        disabled={expenseMacroId === ""}
+                        value={expenseForm.categoryId}
+                        onChange={(e) =>
+                          setExpenseForm({
+                            ...expenseForm,
+                            categoryId: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="">
+                          {expenseMacroId === ""
+                            ? "Selecciona una categoría principal"
+                            : "Sin categoría específica"}
+                        </option>
+                        {expenseMicros.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Descripción
+                      <textarea
+                        value={expenseForm.description}
+                        onChange={(e) =>
+                          setExpenseForm({
+                            ...expenseForm,
+                            description: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <div className="expense-create-modal-actions">
+                      <button
+                        type="button"
+                        onClick={() => setShowExpenseForm(false)}
+                        disabled={busy}
+                      >
+                        Cancelar
+                      </button>
+                      <button className="primary" disabled={busy}>
+                        Crear gasto
+                      </button>
+                    </div>
+                  </form>
                 </div>
               </div>
             )}
@@ -3295,36 +3479,41 @@ function HomePageContent() {
                   Cargando gastos...
                 </p>
               )}
-              {!expenseListLoading && !expenseListError && expenses.length === 0 && (
-                <div className="expense-empty-state">
-                  <strong>
-                    {expenseHasActiveFilters
-                      ? "No encontramos gastos con estos filtros."
-                      : "Aún no tienes gastos"}
-                  </strong>
-                  <p className="muted">
-                    {expenseHasActiveFilters
-                      ? "Prueba con otros criterios o limpia los filtros."
-                      : "Registra tu primer gasto para comenzar a llevar el control."}
-                  </p>
-                  {expenseHasActiveFilters ? (
-                    <button type="button" onClick={clearExpenseFilters}>
-                      Limpiar filtros
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => setShowExpenseForm(true)}
-                    >
-                      + Registrar gasto
-                    </button>
-                  )}
-                </div>
-              )}
+              {!expenseListLoading &&
+                !expenseListError &&
+                expenses.length === 0 && (
+                  <div className="expense-empty-state">
+                    <strong>
+                      {expenseHasActiveFilters
+                        ? "No encontramos gastos con estos filtros."
+                        : "Aún no tienes gastos"}
+                    </strong>
+                    <p className="muted">
+                      {expenseHasActiveFilters
+                        ? "Prueba con otros criterios o limpia los filtros."
+                        : "Registra tu primer gasto para comenzar a llevar el control."}
+                    </p>
+                    {expenseHasActiveFilters ? (
+                      <button type="button" onClick={clearExpenseFilters}>
+                        Limpiar filtros
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="primary"
+                        onClick={() => setShowExpenseForm(true)}
+                      >
+                        + Registrar gasto
+                      </button>
+                    )}
+                  </div>
+                )}
               {expenses.length > 0 && (
                 <div className="expense-table" role="table">
-                  <div className="expense-table-row expense-table-head" role="row">
+                  <div
+                    className="expense-table-row expense-table-head"
+                    role="row"
+                  >
                     <button
                       type="button"
                       className="expense-sort-button"
@@ -3352,7 +3541,10 @@ function HomePageContent() {
                         Macro
                         <FilterIcon />
                         {expenseListMacroId && (
-                          <span className="expense-filter-indicator" aria-label="Filtro activo" />
+                          <span
+                            className="expense-filter-indicator"
+                            aria-label="Filtro activo"
+                          />
                         )}
                       </button>
                       {expenseHeaderFilterOpen === "macro" && (
@@ -3368,7 +3560,11 @@ function HomePageContent() {
                           />
                           <button
                             type="button"
-                            className={!expenseListMacroId ? "expense-filter-option is-selected" : "expense-filter-option"}
+                            className={
+                              !expenseListMacroId
+                                ? "expense-filter-option is-selected"
+                                : "expense-filter-option"
+                            }
                             onClick={() => selectExpenseMacroFilter("")}
                           >
                             Todas las macros
@@ -3376,7 +3572,11 @@ function HomePageContent() {
                           {expenseFilterMacros.map((macro) => (
                             <button
                               type="button"
-                              className={expenseListMacroId === macro.id ? "expense-filter-option is-selected" : "expense-filter-option"}
+                              className={
+                                expenseListMacroId === macro.id
+                                  ? "expense-filter-option is-selected"
+                                  : "expense-filter-option"
+                              }
                               key={macro.id}
                               onClick={() => selectExpenseMacroFilter(macro.id)}
                             >
@@ -3401,7 +3601,10 @@ function HomePageContent() {
                         Micro
                         <FilterIcon />
                         {expenseListMicroId && (
-                          <span className="expense-filter-indicator" aria-label="Filtro activo" />
+                          <span
+                            className="expense-filter-indicator"
+                            aria-label="Filtro activo"
+                          />
                         )}
                       </button>
                       {expenseHeaderFilterOpen === "micro" && (
@@ -3417,21 +3620,31 @@ function HomePageContent() {
                           />
                           <button
                             type="button"
-                            className={!expenseListMicroId ? "expense-filter-option is-selected" : "expense-filter-option"}
+                            className={
+                              !expenseListMicroId
+                                ? "expense-filter-option is-selected"
+                                : "expense-filter-option"
+                            }
                             onClick={() => selectExpenseMicroFilter("")}
                           >
                             Todas las micros
                           </button>
                           {expenseFilterMicros.map((category) => (
-                              <button
-                                type="button"
-                                className={expenseListMicroId === category.id ? "expense-filter-option is-selected" : "expense-filter-option"}
-                                key={category.id}
-                                onClick={() => selectExpenseMicroFilter(category.id)}
-                              >
-                                {category.name}
-                              </button>
-                            ))}
+                            <button
+                              type="button"
+                              className={
+                                expenseListMicroId === category.id
+                                  ? "expense-filter-option is-selected"
+                                  : "expense-filter-option"
+                              }
+                              key={category.id}
+                              onClick={() =>
+                                selectExpenseMicroFilter(category.id)
+                              }
+                            >
+                              {category.name}
+                            </button>
+                          ))}
                         </div>
                       )}
                     </div>
@@ -3465,7 +3678,11 @@ function HomePageContent() {
                     <span>Acciones</span>
                   </div>
                   {expenses.map((expense) => (
-                    <div className="expense-table-row" key={expense.id} role="row">
+                    <div
+                      className="expense-table-row"
+                      key={expense.id}
+                      role="row"
+                    >
                       <div className="expense-table-cell" data-label="Fecha">
                         {formatExpenseDateForTable(expense.expenseDate)}
                       </div>
@@ -3488,10 +3705,16 @@ function HomePageContent() {
                       <strong className="expense-table-cell" data-label="Monto">
                         {money(expense.totalAmount)}
                       </strong>
-                      <div className="expense-table-cell expense-payer-cell" data-label="Pagador">
+                      <div
+                        className="expense-table-cell expense-payer-cell"
+                        data-label="Pagador"
+                      >
                         {expense.paidBy?.name ?? "—"}
                       </div>
-                      <div className="expense-table-cell expense-distribution-cell" data-label="Distribución">
+                      <div
+                        className="expense-table-cell expense-distribution-cell"
+                        data-label="Distribución"
+                      >
                         {formatDistribution(expense.distributions)}
                       </div>
                       <div
@@ -3535,12 +3758,17 @@ function HomePageContent() {
                   </div>
                 </div>
               )}
-              <div className="expense-pagination" aria-label="Paginación de gastos">
+              <div
+                className="expense-pagination"
+                aria-label="Paginación de gastos"
+              >
                 <button
                   type="button"
                   className="expense-page-button"
                   aria-label="Página anterior"
-                  disabled={expenseListLoading || expenseListPagination.page <= 1}
+                  disabled={
+                    expenseListLoading || expenseListPagination.page <= 1
+                  }
                   onClick={() =>
                     setExpenseListPage((page) => Math.max(1, page - 1))
                   }
@@ -3553,7 +3781,10 @@ function HomePageContent() {
                     Math.max(1, expenseListPagination.totalPages),
                   ).map((item, index) =>
                     item === "ellipsis" ? (
-                      <span className="expense-page-ellipsis" key={`ellipsis-${index}`}>
+                      <span
+                        className="expense-page-ellipsis"
+                        key={`ellipsis-${index}`}
+                      >
                         …
                       </span>
                     ) : (
@@ -3565,7 +3796,9 @@ function HomePageContent() {
                             : "expense-page-button"
                         }
                         aria-current={
-                          item === expenseListPagination.page ? "page" : undefined
+                          item === expenseListPagination.page
+                            ? "page"
+                            : undefined
                         }
                         onClick={() => setExpenseListPage(item)}
                         disabled={expenseListLoading}
@@ -3580,7 +3813,8 @@ function HomePageContent() {
                   {expenseListPagination.total === 0
                     ? "0 de 0"
                     : `${(expenseListPagination.page - 1) * expenseListPagination.pageSize + 1}–${Math.min(
-                        expenseListPagination.page * expenseListPagination.pageSize,
+                        expenseListPagination.page *
+                          expenseListPagination.pageSize,
                         expenseListPagination.total,
                       )} de ${expenseListPagination.total}`}
                 </span>
@@ -3607,7 +3841,8 @@ function HomePageContent() {
                   aria-label="Página siguiente"
                   disabled={
                     expenseListLoading ||
-                    expenseListPagination.page >= expenseListPagination.totalPages
+                    expenseListPagination.page >=
+                      expenseListPagination.totalPages
                   }
                   onClick={() =>
                     setExpenseListPage((page) =>
@@ -3776,7 +4011,7 @@ function HomePageContent() {
             <strong>{money(incomeListSummary.totalIncome)}</strong>
           </div>
           <div className="expense-list-layout">
-          {showIncomeForm && (
+            {showIncomeForm && (
               <div
                 className="expense-form-backdrop"
                 role="dialog"
@@ -3805,109 +4040,121 @@ function HomePageContent() {
                         {error}
                       </p>
                     )}
-              {resourceErrors.categories && (
-                <p className="muted">{resourceErrors.categories}</p>
-              )}
-              {resourceErrors.incomeCategories && (
-                <p className="muted">{resourceErrors.incomeCategories}</p>
-              )}
-              {resourceErrors.members && (
-                <p className="muted">{resourceErrors.members}</p>
-              )}
-              <label>
-                Integrante
-                <select
-                  required
-                  value={incomeForm.memberId}
-                  onChange={(e) =>
-                    setIncomeForm({ ...incomeForm, memberId: e.target.value })
-                  }
-                >
-                  <option value="">Seleccionar</option>
-                  {memberIds.map((id) => (
-                    <option key={id} value={id}>
-                      {memberLabel(id)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Monto
-                <input
-                  required
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={incomeForm.amount}
-                  onChange={(e) =>
-                    setIncomeForm({ ...incomeForm, amount: e.target.value })
-                  }
-                />
-              </label>
-              <label>
-                Fecha
-                <input
-                  required
-                  type="date"
-                  value={incomeForm.incomeDate}
-                  onChange={(e) =>
-                    setIncomeForm({ ...incomeForm, incomeDate: e.target.value })
-                  }
-                />
-              </label>
-              <label>
-                Categoría principal
-                <select
-                  aria-label="Categoría principal del ingreso"
-                  value={incomeMacroId}
-                  onChange={(e) => {
-                    setIncomeMacroId(e.target.value);
-                    setIncomeForm({ ...incomeForm, categoryId: "" });
-                  }}
-                >
-                  <option value="">Sin categoría</option>
-                  {incomeMacros.map((macro) => (
-                    <option key={macro.id} value={macro.id}>
-                      {macro.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Categoría específica
-                <select
-                  aria-label="Categoría específica del ingreso"
-                  disabled={incomeMacroId === ""}
-                  value={incomeForm.categoryId}
-                  onChange={(e) =>
-                    setIncomeForm({ ...incomeForm, categoryId: e.target.value })
-                  }
-                >
-                  <option value="">
-                    {incomeMacroId === ""
-                      ? "Selecciona una categoría principal"
-                      : "Sin categoría específica"}
-                  </option>
-                  {incomeMicros.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Descripción
-                <textarea
-                  required
-                  value={incomeForm.description}
-                  onChange={(e) =>
-                    setIncomeForm({
-                      ...incomeForm,
-                      description: e.target.value,
-                    })
-                  }
-                />
-              </label>
+                    {resourceErrors.categories && (
+                      <p className="muted">{resourceErrors.categories}</p>
+                    )}
+                    {resourceErrors.incomeCategories && (
+                      <p className="muted">{resourceErrors.incomeCategories}</p>
+                    )}
+                    {resourceErrors.members && (
+                      <p className="muted">{resourceErrors.members}</p>
+                    )}
+                    <label>
+                      Integrante
+                      <select
+                        required
+                        value={incomeForm.memberId}
+                        onChange={(e) =>
+                          setIncomeForm({
+                            ...incomeForm,
+                            memberId: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="">Seleccionar</option>
+                        {memberIds.map((id) => (
+                          <option key={id} value={id}>
+                            {memberLabel(id)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Monto
+                      <input
+                        required
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={incomeForm.amount}
+                        onChange={(e) =>
+                          setIncomeForm({
+                            ...incomeForm,
+                            amount: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Fecha
+                      <input
+                        required
+                        type="date"
+                        value={incomeForm.incomeDate}
+                        onChange={(e) =>
+                          setIncomeForm({
+                            ...incomeForm,
+                            incomeDate: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Categoría principal
+                      <select
+                        aria-label="Categoría principal del ingreso"
+                        value={incomeMacroId}
+                        onChange={(e) => {
+                          setIncomeMacroId(e.target.value);
+                          setIncomeForm({ ...incomeForm, categoryId: "" });
+                        }}
+                      >
+                        <option value="">Sin categoría</option>
+                        {incomeMacros.map((macro) => (
+                          <option key={macro.id} value={macro.id}>
+                            {macro.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Categoría específica
+                      <select
+                        aria-label="Categoría específica del ingreso"
+                        disabled={incomeMacroId === ""}
+                        value={incomeForm.categoryId}
+                        onChange={(e) =>
+                          setIncomeForm({
+                            ...incomeForm,
+                            categoryId: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="">
+                          {incomeMacroId === ""
+                            ? "Selecciona una categoría principal"
+                            : "Sin categoría específica"}
+                        </option>
+                        {incomeMicros.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Descripción
+                      <textarea
+                        required
+                        value={incomeForm.description}
+                        onChange={(e) =>
+                          setIncomeForm({
+                            ...incomeForm,
+                            description: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
                     <div className="expense-create-modal-actions">
                       <button
                         type="button"
@@ -3923,8 +4170,8 @@ function HomePageContent() {
                   </form>
                 </div>
               </div>
-          )}
-          <article className="panel expense-results">
+            )}
+            <article className="panel expense-results">
               <div className="panel-heading">
                 <div>
                   <h2>Ingresos</h2>
@@ -3935,25 +4182,27 @@ function HomePageContent() {
                   Cargando ingresos...
                 </p>
               )}
-              {!incomeListLoading && !incomeListError && incomes.length === 0 && (
-                <div className="expense-empty-state">
-                  <strong>
-                    {incomeHasActiveFilters
-                      ? "No encontramos ingresos con estos filtros."
-                      : "Aún no tienes ingresos"}
-                  </strong>
-                  <p className="muted">
-                    {incomeHasActiveFilters
-                      ? "Prueba con otros criterios o limpia los filtros."
-                      : "Registra tu primer ingreso para comenzar a llevar el control."}
-                  </p>
-                  {incomeHasActiveFilters && (
-                    <button type="button" onClick={clearIncomeFilters}>
-                      Limpiar filtros
-                    </button>
-                  )}
-                </div>
-              )}
+              {!incomeListLoading &&
+                !incomeListError &&
+                incomes.length === 0 && (
+                  <div className="expense-empty-state">
+                    <strong>
+                      {incomeHasActiveFilters
+                        ? "No encontramos ingresos con estos filtros."
+                        : "Aún no tienes ingresos"}
+                    </strong>
+                    <p className="muted">
+                      {incomeHasActiveFilters
+                        ? "Prueba con otros criterios o limpia los filtros."
+                        : "Registra tu primer ingreso para comenzar a llevar el control."}
+                    </p>
+                    {incomeHasActiveFilters && (
+                      <button type="button" onClick={clearIncomeFilters}>
+                        Limpiar filtros
+                      </button>
+                    )}
+                  </div>
+                )}
               {incomes.length > 0 && (
                 <div className="expense-table income-table" role="table">
                   <div
@@ -4084,7 +4333,9 @@ function HomePageContent() {
                                   : "expense-filter-option"
                               }
                               key={category.id}
-                              onClick={() => selectIncomeMicroFilter(category.id)}
+                              onClick={() =>
+                                selectIncomeMicroFilter(category.id)
+                              }
                             >
                               {category.name}
                             </button>
@@ -4156,7 +4407,9 @@ function HomePageContent() {
                                   : "expense-filter-option"
                               }
                               key={member.id}
-                              onClick={() => selectIncomeMemberFilter(member.id)}
+                              onClick={() =>
+                                selectIncomeMemberFilter(member.id)
+                              }
                             >
                               {member.displayName}
                             </button>
@@ -4186,68 +4439,62 @@ function HomePageContent() {
                         key={income.id}
                         role="row"
                       >
+                        <div className="expense-table-cell" data-label="Fecha">
+                          {formatExpenseDateForTable(income.incomeDate)}
+                        </div>
+                        <div className="expense-table-cell" data-label="Macro">
+                          {category.macro}
+                        </div>
                         <div
-                              className="expense-table-cell"
-                              data-label="Fecha"
-                            >
-                              {formatExpenseDateForTable(income.incomeDate)}
-                            </div>
+                          className="expense-table-cell"
+                          data-label="Micro"
+                          title={incomeCategoryLabel(income.categoryId)}
+                        >
+                          {category.micro}
+                        </div>
                         <div
-                              className="expense-table-cell"
-                              data-label="Macro"
-                            >
-                              {category.macro}
-                            </div>
+                          className="expense-table-cell"
+                          data-label="Descripción"
+                        >
+                          {income.description || "—"}
+                        </div>
                         <div
-                              className="expense-table-cell"
-                              data-label="Micro"
-                              title={incomeCategoryLabel(income.categoryId)}
-                            >
-                              {category.micro}
-                            </div>
-                        <div
-                              className="expense-table-cell"
-                              data-label="Descripción"
-                            >
-                              {income.description || "—"}
-                            </div>
-                        <div
-                              className="expense-table-cell"
-                              data-label="Miembro"
-                            >
-                              {memberLabel(income.memberId)}
-                            </div>
+                          className="expense-table-cell"
+                          data-label="Miembro"
+                        >
+                          {memberLabel(income.memberId)}
+                        </div>
                         <strong
-                              className="expense-table-cell"
-                              data-label="Monto"
-                            >
-                              {money(income.amount)}
-                            </strong>
+                          className="expense-table-cell"
+                          data-label="Monto"
+                        >
+                          {money(income.amount)}
+                        </strong>
                         <div
-                              className="actions expense-actions"
-                              data-label="Acciones"
-                            >
-                              <button
-                                type="button"
-                                className="expense-icon-button"
-                                aria-label={`Editar ingreso ${income.description}`}
-                                title="Editar ingreso"
-                                onClick={() => startIncomeEdit(income)}
-                                disabled={busy}
-                              >
-                                <EditIcon />
-                              </button>
-                              <button
-                                type="button"
-                                className="expense-icon-button danger"
-                                aria-label={`Eliminar ingreso ${income.description}`}
-                                title="Eliminar ingreso"
-                                onClick={() => void removeIncome(income.id)}
-                                disabled={busy}
-                              >
-                                <TrashIcon />
-                              </button>
-                            </div>
+                          className="actions expense-actions"
+                          data-label="Acciones"
+                        >
+                          <button
+                            type="button"
+                            className="expense-icon-button"
+                            aria-label={`Editar ingreso ${income.description}`}
+                            title="Editar ingreso"
+                            onClick={() => startIncomeEdit(income)}
+                            disabled={busy}
+                          >
+                            <EditIcon />
+                          </button>
+                          <button
+                            type="button"
+                            className="expense-icon-button danger"
+                            aria-label={`Eliminar ingreso ${income.description}`}
+                            title="Eliminar ingreso"
+                            onClick={() => void removeIncome(income.id)}
+                            disabled={busy}
+                          >
+                            <TrashIcon />
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -4265,7 +4512,10 @@ function HomePageContent() {
                   </div>
                 </div>
               )}
-              <div className="expense-pagination" aria-label="Paginación de ingresos">
+              <div
+                className="expense-pagination"
+                aria-label="Paginación de ingresos"
+              >
                 <button
                   type="button"
                   className="expense-page-button"
@@ -4298,7 +4548,9 @@ function HomePageContent() {
                             : "expense-page-button"
                         }
                         aria-current={
-                          item === incomeListPagination.page ? "page" : undefined
+                          item === incomeListPagination.page
+                            ? "page"
+                            : undefined
                         }
                         onClick={() => setIncomeListPage(item)}
                         disabled={incomeListLoading}
@@ -4313,7 +4565,8 @@ function HomePageContent() {
                   {incomeListPagination.total === 0
                     ? "0 de 0"
                     : `${(incomeListPagination.page - 1) * incomeListPagination.pageSize + 1}–${Math.min(
-                        incomeListPagination.page * incomeListPagination.pageSize,
+                        incomeListPagination.page *
+                          incomeListPagination.pageSize,
                         incomeListPagination.total,
                       )} de ${incomeListPagination.total}`}
                 </span>
@@ -4352,7 +4605,7 @@ function HomePageContent() {
                   ›
                 </button>
               </div>
-          </article>
+            </article>
           </div>
         </section>
       )}
@@ -4457,7 +4710,13 @@ function HomePageContent() {
 
 export default function HomePage() {
   return (
-    <Suspense fallback={<main className="shell"><p className="loading">Cargando información…</p></main>}>
+    <Suspense
+      fallback={
+        <main className="shell">
+          <p className="loading">Cargando información…</p>
+        </main>
+      }
+    >
       <HomePageContent />
     </Suspense>
   );
