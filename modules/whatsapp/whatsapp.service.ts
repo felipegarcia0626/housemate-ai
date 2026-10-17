@@ -437,6 +437,9 @@ function renderAgentResult(
     case "CLARIFICATION_REQUIRED":
       return result.message || "Necesito más información para continuar.";
     case "READ_RESULT":
+      if (result.operation === "GET_PERIOD_FINANCIAL_SUMMARY") {
+        return result.message ?? "No pude completar la consulta del período.";
+      }
       if (result.operation === "GET_CATEGORIES") {
         const data = (result as AgentReadResult).data as Category[];
         return `Categorías: ${data.map((category) => category.name).join(", ") || "ninguna"}.`;

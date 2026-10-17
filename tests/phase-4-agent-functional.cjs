@@ -1,4 +1,11 @@
 const assert = require("node:assert/strict");
+
+function completedModelText(value) {
+  return {
+    status: "completed",
+    output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(value) }] }],
+  };
+}
 const fs = require("node:fs");
 const path = require("node:path");
 const ts = require("typescript");
@@ -938,7 +945,7 @@ async function main() {
     status: 200,
     async json() {
       return {
-        output_text: JSON.stringify(ambiguousModelOutput),
+        ...completedModelText(ambiguousModelOutput),
       };
     },
   });
@@ -1009,7 +1016,7 @@ async function main() {
       ok: true,
       status: 200,
       async json() {
-        return { output_text: JSON.stringify(incomeModelOutput) };
+        return completedModelText(incomeModelOutput);
       },
     });
     const incomeDescriptionCases = [
@@ -1308,7 +1315,7 @@ async function main() {
         ok: true,
         status: 200,
         async json() {
-          return { output_text: JSON.stringify(output) };
+          return completedModelText(output);
         },
       };
     };
@@ -1381,7 +1388,7 @@ async function main() {
         ok: true,
         status: 200,
         async json() {
-          return { output_text: JSON.stringify(output) };
+          return completedModelText(output);
         },
       };
     };
@@ -1406,7 +1413,7 @@ async function main() {
       status: 200,
       async json() {
         return {
-          output_text: JSON.stringify({
+          ...completedModelText({
             ...incomeModelOutput,
             kind: "CORRECTION",
             correctionField: "amount",
@@ -1426,7 +1433,7 @@ async function main() {
       status: 200,
       async json() {
         return {
-          output_text: JSON.stringify({
+          ...completedModelText({
             ...incomeModelOutput,
             kind: "CREATE_EXPENSE",
             correctionField: "amount",

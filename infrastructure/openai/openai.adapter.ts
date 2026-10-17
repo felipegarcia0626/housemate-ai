@@ -78,6 +78,30 @@ export type ExpenseSplitInstruction = {
 
 type ParsedInterpretation = ExpenseInterpretation | CorrectionInterpretation;
 
+export type PeriodFinancialToolCall = {
+  kind: "GET_PERIOD_FINANCIAL_SUMMARY_TOOL_CALL";
+  responseId: string;
+  callId: string;
+  arguments: unknown;
+};
+
+const periodFinancialTool = {
+  type: "function",
+  name: "get_period_financial_summary",
+  description:
+    "Summarize the authenticated household's retrieved and validated income, confirmed expenses and net amount for an inclusive period of at most 31 days. The separately paginated reads are not a transactional snapshot. Use for period financial summaries, never for creating or changing records.",
+  strict: true,
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      from: { type: "string", description: "Inclusive start date, YYYY-MM-DD" },
+      to: { type: "string", description: "Inclusive end date, YYYY-MM-DD" },
+    },
+    required: ["from", "to"],
+  },
+} as const;
+
 type IncomeAmountFormat =
   | "missing"
   | "plain_decimal"
@@ -198,7 +222,7 @@ const responseSchema = {
   ],
 } as const;
 
-const systemPrompt = `Interpret the user's message using only the supported HouseMate
+const systemPrompt = `For a request for income, confirmed expenses and net amount over a period, call get_period_financial_summary with only from and to. Do not choose household, actor or permissions. Use at most one tool call. Otherwise interpret the user's message using only the supported HouseMate
 intents: create expense, create income, correction, get expenses, get incomes, get balance,
 get categories, get sharing rules, ambiguous movement, or unsupported. Return only the requested JSON
 schema. Use null when a value is absent. Do not invent financial values.
@@ -311,17 +335,19 @@ function logIncomeInterpretationDiagnostic(
 
 function extractText(body: unknown): string | null {
   if (!isRecord(body)) return null;
-  if (typeof body.output_text === "string") return body.output_text;
   if (!Array.isArray(body.output)) return null;
-  for (const output of body.output) {
-    if (!isRecord(output) || !Array.isArray(output.content)) continue;
-    for (const content of output.content) {
-      if (isRecord(content) && typeof content.text === "string") {
-        return content.text;
-      }
-    }
-  }
-  return null;
+  const messages = body.output.filter(
+    (item) => isRecord(item) && item.type === "message",
+  );
+  if (messages.length !== 1) return null;
+  const message = messages[0] as Record<string, unknown>;
+  if (
+    (message.status !== undefined && message.status !== "completed") ||
+    !Array.isArray(message.content) || message.content.length !== 1
+  ) return null;
+  const content = message.content[0];
+  return isRecord(content) && content.type === "output_text" &&
+    typeof content.text === "string" ? content.text : null;
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -519,9 +545,9 @@ function parseInterpretation(value: unknown): ParsedInterpretation {
 
 export async function interpretExpenseMessage(
   message: string,
-): Promise<ExpenseInterpretation> {
+): Promise<ExpenseInterpretation | PeriodFinancialToolCall> {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+  if (!apiKey || message.length > 2000) {
     throw new OpenAIAdapterError();
   }
   const currentDate = new Date().toISOString().slice(0, 10);
@@ -530,12 +556,15 @@ export async function interpretExpenseMessage(
   try {
     response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
+      signal: AbortSignal.timeout(10000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
+        max_output_tokens: 700,
+        tools: [periodFinancialTool],
         input: [
           {
             role: "system",
@@ -574,6 +603,40 @@ export async function interpretExpenseMessage(
   } catch {
     throw new OpenAIAdapterError();
   }
+  if (isRecord(body) && body.status === "completed" && Array.isArray(body.output)) {
+    const calls = body.output.filter(
+      (item) => isRecord(item) && item.type === "function_call",
+    );
+    if (calls.length > 0) {
+      if (calls.length !== 1 || typeof body.id !== "string") {
+        throw new OpenAIAdapterError();
+      }
+      const call = calls[0] as Record<string, unknown>;
+      if (
+        call.name !== periodFinancialTool.name ||
+        (call.status !== undefined && call.status !== "completed") ||
+        typeof call.call_id !== "string" ||
+        typeof call.arguments !== "string"
+      ) {
+        throw new OpenAIAdapterError();
+      }
+      let args: unknown;
+      try {
+        args = JSON.parse(call.arguments);
+      } catch {
+        throw new OpenAIAdapterError();
+      }
+      return {
+        kind: "GET_PERIOD_FINANCIAL_SUMMARY_TOOL_CALL",
+        responseId: body.id,
+        callId: call.call_id,
+        arguments: args,
+      };
+    }
+  }
+  if (!isRecord(body) || body.status !== "completed") {
+    throw new OpenAIAdapterError();
+  }
   const text = extractText(body);
   if (!text) {
     throw new OpenAIAdapterError();
@@ -594,5 +657,104 @@ export async function interpretExpenseMessage(
     return result as ExpenseInterpretation;
   } catch {
     throw new OpenAIAdapterError();
+  }
+}
+
+export async function explainPeriodFinancialSummary(
+  call: PeriodFinancialToolCall,
+  summary: {
+    from: string;
+    to: string;
+    complete: boolean;
+    totalIncome?: number;
+    totalSpent?: number;
+    netAmount?: number;
+    movementCount?: number;
+  },
+): Promise<string | null> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      signal: AbortSignal.timeout(10000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        previous_response_id: call.responseId,
+        max_output_tokens: 180,
+        tool_choice: "none",
+        input: [
+          {
+            type: "function_call_output",
+            call_id: call.callId,
+            output: JSON.stringify(summary),
+          },
+        ],
+        instructions:
+          "Choose exactly one qualitative observation supported by the function output. Do not calculate or produce any financial amount. The backend will render the final response.",
+        text: {
+          format: {
+            type: "json_schema",
+            name: "period_observation",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                observation: {
+                  type: "string",
+                  enum: [
+                    "EMPTY",
+                    "INCOME_EXCEEDS_EXPENSE",
+                    "EXPENSE_EXCEEDS_INCOME",
+                    "EQUAL",
+                    "INCOMPLETE",
+                  ],
+                },
+              },
+              required: ["observation"],
+            },
+          },
+        },
+      }),
+    });
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    if (
+      !isRecord(body) ||
+      body.status !== "completed" ||
+      !Array.isArray(body.output) ||
+      body.output.some((item) => isRecord(item) && item.type === "function_call")
+    ) return null;
+    const raw = extractText(body);
+    if (!raw || raw.length > 100) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed) || Object.keys(parsed).join(",") !== "observation") {
+      return null;
+    }
+    const expected = !summary.complete
+      ? "INCOMPLETE"
+      : summary.movementCount === 0
+        ? "EMPTY"
+        : summary.netAmount! > 0
+          ? "INCOME_EXCEEDS_EXPENSE"
+          : summary.netAmount! < 0
+            ? "EXPENSE_EXCEEDS_INCOME"
+            : "EQUAL";
+    if (parsed.observation !== expected) return null;
+    const language: Record<string, string> = {
+      EMPTY: "No hay ingresos ni gastos confirmados en este período.",
+      INCOME_EXCEEDS_EXPENSE: "Los ingresos superaron a los gastos confirmados del período.",
+      EXPENSE_EXCEEDS_INCOME: "Los gastos confirmados superaron a los ingresos del período.",
+      EQUAL: "Los ingresos y los gastos confirmados del período fueron iguales.",
+      INCOMPLETE: "La consulta no pudo completarse.",
+    };
+    return language[expected];
+  } catch {
+    return null;
   }
 }

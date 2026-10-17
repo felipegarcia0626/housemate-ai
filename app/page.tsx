@@ -2314,6 +2314,7 @@ function HomePageContent() {
     if (result.type === "PROPOSAL_UPDATED")
       return presentUpdatedProposal(result);
     if (result.type !== "READ_RESULT") return describeAgentResult(result);
+    if (result.operation === "GET_PERIOD_FINANCIAL_SUMMARY") return result.message ?? "No pude completar la consulta del período.";
     const agentMemberLabel = (memberId: string): string =>
       memberNames[memberId] ?? "Integrante";
 

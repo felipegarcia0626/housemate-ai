@@ -2,6 +2,8 @@ import { calculateDashboard } from "./dashboard-calculator";
 import {
   listDashboardExpenses,
   listDashboardIncomes,
+  readPeriodFinancialSnapshot,
+  type PeriodFinancialSnapshot,
 } from "./dashboard.repository";
 import {
   DashboardDomainError,
@@ -32,4 +34,14 @@ export async function getDashboard(
       "Dashboard could not be calculated.",
     );
   }
+}
+
+export async function getPeriodFinancialSnapshot(
+  context: DashboardServiceContext,
+  interval: { from: string; to: string },
+  signal: AbortSignal,
+): Promise<PeriodFinancialSnapshot> {
+  validateDashboardContext(context);
+  validateDashboardFilters(interval);
+  return readPeriodFinancialSnapshot(context.householdId, interval.from, interval.to, signal);
 }

@@ -12,6 +12,7 @@ import type {
 import type { BalanceResult } from "@/modules/expenses/balance.types";
 import type { Category } from "@/modules/categories/category.types";
 import type { SharingRule } from "@/modules/sharing-rules/sharing-rule.types";
+import type { PeriodFinancialSummary } from "./tools/get-period-financial-summary.tool";
 
 export interface AgentContext {
   householdId: string;
@@ -208,6 +209,7 @@ export interface AgentInterpretationErrorResult {
 }
 
 export type AgentReadOperation =
+  | "GET_PERIOD_FINANCIAL_SUMMARY"
   | "GET_EXPENSES"
   | "GET_INCOMES"
   | "GET_BALANCE"
@@ -217,7 +219,9 @@ export type AgentReadOperation =
 export interface AgentReadResult {
   type: "READ_RESULT";
   operation: AgentReadOperation;
+  message?: string;
   data:
+    | PeriodFinancialSummary
     | ExpenseListItem[]
     | IncomeListResult
     | BalanceResult

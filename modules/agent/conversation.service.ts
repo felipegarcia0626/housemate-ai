@@ -11,6 +11,11 @@ import { getIncomesTool } from "./tools/get-incomes.tool";
 import { getBalanceTool } from "./tools/get-balance.tool";
 import { getCategoriesTool } from "./tools/get-categories.tool";
 import { getSharingRulesTool } from "./tools/get-sharing-rules.tool";
+import {
+  getPeriodFinancialSummaryTool,
+  parsePeriodFinancialSummaryArguments,
+  type PeriodFinancialSummary,
+} from "./tools/get-period-financial-summary.tool";
 import { createOrReuseMicroCategory } from "@/modules/categories/category.service";
 import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
 import {
@@ -59,14 +64,18 @@ import {
 import type { PendingProposal } from "./agent.types";
 import {
   interpretExpenseMessage,
+  explainPeriodFinancialSummary,
   type CorrectionInterpretation,
   type ExpenseInterpretation,
   type ExpenseSplitInstruction,
+  type PeriodFinancialToolCall,
 } from "@/infrastructure/openai/openai.adapter";
 
 type Interpreter = (
   message: string,
-) => Promise<ExpenseInterpretation | CorrectionInterpretation>;
+) => Promise<
+  ExpenseInterpretation | CorrectionInterpretation | PeriodFinancialToolCall
+>;
 
 function isConfirmation(message: string): boolean {
   const normalized = normalizeOperationMessage(message);
@@ -2329,8 +2338,11 @@ export async function processAgentMessage(
     return clarification(["proposalId"]);
   }
 
-  let interpretation: ExpenseInterpretation | CorrectionInterpretation | null =
-    null;
+  let interpretation:
+    | ExpenseInterpretation
+    | CorrectionInterpretation
+    | PeriodFinancialToolCall
+    | null = null;
   if (looksLikeCorrection(message)) {
     const activePendingProposal = await getPendingProposalForMessage();
     if (activePendingProposal) {
@@ -2625,6 +2637,34 @@ export async function processAgentMessage(
         message: "No pude interpretar el mensaje.",
       };
     }
+  }
+
+  if (interpretation.kind === "GET_PERIOD_FINANCIAL_SUMMARY_TOOL_CALL") {
+    const interval = parsePeriodFinancialSummaryArguments(
+      interpretation.arguments,
+    );
+    const summary: PeriodFinancialSummary = interval
+      ? await getPeriodFinancialSummaryTool(context, interval)
+      : { from: "", to: "", complete: false };
+    const explanation = await explainPeriodFinancialSummary(
+      interpretation,
+      summary,
+    );
+    const message = summary.complete
+      ? [
+          `Período ${summary.from} a ${summary.to} (fechas incluidas).`,
+          `Ingresos: ${summary.totalIncome!.toFixed(2)}. Gastos confirmados: ${summary.totalSpent!.toFixed(2)}. Neto financiero (ingresos menos gastos): ${summary.netAmount!.toFixed(2)}. Movimientos: ${summary.movementCount}.`,
+          explanation,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "No pude completar la consulta del período; no mostraré cifras parciales.";
+    return {
+      type: "READ_RESULT",
+      operation: "GET_PERIOD_FINANCIAL_SUMMARY",
+      data: summary,
+      message,
+    };
   }
 
   if (interpretation.kind === "CORRECTION") {
