@@ -102,6 +102,32 @@ const periodFinancialTool = {
   },
 } as const;
 
+export type PeriodExpenseCategoryToolCall = {
+  kind: "GET_PERIOD_EXPENSE_CATEGORY_SUMMARY_TOOL_CALL";
+  responseId: string;
+  callId: string;
+  arguments: unknown;
+};
+
+const periodExpenseCategoryTool = {
+  type: "function",
+  name: "get_period_expense_category_summary",
+  description:
+    "Summarize confirmed household expenses by an exact expense category name for an inclusive period of at most 31 days. Set categoryName to null for the full ranking. The backend resolves categories and calculates totals; never choose category IDs.",
+  strict: true,
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      from: { type: "string", description: "Inclusive start date, YYYY-MM-DD" },
+      to: { type: "string", description: "Inclusive end date, YYYY-MM-DD" },
+      level: { type: "string", enum: ["MACRO", "MICRO"] },
+      categoryName: { type: ["string", "null"] },
+    },
+    required: ["from", "to", "level", "categoryName"],
+  },
+} as const;
+
 type IncomeAmountFormat =
   | "missing"
   | "plain_decimal"
@@ -222,7 +248,7 @@ const responseSchema = {
   ],
 } as const;
 
-const systemPrompt = `For a request for income, confirmed expenses and net amount over a period, call get_period_financial_summary with only from and to. Do not choose household, actor or permissions. Use at most one tool call. Otherwise interpret the user's message using only the supported HouseMate
+const systemPrompt = `For a request for income, confirmed expenses and net amount over a period, call get_period_financial_summary with only from and to. For spending by category, call get_period_expense_category_summary with inclusive dates, level MACRO or MICRO, and an exact categoryName or null for the full ranking. Do not choose category IDs, household, actor or permissions. Use at most one tool call. Otherwise interpret the user's message using only the supported HouseMate
 intents: create expense, create income, correction, get expenses, get incomes, get balance,
 get categories, get sharing rules, ambiguous movement, or unsupported. Return only the requested JSON
 schema. Use null when a value is absent. Do not invent financial values.
@@ -545,7 +571,7 @@ function parseInterpretation(value: unknown): ParsedInterpretation {
 
 export async function interpretExpenseMessage(
   message: string,
-): Promise<ExpenseInterpretation | PeriodFinancialToolCall> {
+): Promise<ExpenseInterpretation | PeriodFinancialToolCall | PeriodExpenseCategoryToolCall> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || message.length > 2000) {
     throw new OpenAIAdapterError();
@@ -564,7 +590,7 @@ export async function interpretExpenseMessage(
       body: JSON.stringify({
         model: "gpt-4o-mini",
         max_output_tokens: 700,
-        tools: [periodFinancialTool],
+        tools: [periodFinancialTool, periodExpenseCategoryTool],
         input: [
           {
             role: "system",
@@ -613,7 +639,7 @@ export async function interpretExpenseMessage(
       }
       const call = calls[0] as Record<string, unknown>;
       if (
-        call.name !== periodFinancialTool.name ||
+        (call.name !== periodFinancialTool.name && call.name !== periodExpenseCategoryTool.name) ||
         (call.status !== undefined && call.status !== "completed") ||
         typeof call.call_id !== "string" ||
         typeof call.arguments !== "string"
@@ -627,7 +653,9 @@ export async function interpretExpenseMessage(
         throw new OpenAIAdapterError();
       }
       return {
-        kind: "GET_PERIOD_FINANCIAL_SUMMARY_TOOL_CALL",
+        kind: call.name === periodFinancialTool.name
+          ? "GET_PERIOD_FINANCIAL_SUMMARY_TOOL_CALL"
+          : "GET_PERIOD_EXPENSE_CATEGORY_SUMMARY_TOOL_CALL",
         responseId: body.id,
         callId: call.call_id,
         arguments: args,

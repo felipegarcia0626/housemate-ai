@@ -45,6 +45,53 @@ export interface DashboardExpenseRow {
   items: DashboardExpenseItemRow[];
 }
 
+export type ExpenseCategorySummaryLevel = "MACRO" | "MICRO";
+
+export interface DashboardCategoryTaxonomyRow {
+  id: string;
+  name: string;
+  movementType: string | null;
+  level: string | null;
+  parentId: string | null;
+  isActive: boolean;
+}
+
+export interface PeriodExpenseCategoryData {
+  expenses: DashboardExpenseRow[];
+  categories: DashboardCategoryTaxonomyRow[];
+  expenseCount: number;
+  itemCount: number;
+}
+
+export interface ExpenseCategorySummaryEntry {
+  categoryName: string;
+  amount: number;
+  isActive: boolean;
+}
+
+export type ExpenseCategorySummaryFailureReason =
+  | "INVALID_ARGUMENTS"
+  | "CATEGORY_UNRESOLVED"
+  | "CATEGORY_AMBIGUOUS"
+  | "CATEGORY_INACTIVE"
+  | "INCOMPLETE";
+
+export interface PeriodExpenseCategorySummary {
+  from: string;
+  to: string;
+  level: ExpenseCategorySummaryLevel | null;
+  categoryName: string | null;
+  complete: boolean;
+  failureReason?: ExpenseCategorySummaryFailureReason;
+  totalSpent?: number;
+  expenseCount?: number;
+  categories?: ExpenseCategorySummaryEntry[];
+  topCategory?: ExpenseCategorySummaryEntry | null;
+  matchedCategory?: ExpenseCategorySummaryEntry | null;
+  uncategorizedAmount?: number;
+  unmappedAmount?: number;
+}
+
 export type DashboardDomainErrorCode = "VALIDATION_ERROR" | "PERSISTENCE_ERROR";
 
 export class DashboardDomainError extends Error {

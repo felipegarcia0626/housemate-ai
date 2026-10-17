@@ -19,6 +19,11 @@ import { useSearchParams } from "next/navigation";
 import { createHouseholdRequest } from "@/components/household/household-client";
 import { NotificationsBell } from "@/components/notifications/notifications-bell";
 import FinancialDashboard from "@/components/dashboard-financial-view";
+import {
+  copMoneyToCents,
+  formatCopCents,
+  formatCopMoney,
+} from "@/modules/agent/agent-presentation";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
 type ResourceKey =
@@ -431,6 +436,23 @@ function money(value: number): string {
     currency: "COP",
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function agentMoney(value: number): string {
+  return formatCopMoney(value);
+}
+
+const INVALID_AGENT_AMOUNT_MESSAGE =
+  "No pude mostrar el resultado porque contiene un importe inválido.";
+
+function isValidAgentMoney(value: unknown): value is number {
+  if (typeof value !== "number") return false;
+  try {
+    copMoneyToCents(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function humanDate(value: string): string {
@@ -2211,7 +2233,7 @@ function HomePageContent() {
       if (expense?.merchant?.trim())
         lines.push(`Comercio: ${expense.merchant.trim()}`);
       if (typeof expense?.totalAmount === "number")
-        lines.push(`Monto: ${money(expense.totalAmount)}`);
+        lines.push(`Monto: ${agentMoney(expense.totalAmount)}`);
       if (expense?.expenseDate?.trim())
         lines.push(`Fecha: ${humanDate(expense.expenseDate)}`);
       if (expense?.description?.trim())
@@ -2229,7 +2251,7 @@ function HomePageContent() {
     } else {
       const income = proposal as NonNullable<AgentResult["payload"]>["income"];
       if (typeof income?.amount === "number")
-        lines.push(`Monto: ${money(income.amount)}`);
+        lines.push(`Monto: ${agentMoney(income.amount)}`);
       if (income?.incomeDate?.trim())
         lines.push(`Fecha: ${humanDate(income.incomeDate)}`);
       if (income?.description?.trim())
@@ -2266,7 +2288,7 @@ function HomePageContent() {
         AgentResult["payload"]
       >["expense"];
       if (typeof expense?.totalAmount === "number")
-        lines.push(`💰 Monto: ${money(expense.totalAmount)}`);
+        lines.push(`💰 Monto: ${agentMoney(expense.totalAmount)}`);
       if (expense?.expenseDate?.trim())
         lines.push(`📅 Fecha: ${humanDate(expense.expenseDate)}`);
       if (expense?.description?.trim())
@@ -2288,7 +2310,7 @@ function HomePageContent() {
     } else {
       const income = proposal as NonNullable<AgentResult["payload"]>["income"];
       if (typeof income?.amount === "number")
-        lines.push(`💰 Monto: ${money(income.amount)}`);
+        lines.push(`💰 Monto: ${agentMoney(income.amount)}`);
       if (income?.incomeDate?.trim())
         lines.push(`📅 Fecha: ${humanDate(income.incomeDate)}`);
       if (income?.description?.trim())
@@ -2315,35 +2337,46 @@ function HomePageContent() {
       return presentUpdatedProposal(result);
     if (result.type !== "READ_RESULT") return describeAgentResult(result);
     if (result.operation === "GET_PERIOD_FINANCIAL_SUMMARY") return result.message ?? "No pude completar la consulta del período.";
+    if (result.operation === "GET_PERIOD_EXPENSE_CATEGORY_SUMMARY") {
+      return result.message ?? "No pude completar la consulta por categoría.";
+    }
     const agentMemberLabel = (memberId: string): string =>
       memberNames[memberId] ?? "Integrante";
 
     if (result.operation === "GET_EXPENSES") {
-      const items = Array.isArray(result.data) ? result.data : [];
+      const items: unknown[] = Array.isArray(result.data) ? result.data : [];
       if (items.length === 0) return "No encontré gastos con esos criterios.";
-      const total = items.reduce(
-        (sum, item) =>
-          sum +
-          (typeof item === "object" &&
-          item !== null &&
-          typeof (item as { totalAmount?: unknown }).totalAmount === "number"
-            ? (item as { totalAmount: number }).totalAmount
-            : 0),
-        0,
-      );
-      const lines = items.map((item) => {
+      const expenses: {
+        merchant?: string | null;
+        totalAmount: number;
+        expenseDate?: string;
+        category?: { name?: string } | null;
+      }[] = [];
+      let totalCents = BigInt(0);
+      for (const item of items) {
+        if (typeof item !== "object" || item === null) {
+          return INVALID_AGENT_AMOUNT_MESSAGE;
+        }
         const expense = item as {
           merchant?: string | null;
-          totalAmount?: number;
+          totalAmount?: unknown;
           expenseDate?: string;
           category?: { name?: string } | null;
         };
-        return `• ${expense.merchant ?? "Gasto"} — ${money(expense.totalAmount ?? 0)} — ${humanDate(expense.expenseDate ?? "")} — ${expense.category?.name ?? "Sin categoría"}`;
-      });
+        if (!isValidAgentMoney(expense.totalAmount)) {
+          return INVALID_AGENT_AMOUNT_MESSAGE;
+        }
+        totalCents += copMoneyToCents(expense.totalAmount);
+        expenses.push({ ...expense, totalAmount: expense.totalAmount });
+      }
+      const lines = expenses.map(
+        (expense) =>
+          `• ${expense.merchant ?? "Gasto"} — ${agentMoney(expense.totalAmount)} — ${humanDate(expense.expenseDate ?? "")} — ${expense.category?.name ?? "Sin categoría"}`,
+      );
       return [
-        `Encontré ${items.length} ${items.length === 1 ? "gasto" : "gastos"}:`,
+        `Encontré ${expenses.length} ${expenses.length === 1 ? "gasto" : "gastos"}:`,
         ...lines,
-        `Total: ${money(total)}`,
+        `Total: ${formatCopCents(totalCents)}`,
       ].join("\n");
     }
 
@@ -2357,15 +2390,30 @@ function HomePageContent() {
         summary?: { totalIncome?: number };
       };
       const items = Array.isArray(value?.incomes) ? value.incomes : [];
+      const totalIncome = value?.summary?.totalIncome;
+      if (!isValidAgentMoney(totalIncome)) {
+        return INVALID_AGENT_AMOUNT_MESSAGE;
+      }
       if (items.length === 0) return "No encontré ingresos con esos criterios.";
-      const lines = items.map(
+      const incomes: {
+        amount: number;
+        incomeDate?: string;
+        description?: string;
+      }[] = [];
+      for (const income of items) {
+        if (!income || !isValidAgentMoney(income.amount)) {
+          return INVALID_AGENT_AMOUNT_MESSAGE;
+        }
+        incomes.push({ ...income, amount: income.amount });
+      }
+      const lines = incomes.map(
         (income) =>
-          `• ${income.description ?? "Ingreso"} — ${money(income.amount ?? 0)} — ${humanDate(income.incomeDate ?? "")}`,
+          `• ${income.description ?? "Ingreso"} — ${agentMoney(income.amount)} — ${humanDate(income.incomeDate ?? "")}`,
       );
       return [
-        `Encontré ${items.length} ${items.length === 1 ? "ingreso" : "ingresos"}:`,
+        `Encontré ${incomes.length} ${incomes.length === 1 ? "ingreso" : "ingresos"}:`,
         ...lines,
-        `Total: ${money(value.summary?.totalIncome ?? 0)}`,
+        `Total: ${agentMoney(totalIncome)}`,
       ].join("\n");
     }
 
@@ -2375,12 +2423,19 @@ function HomePageContent() {
       };
       const members = Array.isArray(value?.members) ? value.members : [];
       if (members.length === 0) return "No hay balances para mostrar.";
+      const balances: { memberId?: string; balance: number }[] = [];
+      for (const member of members) {
+        if (!member || !isValidAgentMoney(member.balance)) {
+          return INVALID_AGENT_AMOUNT_MESSAGE;
+        }
+        balances.push({ memberId: member.memberId, balance: member.balance });
+      }
       return [
         "Balance del hogar:",
-        ...members.map((member) => {
-          const amount = member.balance ?? 0;
-          return `• ${agentMemberLabel(member.memberId ?? "")}: ${amount < 0 ? "-" : ""}${money(Math.abs(amount))}`;
-        }),
+        ...balances.map(
+          (member) =>
+            `• ${agentMemberLabel(member.memberId ?? "")}: ${agentMoney(member.balance)}`,
+        ),
       ].join("\n");
     }
 

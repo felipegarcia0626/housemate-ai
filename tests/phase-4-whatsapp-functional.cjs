@@ -252,7 +252,7 @@ function unsignedRequest(body) {
   });
 }
 
-async function main() {
+async function runHarness() {
   process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdId;
   process.env.WHATSAPP_VERIFY_TOKEN = "verify-token";
   process.env.WHATSAPP_APP_SECRET = appSecret;
@@ -303,11 +303,128 @@ async function main() {
           ],
         };
       }
+      if (agentMode === "read-expenses-large-total") {
+        return {
+          type: "READ_RESULT",
+          operation: "GET_EXPENSES",
+          data: [
+            {
+              id: "expense-large-1",
+              merchant: "Compra grande 1",
+              totalAmount: 90071992547409.9,
+              expenseDate: "2026-08-16",
+              category: null,
+            },
+            {
+              id: "expense-large-2",
+              merchant: "Compra grande 2",
+              totalAmount: 90071992547409.9,
+              expenseDate: "2026-08-15",
+              category: null,
+            },
+          ],
+        };
+      }
       if (agentMode === "read-expenses-empty") {
         return {
           type: "READ_RESULT",
           operation: "GET_EXPENSES",
           data: [],
+        };
+      }
+      if (agentMode === "read-incomes") {
+        return {
+          type: "READ_RESULT",
+          operation: "GET_INCOMES",
+          data: {
+            incomes: [
+              {
+                id: "income-1",
+                amount: 1250500,
+                incomeDate: "2026-10-01",
+                description: "Salario",
+              },
+            ],
+            pagination: { page: 1, pageSize: 10, total: 1, totalPages: 1 },
+            summary: { totalIncome: 1250500 },
+          },
+        };
+      }
+      if (agentMode === "read-balance") {
+        return {
+          type: "READ_RESULT",
+          operation: "GET_BALANCE",
+          data: {
+            members: [
+              {
+                memberId,
+                paid: 2000000,
+                share: 749499.5,
+                balance: 1250500.5,
+              },
+              {
+                memberId: secondMemberId,
+                paid: 0,
+                share: 1250500.5,
+                balance: -1250500.5,
+              },
+            ],
+          },
+        };
+      }
+      if (agentMode === "read-period-summary") {
+        return {
+          type: "READ_RESULT",
+          operation: "GET_PERIOD_FINANCIAL_SUMMARY",
+          message: [
+            "Período 2026-10-01 a 2026-10-31 (fechas incluidas).",
+            "Ingresos: $ 6. Gastos confirmados: $ 5,01. Neto financiero (ingresos menos gastos): $ 0,99. Movimientos: 503.",
+            "Los ingresos superaron a los gastos confirmados del período.",
+          ].join("\n"),
+          data: {
+            from: "2026-10-01",
+            to: "2026-10-31",
+            complete: true,
+            totalIncome: 6,
+            totalSpent: 5.01,
+            netAmount: 0.99,
+            incomeCount: 2,
+            expenseCount: 501,
+            movementCount: 503,
+          },
+        };
+      }
+      if (agentMode === "read-category-summary") {
+        return {
+          type: "READ_RESULT",
+          operation: "GET_PERIOD_EXPENSE_CATEGORY_SUMMARY",
+          message: [
+            "Período 2026-10-01 a 2026-10-31 (fechas incluidas).",
+            "Total de gastos confirmados: $ 1.505.",
+            "Mayor gasto por categoría: Alimentación ($ 1.504).",
+            "Ranking: Alimentación $ 1.504.",
+            "Sin categoría: $ 1.",
+          ].join("\n"),
+          data: {
+            from: "2026-10-01",
+            to: "2026-10-31",
+            level: "MACRO",
+            categoryName: null,
+            complete: true,
+            totalSpent: 1505,
+            expenseCount: 503,
+            categories: [
+              { categoryName: "Alimentación", amount: 1504, isActive: true },
+            ],
+            topCategory: {
+              categoryName: "Alimentación",
+              amount: 1504,
+              isActive: true,
+            },
+            matchedCategory: null,
+            uncategorizedAmount: 1,
+            unmappedAmount: 0,
+          },
         };
       }
       if (agentMode === "proposal-updated-expense") {
@@ -697,9 +814,28 @@ async function main() {
   assert.ok(expenseReadBody.includes("Sin categoría"));
   assert.ok(expenseReadBody.includes("16/08/2026"));
   assert.ok(expenseReadBody.includes("15/08/2026"));
-  assert.ok(expenseReadBody.includes("Total:"));
-  assert.ok(expenseReadBody.includes("130.000"));
+  assert.ok(expenseReadBody.includes("Carulla — $ 80.000"));
+  assert.ok(expenseReadBody.includes("Total: $ 130.000"));
   console.log("PASS WhatsApp expense reads render details and total");
+
+  agentMode = "read-expenses-large-total";
+  const largeExpenseRead = await route.POST(
+    signedRequest(
+      rawBody(
+        incomingPayload("event-read-expenses-large-total", "¿Cuánto gasté?"),
+      ),
+    ),
+  );
+  assert.equal(largeExpenseRead.status, 200);
+  const largeExpenseReadBody = JSON.parse(sentMessages.at(-1).init.body).text
+    .body;
+  assert.ok(
+    largeExpenseReadBody.includes("Compra grande 1 — $ 90.071.992.547.409,90"),
+  );
+  assert.ok(largeExpenseReadBody.includes("Total: $ 180.143.985.094.819,80"));
+  console.log(
+    "PASS WhatsApp expense total stays exact above Number safe cents",
+  );
 
   agentMode = "read-expenses-empty";
   const emptyExpenseRead = await route.POST(
@@ -713,6 +849,116 @@ async function main() {
     "No encontré gastos con esos criterios.",
   );
   console.log("PASS empty WhatsApp expense reads are rendered clearly");
+
+  const previousIncomeMode = agentMode;
+  agentMode = "read-incomes";
+  try {
+    const incomeRead = await route.POST(
+      signedRequest(
+        rawBody(incomingPayload("event-read-incomes", "¿Cuánto recibí?")),
+      ),
+    );
+    assert.equal(incomeRead.status, 200);
+    assert.equal(
+      JSON.parse(sentMessages.at(-1).init.body).text.body,
+      "Ingresos encontrados: 1. Total: $ 1.250.500.",
+    );
+  } finally {
+    agentMode = previousIncomeMode;
+  }
+  console.log("PASS WhatsApp income reads render grouped COP totals");
+
+  const previousBalanceMode = agentMode;
+  agentMode = "read-balance";
+  try {
+    const balanceRead = await route.POST(
+      signedRequest(
+        rawBody(
+          incomingPayload(
+            "event-read-balance",
+            "¿Cuál es el balance del hogar?",
+          ),
+        ),
+      ),
+    );
+    assert.equal(balanceRead.status, 200);
+    const balanceReadText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+    assert.equal(
+      balanceReadText,
+      [
+        "Balance del hogar:",
+        "• Integrante 1: $ 1.250.500,50",
+        "• Integrante 2: -$ 1.250.500,50",
+      ].join("\n"),
+    );
+    assert.doesNotMatch(balanceReadText, /Balance consultado correctamente/);
+  } finally {
+    agentMode = previousBalanceMode;
+  }
+  console.log("PASS WhatsApp balance reads render signed grouped COP amounts");
+
+  const previousSummaryMode = agentMode;
+  agentMode = "read-period-summary";
+  try {
+    const periodSummary = await route.POST(
+      signedRequest(
+        rawBody(
+          incomingPayload(
+            "event-read-period-summary",
+            "Resume el período financiero.",
+          ),
+        ),
+      ),
+    );
+    assert.equal(periodSummary.status, 200);
+    assert.equal(
+      JSON.parse(sentMessages.at(-1).init.body).text.body,
+      [
+        "Período 2026-10-01 a 2026-10-31 (fechas incluidas).",
+        "Ingresos: $ 6. Gastos confirmados: $ 5,01. Neto financiero (ingresos menos gastos): $ 0,99. Movimientos: 503.",
+        "Los ingresos superaron a los gastos confirmados del período.",
+      ].join("\n"),
+    );
+  } finally {
+    agentMode = previousSummaryMode;
+  }
+  console.log("PASS WhatsApp period summary preserves formatted COP amounts");
+
+  const previousAgentMode = agentMode;
+  agentMode = "read-category-summary";
+  try {
+    const categorySummary = await route.POST(
+      signedRequest(
+        rawBody(
+          incomingPayload(
+            "event-read-category-summary",
+            "¿Cuál fue nuestra categoría de mayor gasto?",
+          ),
+        ),
+      ),
+    );
+    assert.equal(categorySummary.status, 200);
+    const categorySummaryText = JSON.parse(
+      sentMessages.at(-1).init.body,
+    ).text.body;
+    assert.equal(
+      categorySummaryText,
+      [
+        "Período 2026-10-01 a 2026-10-31 (fechas incluidas).",
+        "Total de gastos confirmados: $ 1.505.",
+        "Mayor gasto por categoría: Alimentación ($ 1.504).",
+        "Ranking: Alimentación $ 1.504.",
+        "Sin categoría: $ 1.",
+      ].join("\n"),
+    );
+    assert.doesNotMatch(
+      categorySummaryText,
+      /Balance consultado correctamente/,
+    );
+  } finally {
+    agentMode = previousAgentMode;
+  }
+  console.log("PASS WhatsApp category summary renders the Agent summary message");
 
   agentMode = "clarification";
   const clarification = await route.POST(
@@ -741,7 +987,7 @@ async function main() {
   assert.equal(updatedExpense.status, 200);
   const updatedExpenseText = JSON.parse(sentMessages.at(-1).init.body).text.body;
   assert.match(updatedExpenseText, /Propuesta actualizada/);
-  assert.match(updatedExpenseText, /70[.,]000/);
+  assert.match(updatedExpenseText, /Monto: \$ 70\.000/);
   assert.match(updatedExpenseText, /16\/08\/2026/);
   assert.match(updatedExpenseText, /Mercado de la semana/);
   assert.match(updatedExpenseText, /Alimentación/);
@@ -781,7 +1027,7 @@ async function main() {
   assert.equal(updatedIncome.status, 200);
   const updatedIncomeText = JSON.parse(sentMessages.at(-1).init.body).text.body;
   assert.match(updatedIncomeText, /Propuesta actualizada/);
-  assert.match(updatedIncomeText, /3[.,]000[.,]000/);
+  assert.match(updatedIncomeText, /Monto: \$ 3\.000\.000/);
   assert.match(updatedIncomeText, /20\/08\/2026/);
   assert.match(updatedIncomeText, /Salario de agosto/);
   assert.match(updatedIncomeText, /Salario/);
@@ -1017,6 +1263,36 @@ async function main() {
   console.log(
     "PASS Route, Adapter and Channel have no direct persistence access",
   );
+}
+
+async function main() {
+  const environmentKeys = [
+    "HOUSEMATE_MVP_HOUSEHOLD_ID",
+    "WHATSAPP_VERIFY_TOKEN",
+    "WHATSAPP_APP_SECRET",
+    "WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_PHONE_NUMBER_ID",
+  ];
+  const originalEnvironment = Object.fromEntries(
+    environmentKeys.map((key) => [key, process.env[key]]),
+  );
+  const originalFetch = global.fetch;
+
+  try {
+    await runHarness();
+  } finally {
+    global.fetch = originalFetch;
+    for (const key of environmentKeys) {
+      const value = originalEnvironment[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+
+  assert.equal(global.fetch, originalFetch);
+  for (const key of environmentKeys) {
+    assert.equal(process.env[key], originalEnvironment[key]);
+  }
 }
 
 main().catch((error) => {

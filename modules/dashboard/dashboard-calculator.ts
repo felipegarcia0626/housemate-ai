@@ -6,6 +6,12 @@ import type {
   DashboardResult,
 } from "./dashboard.types";
 
+export interface DashboardCategoryCents {
+  categoryId: string | null;
+  categoryName: string | null;
+  amount: bigint;
+}
+
 const MAX_MONEY_CENTS = BigInt("99999999999999");
 const MAX_SAFE_CENTS = BigInt(Number.MAX_SAFE_INTEGER);
 const UNCATEGORIZED_KEY = "__uncategorized__";
@@ -41,28 +47,9 @@ function compareIds(left: string, right: string): number {
   return normalizedLeft < normalizedRight ? -1 : 1;
 }
 
-export function calculateDashboard(
-  incomes: readonly DashboardIncomeRow[],
+export function calculateExpenseCategoryAttribution(
   expenses: readonly DashboardExpenseRow[],
-): DashboardResult {
-  let totalIncomeCents = BigInt(0);
-  const memberIncomeCents = new Map<
-    string,
-    { memberId: string; amount: bigint }
-  >();
-
-  for (const [index, income] of incomes.entries()) {
-    const amount = moneyToCents(income.amount, `incomes[${index}].amount`);
-    totalIncomeCents += amount;
-    const key = income.memberId.toLowerCase();
-    const member = memberIncomeCents.get(key);
-    if (member === undefined) {
-      memberIncomeCents.set(key, { memberId: income.memberId, amount });
-    } else {
-      member.amount += amount;
-    }
-  }
-
+): { totalSpentCents: bigint; byCategoryCents: DashboardCategoryCents[] } {
   let totalSpentCents = BigInt(0);
   const categoryCents = new Map<
     string,
@@ -137,13 +124,40 @@ export function calculateDashboard(
     }
   }
 
+  return { totalSpentCents, byCategoryCents: [...categoryCents.values()] };
+}
+
+export function calculateDashboard(
+  incomes: readonly DashboardIncomeRow[],
+  expenses: readonly DashboardExpenseRow[],
+): DashboardResult {
+  let totalIncomeCents = BigInt(0);
+  const memberIncomeCents = new Map<
+    string,
+    { memberId: string; amount: bigint }
+  >();
+
+  for (const [index, income] of incomes.entries()) {
+    const amount = moneyToCents(income.amount, `incomes[${index}].amount`);
+    totalIncomeCents += amount;
+    const key = income.memberId.toLowerCase();
+    const member = memberIncomeCents.get(key);
+    if (member === undefined) {
+      memberIncomeCents.set(key, { memberId: income.memberId, amount });
+    } else {
+      member.amount += amount;
+    }
+  }
+
+  const { totalSpentCents, byCategoryCents } = calculateExpenseCategoryAttribution(expenses);
+
   const memberIncome: DashboardMemberIncome[] = [...memberIncomeCents.values()]
     .sort((left, right) => compareIds(left.memberId, right.memberId))
     .map((member) => ({
       memberId: member.memberId,
       amount: centsToMoney(member.amount, "memberIncome.amount"),
     }));
-  const byCategory: DashboardCategoryAmount[] = [...categoryCents.values()]
+  const byCategory: DashboardCategoryAmount[] = [...byCategoryCents]
     .sort((left, right) =>
       compareIds(left.categoryId ?? "", right.categoryId ?? ""),
     )
@@ -157,7 +171,7 @@ export function calculateDashboard(
     (total, member) => total + member.amount,
     BigInt(0),
   );
-  const byCategoryTotal = [...categoryCents.values()].reduce(
+  const byCategoryTotal = byCategoryCents.reduce(
     (total, category) => total + category.amount,
     BigInt(0),
   );

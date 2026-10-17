@@ -8,6 +8,7 @@ const file = (relative) => path.join(root, relative);
 const paths = {
   adapter: file("infrastructure/openai/openai.adapter.ts"),
   agentTypes: file("modules/agent/agent.types.ts"),
+  presentation: file("modules/agent/agent-presentation.ts"),
   conversation: file("modules/agent/conversation.service.ts"),
   draft: file("modules/agent/category-draft.service.ts"),
   database: file("infrastructure/database/client.ts"),
@@ -19,7 +20,8 @@ const paths = {
 };
 const realFiles = new Set([
   paths.adapter, paths.agentTypes, paths.conversation, paths.repository,
-  paths.service, paths.dashboardTypes, paths.validation, paths.tool,
+  paths.presentation, paths.service, paths.dashboardTypes, paths.validation,
+  paths.tool,
 ]);
 
 function loader(overrides, runtime = {}) {
@@ -210,7 +212,14 @@ async function main() {
   const conversation = integrated.load(paths.conversation);
   const response = await conversation.processAgentMessage(context, { message: "Resume el período" });
   assert.equal(response.operation, "GET_PERIOD_FINANCIAL_SUMMARY");
-  assert.match(response.message, /Neto financiero \(ingresos menos gastos\): 0\.99/);
+  assert.equal(
+    response.message,
+    [
+      "Período 2026-10-01 a 2026-10-31 (fechas incluidas).",
+      "Ingresos: $ 6. Gastos confirmados: $ 5,01. Neto financiero (ingresos menos gastos): $ 0,99. Movimientos: 503.",
+      "Los ingresos superaron a los gastos confirmados del período.",
+    ].join("\n"),
+  );
   assert.equal(requests.length, 2);
   assert.equal(requests[1].tool_choice, "none");
   const call = await integrated.adapter.interpretExpenseMessage("Resumen");

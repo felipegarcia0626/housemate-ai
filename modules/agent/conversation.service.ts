@@ -16,6 +16,10 @@ import {
   parsePeriodFinancialSummaryArguments,
   type PeriodFinancialSummary,
 } from "./tools/get-period-financial-summary.tool";
+import {
+  getPeriodExpenseCategorySummaryTool,
+} from "./tools/get-period-expense-category-summary.tool";
+import type { PeriodExpenseCategorySummary } from "@/modules/dashboard/dashboard.types";
 import { createOrReuseMicroCategory } from "@/modules/categories/category.service";
 import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
 import {
@@ -42,6 +46,7 @@ import type {
   HierarchicalCategory,
 } from "@/modules/categories/category.types";
 import { normalizeCategoryName } from "@/modules/categories/category.types";
+import { formatCopMoney } from "./agent-presentation";
 import type {
   AgentContext,
   AgentMessageInput,
@@ -69,12 +74,13 @@ import {
   type ExpenseInterpretation,
   type ExpenseSplitInstruction,
   type PeriodFinancialToolCall,
+  type PeriodExpenseCategoryToolCall,
 } from "@/infrastructure/openai/openai.adapter";
 
 type Interpreter = (
   message: string,
 ) => Promise<
-  ExpenseInterpretation | CorrectionInterpretation | PeriodFinancialToolCall
+  ExpenseInterpretation | CorrectionInterpretation | PeriodFinancialToolCall | PeriodExpenseCategoryToolCall
 >;
 
 function isConfirmation(message: string): boolean {
@@ -2342,6 +2348,7 @@ export async function processAgentMessage(
     | ExpenseInterpretation
     | CorrectionInterpretation
     | PeriodFinancialToolCall
+    | PeriodExpenseCategoryToolCall
     | null = null;
   if (looksLikeCorrection(message)) {
     const activePendingProposal = await getPendingProposalForMessage();
@@ -2653,7 +2660,7 @@ export async function processAgentMessage(
     const message = summary.complete
       ? [
           `Período ${summary.from} a ${summary.to} (fechas incluidas).`,
-          `Ingresos: ${summary.totalIncome!.toFixed(2)}. Gastos confirmados: ${summary.totalSpent!.toFixed(2)}. Neto financiero (ingresos menos gastos): ${summary.netAmount!.toFixed(2)}. Movimientos: ${summary.movementCount}.`,
+          `Ingresos: ${formatCopMoney(summary.totalIncome!)}. Gastos confirmados: ${formatCopMoney(summary.totalSpent!)}. Neto financiero (ingresos menos gastos): ${formatCopMoney(summary.netAmount!)}. Movimientos: ${summary.movementCount}.`,
           explanation,
         ]
           .filter(Boolean)
@@ -2662,6 +2669,60 @@ export async function processAgentMessage(
     return {
       type: "READ_RESULT",
       operation: "GET_PERIOD_FINANCIAL_SUMMARY",
+      data: summary,
+      message,
+    };
+  }
+
+  if (interpretation.kind === "GET_PERIOD_EXPENSE_CATEGORY_SUMMARY_TOOL_CALL") {
+    const summary: PeriodExpenseCategorySummary =
+      await getPeriodExpenseCategorySummaryTool(context, interpretation.arguments);
+    let message: string;
+    if (!summary.complete) {
+      const failureMessages: Record<string, string> = {
+        CATEGORY_UNRESOLVED: "No encontré esa categoría en el nivel solicitado.",
+        CATEGORY_AMBIGUOUS: "El nombre coincide con más de una categoría; necesito que la especifiques.",
+        CATEGORY_INACTIVE: "Esa categoría no está activa para nuevas consultas.",
+        INVALID_ARGUMENTS: "El período o los filtros de categoría no son válidos.",
+      };
+      message = failureMessages[summary.failureReason ?? ""] ??
+        "No pude completar la consulta; no mostraré cifras parciales.";
+    } else {
+      const lines = [
+        "Período " + summary.from + " a " + summary.to + " (fechas incluidas).",
+        "Total de gastos confirmados: " + formatCopMoney(summary.totalSpent!) + ".",
+      ];
+      if (summary.categoryName !== null && summary.matchedCategory) {
+        lines.push(
+          "Gasto en " + summary.matchedCategory.categoryName + ": " +
+          formatCopMoney(summary.matchedCategory.amount) + ".",
+        );
+      } else if (summary.topCategory) {
+        lines.push(
+          "Mayor gasto por categoría: " + summary.topCategory.categoryName +
+          " (" + formatCopMoney(summary.topCategory.amount) + ").",
+        );
+        const ranking = summary.categories ?? [];
+        lines.push(
+          "Ranking: " + ranking.slice(0, 10)
+            .map((row) => row.categoryName + " " + formatCopMoney(row.amount))
+            .join("; ") + (ranking.length > 10 ? "; ranking completo disponible en los datos." : "."),
+        );
+      } else {
+        lines.push("No hubo gastos asignables a categorías en el período.");
+      }
+      if (summary.uncategorizedAmount! > 0) {
+        lines.push("Sin categoría: " + formatCopMoney(summary.uncategorizedAmount!) + ".");
+      }
+      if (summary.unmappedAmount! > 0) {
+        lines.push("Importe sin desglose seguro al nivel solicitado: " +
+          formatCopMoney(summary.unmappedAmount!) + ".");
+      }
+      message = lines.join("\n");
+    }
+    return {
+      type: "READ_RESULT",
+      operation: "GET_PERIOD_EXPENSE_CATEGORY_SUMMARY",
       data: summary,
       message,
     };

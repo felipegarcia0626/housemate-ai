@@ -3,6 +3,7 @@ import {
   listDashboardExpenses,
   listDashboardIncomes,
   readPeriodFinancialSnapshot,
+  readPeriodExpenseCategoryData,
   type PeriodFinancialSnapshot,
 } from "./dashboard.repository";
 import {
@@ -10,6 +11,7 @@ import {
   type DashboardFilters,
   type DashboardResult,
   type DashboardServiceContext,
+  type PeriodExpenseCategoryData,
 } from "./dashboard.types";
 import {
   validateDashboardContext,
@@ -44,4 +46,27 @@ export async function getPeriodFinancialSnapshot(
   validateDashboardContext(context);
   validateDashboardFilters(interval);
   return readPeriodFinancialSnapshot(context.householdId, interval.from, interval.to, signal);
+}
+
+export async function getPeriodExpenseCategoryData(
+  context: DashboardServiceContext,
+  interval: { from: string; to: string },
+  signal: AbortSignal,
+): Promise<PeriodExpenseCategoryData> {
+  validateDashboardContext(context);
+  validateDashboardFilters(interval);
+  try {
+    return await readPeriodExpenseCategoryData(
+      context.householdId,
+      interval.from,
+      interval.to,
+      signal,
+    );
+  } catch (error) {
+    if (error instanceof DashboardDomainError) throw error;
+    throw new DashboardDomainError(
+      "PERSISTENCE_ERROR",
+      "Expense category summary could not be loaded.",
+    );
+  }
 }

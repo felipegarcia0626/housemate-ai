@@ -5,11 +5,17 @@ import {
   type WhatsAppTextMessage,
 } from "@/infrastructure/whatsapp/whatsapp.adapter";
 import { processAgentMessage } from "@/modules/agent/conversation.service";
+import {
+  copMoneyToCents,
+  formatCopCents,
+  formatCopMoney,
+} from "@/modules/agent/agent-presentation";
 import { findActiveProposalId } from "@/modules/agent/agent.service";
 import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 import { getCategoriesTool } from "@/modules/agent/tools/get-categories.tool";
 import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
 import type { AgentReadResult } from "@/modules/agent/agent.types";
+import type { BalanceResult } from "@/modules/expenses/balance.types";
 import type { Category } from "@/modules/categories/category.types";
 import type { IncomeListResult } from "@/modules/incomes/income.types";
 import type { SharingRule } from "@/modules/sharing-rules/sharing-rule.types";
@@ -207,14 +213,6 @@ function extractProposalId(text: string): string | undefined {
   return candidate && UUID_PATTERN.test(candidate) ? candidate : undefined;
 }
 
-function formatWhatsAppMoney(value: number): string {
-  return new Intl.NumberFormat("es-CO", {
-    style: "currency",
-    currency: "COP",
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
 function formatWhatsAppDate(value: string): string {
   const date = new Date(`${value}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return value;
@@ -229,16 +227,19 @@ function formatWhatsAppDate(value: string): string {
 function renderWhatsAppExpenses(data: ExpenseListItem[]): string {
   if (data.length === 0) return "No encontré gastos con esos criterios.";
 
-  const total = data.reduce((sum, expense) => sum + expense.totalAmount, 0);
+  const totalCents = data.reduce(
+    (sum, expense) => sum + copMoneyToCents(expense.totalAmount),
+    BigInt(0),
+  );
   const lines = data.map(
     (expense, index) =>
-      `${index + 1}. ${expense.merchant ?? "Gasto"} — ${formatWhatsAppMoney(expense.totalAmount)} — ${formatWhatsAppDate(expense.expenseDate)} — ${expense.category?.name ?? "Sin categoría"}`,
+      `${index + 1}. ${expense.merchant ?? "Gasto"} — ${formatCopMoney(expense.totalAmount)} — ${formatWhatsAppDate(expense.expenseDate)} — ${expense.category?.name ?? "Sin categoría"}`,
   );
 
   return [
     `Encontré ${data.length} ${data.length === 1 ? "gasto" : "gastos"}:`,
     ...lines,
-    `Total: ${formatWhatsAppMoney(total)}`,
+    `Total: ${formatCopCents(totalCents)}`,
   ].join("\n");
 }
 
@@ -286,7 +287,7 @@ function renderUpdatedProposal(
     if (expense.merchant?.trim())
       lines.push(`Comercio: ${expense.merchant.trim()}`);
     if (typeof expense.totalAmount === "number")
-      lines.push(`Monto: ${formatWhatsAppMoney(expense.totalAmount)}`);
+      lines.push(`Monto: ${formatCopMoney(expense.totalAmount)}`);
     if (expense.expenseDate?.trim())
       lines.push(`Fecha: ${formatWhatsAppDate(expense.expenseDate)}`);
     if (expense.description?.trim())
@@ -307,7 +308,7 @@ function renderUpdatedProposal(
   ) {
     const income = payload.income;
     if (typeof income.amount === "number")
-      lines.push(`Monto: ${formatWhatsAppMoney(income.amount)}`);
+      lines.push(`Monto: ${formatCopMoney(income.amount)}`);
     if (income.incomeDate?.trim())
       lines.push(`Fecha: ${formatWhatsAppDate(income.incomeDate)}`);
     if (income.description?.trim())
@@ -388,7 +389,7 @@ function renderCreatedProposal(
 
   if (isExpense && "expense" in payload && payload.expense) {
     const expense = payload.expense;
-    lines.push(`💰 Monto: ${formatWhatsAppMoney(expense.totalAmount)}`);
+    lines.push(`💰 Monto: ${formatCopMoney(expense.totalAmount)}`);
     lines.push(`📅 Fecha: ${formatWhatsAppDate(expense.expenseDate)}`);
     if (expense.description?.trim())
       lines.push(`📝 Descripción: ${expense.description.trim()}`);
@@ -403,7 +404,7 @@ function renderCreatedProposal(
       lines.push(`📂 Categoría: ${expense.categoryPath}`);
   } else if (!isExpense && "income" in payload && payload.income) {
     const income = payload.income;
-    lines.push(`💰 Monto: ${formatWhatsAppMoney(income.amount)}`);
+    lines.push(`💰 Monto: ${formatCopMoney(income.amount)}`);
     lines.push(`📅 Fecha: ${formatWhatsAppDate(income.incomeDate)}`);
     if (income.description?.trim())
       lines.push(`📝 Descripción: ${income.description.trim()}`);
@@ -440,6 +441,9 @@ function renderAgentResult(
       if (result.operation === "GET_PERIOD_FINANCIAL_SUMMARY") {
         return result.message ?? "No pude completar la consulta del período.";
       }
+      if (result.operation === "GET_PERIOD_EXPENSE_CATEGORY_SUMMARY") {
+        return result.message ?? "No pude completar la consulta por categoría.";
+      }
       if (result.operation === "GET_CATEGORIES") {
         const data = (result as AgentReadResult).data as Category[];
         return `Categorías: ${data.map((category) => category.name).join(", ") || "ninguna"}.`;
@@ -450,11 +454,26 @@ function renderAgentResult(
       }
       if (result.operation === "GET_INCOMES") {
         const data = (result as AgentReadResult).data as IncomeListResult;
-        return `Ingresos encontrados: ${data.incomes.length}. Total: ${data.summary.totalIncome}.`;
+        return `Ingresos encontrados: ${data.incomes.length}. Total: ${formatCopMoney(data.summary.totalIncome)}.`;
       }
       if (result.operation === "GET_EXPENSES") {
         const data = (result as AgentReadResult).data as ExpenseListItem[];
         return renderWhatsAppExpenses(data);
+      }
+      if (result.operation === "GET_BALANCE") {
+        const data = (result as AgentReadResult).data as BalanceResult;
+        if (!Array.isArray(data?.members)) {
+          return "No pude mostrar los balances disponibles.";
+        }
+        if (data.members.length === 0) return "No hay balances para mostrar.";
+        return [
+          "Balance del hogar:",
+          ...data.members.map((member, index) => {
+            const memberLabel =
+              labels.members.get(member.memberId) ?? `Integrante ${index + 1}`;
+            return `• ${memberLabel}: ${formatCopMoney(member.balance)}`;
+          }),
+        ].join("\n");
       }
       return "Balance consultado correctamente.";
     case "UNSUPPORTED":
