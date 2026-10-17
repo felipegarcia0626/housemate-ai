@@ -148,8 +148,65 @@ async function main() {
     { ...interval, householdId: context.householdId },
     { from: "2026-02-30", to: "2026-03-01" },
     { from: "2026-10-31", to: "2026-10-01" },
-    { from: "2026-01-01", to: "2026-02-02" },
   ]) assert.equal(tool.parsePeriodFinancialSummaryArguments(bad), null);
+
+  const thirtyTwoDayPeriod = { from: "2026-01-01", to: "2026-02-01" };
+  assert.deepEqual(tool.parsePeriodFinancialSummaryArguments(thirtyTwoDayPeriod), thirtyTwoDayPeriod);
+  const thirtyTwoDayDb = databaseDouble({
+    rows: {
+      tb_expenses: [{ expense_date: thirtyTwoDayPeriod.from, total_amount: "2.00" }],
+      tb_incomes: [{ income_date: thirtyTwoDayPeriod.to, amount: "3.00" }],
+    },
+  });
+  const thirtyTwoDaySummary = await fixtures(thirtyTwoDayDb).tool
+    .getPeriodFinancialSummaryTool(context, thirtyTwoDayPeriod);
+  assert.deepEqual([
+    thirtyTwoDaySummary.complete,
+    thirtyTwoDaySummary.totalIncome,
+    thirtyTwoDaySummary.totalSpent,
+    thirtyTwoDaySummary.incomeCount,
+    thirtyTwoDaySummary.expenseCount,
+  ], [true, 3, 2, 1, 1]);
+
+  const maximumPeriod = { from: "2024-01-01", to: "2024-12-31" };
+  assert.deepEqual(tool.parsePeriodFinancialSummaryArguments(maximumPeriod), maximumPeriod);
+  const maximumPeriodDb = databaseDouble({
+    rows: {
+      tb_expenses: [
+        { expense_date: maximumPeriod.from, total_amount: "0.01" },
+        { expense_date: maximumPeriod.to, total_amount: "0.02" },
+      ],
+      tb_incomes: [
+        { income_date: maximumPeriod.from, amount: "1.00" },
+        { income_date: maximumPeriod.to, amount: "2.00" },
+      ],
+    },
+  });
+  const maximumPeriodSummary = await fixtures(maximumPeriodDb).tool
+    .getPeriodFinancialSummaryTool(context, maximumPeriod);
+  assert.deepEqual([
+    maximumPeriodSummary.complete,
+    maximumPeriodSummary.totalIncome,
+    maximumPeriodSummary.totalSpent,
+    maximumPeriodSummary.incomeCount,
+    maximumPeriodSummary.expenseCount,
+  ], [true, 3, 0.03, 2, 2]);
+  assert.ok(operation(maximumPeriodDb, "gte", "tb_expenses", ([field, value]) =>
+    field === "expense_date" && value === maximumPeriod.from));
+  assert.ok(operation(maximumPeriodDb, "lte", "tb_expenses", ([field, value]) =>
+    field === "expense_date" && value === maximumPeriod.to));
+  assert.ok(operation(maximumPeriodDb, "gte", "tb_incomes", ([field, value]) =>
+    field === "income_date" && value === maximumPeriod.from));
+  assert.ok(operation(maximumPeriodDb, "lte", "tb_incomes", ([field, value]) =>
+    field === "income_date" && value === maximumPeriod.to));
+
+  const tooLongPeriod = { from: "2024-01-01", to: "2025-01-01" };
+  assert.equal(tool.parsePeriodFinancialSummaryArguments(tooLongPeriod), null);
+  const tooLongDb = databaseDouble({ rows: { tb_expenses: [], tb_incomes: [] } });
+  const tooLongSummary = await fixtures(tooLongDb).tool
+    .getPeriodFinancialSummaryTool(context, tooLongPeriod);
+  assert.deepEqual(tooLongSummary, { ...tooLongPeriod, complete: false });
+  assert.equal(tooLongDb.operations.length, 0);
   const result = await tool.getPeriodFinancialSummaryTool(context, interval);
   assert.deepEqual([result.complete, result.totalIncome, result.totalSpent, result.netAmount, result.movementCount], [true, 6, 5.01, 0.99, 503]);
   assert.equal(db.operations.filter((entry) => entry[0] === "from" && entry[1] === "tb_expenses").length, 2);

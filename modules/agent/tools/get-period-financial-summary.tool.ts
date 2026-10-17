@@ -14,7 +14,7 @@ export interface PeriodFinancialSummary {
 }
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const MAX_DAYS = 31;
+const MAX_DAYS = 366;
 const MAX_ROWS_PER_KIND = 5000;
 const QUERY_TIMEOUT_MS = 15000;
 const MAX_SAFE_CENTS = BigInt(Number.MAX_SAFE_INTEGER);

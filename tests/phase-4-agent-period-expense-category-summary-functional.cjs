@@ -268,9 +268,48 @@ async function main() {
     { ...interval, level: "GENERAL" },
     { ...interval, categoryName: " " },
     { ...interval, from: "2026-02-30" },
-    { ...interval, to: "2026-11-01" },
     { ...interval, unexpected: true },
   ]) assert.equal(tool.parsePeriodExpenseCategorySummaryArguments(bad), null);
+  const thirtyTwoDayPeriod = { ...interval, from: "2026-01-01", to: "2026-02-01" };
+  const leapYearPeriod = { ...interval, from: "2024-01-01", to: "2024-12-31" };
+  assert.deepEqual(tool.parsePeriodExpenseCategorySummaryArguments(thirtyTwoDayPeriod), thirtyTwoDayPeriod);
+  assert.deepEqual(tool.parsePeriodExpenseCategorySummaryArguments(leapYearPeriod), leapYearPeriod);
+  assert.equal(tool.parsePeriodExpenseCategorySummaryArguments({
+    ...interval,
+    from: "2024-01-01",
+    to: "2025-01-01",
+  }), null);
+
+  const tooLong = fixture();
+  const rejectedLongPeriod = await tooLong.tool.getPeriodExpenseCategorySummaryTool(context, {
+    ...interval,
+    from: "2024-01-01",
+    to: "2025-01-01",
+  });
+  assert.equal(rejectedLongPeriod.complete, false);
+  assert.equal(rejectedLongPeriod.failureReason, "PERIOD_TOO_LONG");
+  assert.equal(tooLong.db.operations.some((entry) => entry[0] === "from"), false);
+  const maxLengthFixture = fixture({ rows: {
+    tb_expenses: [],
+    tb_expense_items: [],
+    tb_categories: categories,
+  } });
+  const maxLengthSummary = await maxLengthFixture.tool.getPeriodExpenseCategorySummaryTool(context, leapYearPeriod);
+  assert.equal(maxLengthSummary.complete, true);
+  assert.equal(maxLengthSummary.expenseCount, 0);
+  const thirtyTwoDayFixture = fixture({ rows: {
+    tb_expenses: [{
+      id: uuid(16500), household_id: householdId, status: "CONFIRMED",
+      expense_date: "2026-02-01", total_amount: "2.00", category_id: uuid(1), category: relation(uuid(1)),
+    }],
+    tb_expense_items: [],
+    tb_categories: categories,
+  } });
+  const thirtyTwoDaySummary = await thirtyTwoDayFixture.tool.getPeriodExpenseCategorySummaryTool(context, thirtyTwoDayPeriod);
+  assert.equal(thirtyTwoDaySummary.complete, true);
+  assert.equal(thirtyTwoDaySummary.totalSpent, 2);
+  assert.equal(thirtyTwoDaySummary.expenseCount, 1);
+
 
   const macroSummary = await tool.getPeriodExpenseCategorySummaryTool(context, interval);
   assert.equal(macroSummary.complete, true);
@@ -363,6 +402,52 @@ async function main() {
   assert.equal(empty.expenseCount, 0);
   assert.deepEqual(empty.categories, []);
   assert.equal(empty.topCategory, null);
+
+  const longRangeRows = baseRows();
+  longRangeRows.tb_expenses.push(
+    {
+      id: uuid(16001), household_id: householdId, status: "CONFIRMED",
+      expense_date: "2026-01-01", total_amount: "2.00", category_id: uuid(1), category: relation(uuid(1)),
+    },
+    {
+      id: uuid(16002), household_id: householdId, status: "CONFIRMED",
+      expense_date: "2026-10-16", total_amount: "4.00", category_id: uuid(2), category: relation(uuid(2)),
+    },
+    {
+      id: uuid(16003), household_id: householdId, status: "CONFIRMED",
+      expense_date: "2025-12-31", total_amount: "500.00", category_id: uuid(1), category: relation(uuid(1)),
+    },
+    {
+      id: uuid(16004), household_id: householdId, status: "CONFIRMED",
+      expense_date: "2026-10-17", total_amount: "500.00", category_id: uuid(1), category: relation(uuid(1)),
+    },
+    {
+      id: uuid(16005), household_id: uuid(99), status: "CONFIRMED",
+      expense_date: "2026-10-16", total_amount: "500.00", category_id: uuid(1), category: relation(uuid(1)),
+    },
+    {
+      id: uuid(16006), household_id: householdId, status: "PENDING",
+      expense_date: "2026-10-16", total_amount: "500.00", category_id: uuid(1), category: relation(uuid(1)),
+    },
+  );
+  const threeMonthPeriod = { ...interval, from: "2026-08-01", to: "2026-10-31" };
+  const threeMonthFixture = fixture({ rows: longRangeRows });
+  const threeMonthSummary = await threeMonthFixture.tool.getPeriodExpenseCategorySummaryTool(context, threeMonthPeriod);
+  assert.equal(threeMonthSummary.complete, true);
+  assert.equal(threeMonthSummary.expenseCount, 506);
+  assert.equal(threeMonthSummary.totalSpent, 2089);
+  assert.ok(operation(threeMonthFixture.db, "gte", "tb_expenses", ([field, value]) => field === "expense_date" && value === threeMonthPeriod.from));
+  assert.ok(operation(threeMonthFixture.db, "lte", "tb_expenses", ([field, value]) => field === "expense_date" && value === threeMonthPeriod.to));
+
+  const tenMonthPeriod = { ...interval, from: "2026-01-01", to: "2026-10-16" };
+  const tenMonthFixture = fixture({ rows: longRangeRows });
+  const tenMonthSummary = await tenMonthFixture.tool.getPeriodExpenseCategorySummaryTool(context, tenMonthPeriod);
+  assert.equal(tenMonthSummary.complete, true);
+  assert.equal(tenMonthSummary.expenseCount, 504);
+  assert.equal(tenMonthSummary.totalSpent, 1589);
+  assert.ok(operation(tenMonthFixture.db, "gte", "tb_expenses", ([field, value]) => field === "expense_date" && value === tenMonthPeriod.from));
+  assert.ok(operation(tenMonthFixture.db, "lte", "tb_expenses", ([field, value]) => field === "expense_date" && value === tenMonthPeriod.to));
+  assert.ok(operation(tenMonthFixture.db, "range", "tb_expenses", ([from, to]) => from === 500 && to === 999));
 
   const emptyInterval = {
     ...interval,

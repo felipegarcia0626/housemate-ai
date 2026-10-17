@@ -71,6 +71,7 @@ export interface ExpenseCategorySummaryEntry {
 
 export type ExpenseCategorySummaryFailureReason =
   | "INVALID_ARGUMENTS"
+  | "PERIOD_TOO_LONG"
   | "CATEGORY_UNRESOLVED"
   | "CATEGORY_AMBIGUOUS"
   | "CATEGORY_INACTIVE"

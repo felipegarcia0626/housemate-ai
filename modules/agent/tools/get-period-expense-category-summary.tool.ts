@@ -7,7 +7,7 @@ import type {
 } from "@/modules/dashboard/dashboard.types";
 import type { AgentContext } from "../agent.types";
 
-const MAX_DAYS = 31;
+const MAX_DAYS = 366;
 const MAX_EXPENSE_ROWS = 5000;
 const MAX_ITEM_ROWS = 50000;
 const QUERY_TIMEOUT_MS = 15000;
@@ -40,23 +40,41 @@ function dayNumber(value: unknown): number | null {
 export function parsePeriodExpenseCategorySummaryArguments(
   value: unknown,
 ): PeriodExpenseCategorySummaryArguments | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return parsePeriodExpenseCategorySummaryArgumentsResult(value).arguments;
+}
+
+function parsePeriodExpenseCategorySummaryArgumentsResult(value: unknown): {
+  arguments: PeriodExpenseCategorySummaryArguments | null;
+  failureReason: "INVALID_ARGUMENTS" | "PERIOD_TOO_LONG" | null;
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { arguments: null, failureReason: "INVALID_ARGUMENTS" };
+  }
   const fields = value as Record<string, unknown>;
   if (Object.keys(fields).sort().join(",") !== "categoryName,from,level,to" ||
     (fields.level !== "MACRO" && fields.level !== "MICRO") ||
     (fields.categoryName !== null &&
       (typeof fields.categoryName !== "string" ||
         !fields.categoryName.trim() ||
-        fields.categoryName.trim().length > 120))) return null;
+        fields.categoryName.trim().length > 120))) {
+    return { arguments: null, failureReason: "INVALID_ARGUMENTS" };
+  }
   const fromDay = dayNumber(fields.from);
   const toDay = dayNumber(fields.to);
-  if (fromDay === null || toDay === null || toDay < fromDay ||
-    toDay - fromDay + 1 > MAX_DAYS) return null;
+  if (fromDay === null || toDay === null || toDay < fromDay) {
+    return { arguments: null, failureReason: "INVALID_ARGUMENTS" };
+  }
+  if (toDay - fromDay + 1 > MAX_DAYS) {
+    return { arguments: null, failureReason: "PERIOD_TOO_LONG" };
+  }
   return {
-    from: fields.from as string,
-    to: fields.to as string,
-    level: fields.level,
-    categoryName: typeof fields.categoryName === "string" ? fields.categoryName.trim() : null,
+    arguments: {
+      from: fields.from as string,
+      to: fields.to as string,
+      level: fields.level,
+      categoryName: typeof fields.categoryName === "string" ? fields.categoryName.trim() : null,
+    },
+    failureReason: null,
   };
 }
 
@@ -85,8 +103,9 @@ export async function getPeriodExpenseCategorySummaryTool(
     loadData: getPeriodExpenseCategoryData,
   },
 ): Promise<PeriodExpenseCategorySummary> {
-  const interval = parsePeriodExpenseCategorySummaryArguments(args);
-  if (!interval) return incomplete(null, "INVALID_ARGUMENTS");
+  const parsed = parsePeriodExpenseCategorySummaryArgumentsResult(args);
+  const interval = parsed.arguments;
+  if (!interval) return incomplete(null, parsed.failureReason ?? "INVALID_ARGUMENTS");
   const householdId = context.householdId;
   if (activeHouseholds.has(householdId) ||
     (cooldownUntil.get(householdId) ?? 0) > Date.now()) {

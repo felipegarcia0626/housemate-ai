@@ -89,7 +89,7 @@ const periodFinancialTool = {
   type: "function",
   name: "get_period_financial_summary",
   description:
-    "Summarize the authenticated household's retrieved and validated income, confirmed expenses and net amount for an inclusive period of at most 31 days. The separately paginated reads are not a transactional snapshot. Use for period financial summaries, never for creating or changing records.",
+    "Summarize the authenticated household's retrieved and validated income, confirmed expenses and net amount for an inclusive period of at most 366 days. The separately paginated reads are not a transactional snapshot. Use for period financial summaries, never for creating or changing records.",
   strict: true,
   parameters: {
     type: "object",
@@ -113,7 +113,7 @@ const periodExpenseCategoryTool = {
   type: "function",
   name: "get_period_expense_category_summary",
   description:
-    "Summarize confirmed household expenses by an exact expense category name for an inclusive period of at most 31 days. Set categoryName to null for the full ranking. The backend resolves categories and calculates totals; never choose category IDs.",
+    "Summarize confirmed household expenses by an exact expense category name for an inclusive period of at most 366 days. Set categoryName to null for the full ranking. The backend resolves categories and calculates totals; never choose category IDs.",
   strict: true,
   parameters: {
     type: "object",
