@@ -12,6 +12,9 @@ const paths = {
   conversation: file("modules/agent/conversation.service.ts"),
   draft: file("modules/agent/category-draft.service.ts"),
   database: file("infrastructure/database/client.ts"),
+  categoryCalculator: file("modules/dashboard/dashboard-category-summary-calculator.ts"),
+  dashboardCalculator: file("modules/dashboard/dashboard-calculator.ts"),
+  categoryTypes: file("modules/categories/category.types.ts"),
   repository: file("modules/dashboard/dashboard.repository.ts"),
   service: file("modules/dashboard/dashboard.service.ts"),
   dashboardTypes: file("modules/dashboard/dashboard.types.ts"),
@@ -21,7 +24,7 @@ const paths = {
 const realFiles = new Set([
   paths.adapter, paths.agentTypes, paths.conversation, paths.repository,
   paths.presentation, paths.service, paths.dashboardTypes, paths.validation,
-  paths.tool,
+  paths.categoryCalculator, paths.dashboardCalculator, paths.categoryTypes, paths.tool,
 ]);
 
 function loader(overrides, runtime = {}) {
@@ -63,10 +66,26 @@ const context = {
   conversationKey: "web:a",
   source: "WEB",
 };
-const interval = { from: "2026-10-01", to: "2026-10-31" };
+const interval = {
+  from: "2026-10-01",
+  to: "2026-10-31",
+  categoryLevel: null,
+  categoryName: null,
+};
 const defaultRows = {
-  tb_expenses: Array.from({ length: 501 }, () => ({ total_amount: "0.01" })),
-  tb_incomes: [{ amount: "3.00" }, { amount: "3.00" }],
+  tb_expenses: Array.from({ length: 501 }, (_, index) => ({
+    id: `expense-${String(index).padStart(4, "0")}`,
+    household_id: context.householdId,
+    status: "CONFIRMED",
+    expense_date: "2026-10-15",
+    total_amount: "0.01",
+  })),
+  tb_incomes: [0, 1].map((index) => ({
+    id: `income-${index}`,
+    household_id: context.householdId,
+    income_date: "2026-10-15",
+    amount: "3.00",
+  })),
 };
 
 function databaseDouble(options = {}) {
@@ -78,12 +97,13 @@ function databaseDouble(options = {}) {
   const invalid = options.invalid ?? {};
   const client = { from(table) {
     operations.push(["from", table]);
-    const state = { table, from: 0, to: 499 };
+    const state = { table, from: 0, to: 499, predicates: [] };
     const query = {};
     for (const method of ["select", "eq", "gte", "lte", "order", "range", "abortSignal"]) {
       query[method] = (...args) => {
         operations.push([method, table, ...args]);
         if (method === "range") [state.from, state.to] = args;
+        if (["eq", "gte", "lte"].includes(method)) state.predicates.push([method, ...args]);
         return query;
       };
     }
@@ -91,7 +111,15 @@ function databaseDouble(options = {}) {
       const key = `${table}:${state.from}`;
       if (failures[key]) return Promise.resolve({ data: null, error: failures[key], count: null }).then(resolve, reject);
       if (invalid[key]) return Promise.resolve(invalid[key]).then(resolve, reject);
-      const allRows = rowsByTable[table] ?? [];
+      const allRows = (rowsByTable[table] ?? []).filter((row) =>
+        state.predicates.every(([method, field, value]) => {
+          if (method === "eq") return row[field] === value;
+          if (method === "gte") return row[field] >= value;
+          if (method === "lte") return row[field] <= value;
+          return true;
+        }),
+      );
+      allRows.sort((left, right) => String(left.id).localeCompare(String(right.id)));
       let data = allRows.slice(state.from, state.to + 1);
       if (incomplete[key] && data.length > 0) data = data.slice(0, -1);
       return Promise.resolve({ data, error: null, count: counts[key] ?? counts[table] ?? allRows.length }).then(resolve, reject);
@@ -111,6 +139,22 @@ function fixtureForRows(expenses, incomes, options = {}) {
     rows: { tb_expenses: expenses, tb_incomes: incomes },
   }));
 }
+
+const expenseRow = (overrides = {}) => ({
+  id: "expense-test",
+  household_id: context.householdId,
+  status: "CONFIRMED",
+  expense_date: "2024-06-01",
+  total_amount: "1.00",
+  ...overrides,
+});
+const incomeRow = (overrides = {}) => ({
+  id: "income-test",
+  household_id: context.householdId,
+  income_date: "2024-06-01",
+  amount: "1.00",
+  ...overrides,
+});
 
 function expectedSelect(db, table, column) {
   assert.ok(operation(db, "select", table, ([fields, options]) =>
@@ -149,17 +193,55 @@ async function main() {
     { from: "2026-02-30", to: "2026-03-01" },
     { from: "2026-10-31", to: "2026-10-01" },
   ]) assert.equal(tool.parsePeriodFinancialSummaryArguments(bad), null);
+  const thirtyTwoDays = { ...interval, from: "2026-01-01", to: "2026-02-01" };
+  const leapYear = { ...interval, from: "2024-01-01", to: "2024-12-31" };
+  assert.deepEqual(tool.parsePeriodFinancialSummaryArguments(thirtyTwoDays), thirtyTwoDays);
+  assert.deepEqual(tool.parsePeriodFinancialSummaryArguments(leapYear), leapYear);
 
-  const thirtyTwoDayPeriod = { from: "2026-01-01", to: "2026-02-01" };
-  assert.deepEqual(tool.parsePeriodFinancialSummaryArguments(thirtyTwoDayPeriod), thirtyTwoDayPeriod);
-  const thirtyTwoDayDb = databaseDouble({
-    rows: {
-      tb_expenses: [{ expense_date: thirtyTwoDayPeriod.from, total_amount: "2.00" }],
-      tb_incomes: [{ income_date: thirtyTwoDayPeriod.to, amount: "3.00" }],
-    },
+  const tooLongDb = databaseDouble();
+  const tooLong = fixtures(tooLongDb);
+  assert.deepEqual(await tooLong.tool.getPeriodFinancialSummaryTool(context, {
+    ...interval,
+    from: "2024-01-01",
+    to: "2025-01-01",
+  }), {
+    from: "2024-01-01",
+    to: "2025-01-01",
+    complete: false,
+    failureReason: "PERIOD_TOO_LONG",
   });
-  const thirtyTwoDaySummary = await fixtures(thirtyTwoDayDb).tool
-    .getPeriodFinancialSummaryTool(context, thirtyTwoDayPeriod);
+  assert.equal(tooLongDb.operations.some((entry) => entry[0] === "from"), false);
+
+  const tooLongConversationDb = databaseDouble();
+  const tooLongConversation = fixtures(tooLongConversationDb, {
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        id: "response-too-long-financial",
+        status: "completed",
+        output: [{
+          type: "function_call",
+          name: "get_period_financial_summary",
+          call_id: "too-long-financial-call",
+          arguments: JSON.stringify({
+            ...interval,
+            from: "2024-01-01",
+            to: "2025-01-01",
+          }),
+        }],
+      }),
+    }),
+  });
+  const tooLongFinancialMessage = await tooLongConversation.load(paths.conversation)
+    .processAgentMessage(context, { message: "Resume un periodo muy largo" });
+  assert.equal(tooLongFinancialMessage.message, "El período solicitado no puede superar 366 días.");
+  assert.equal(tooLongConversationDb.operations.some((entry) => entry[0] === "from"), false);
+
+  const thirtyTwoDayFixture = fixtureForRows(
+    [expenseRow({ id: "expense-32d", expense_date: "2026-02-01", total_amount: "2.00" })],
+    [incomeRow({ id: "income-32d", income_date: "2026-01-01", amount: "3.00" })],
+  );
+  const thirtyTwoDaySummary = await thirtyTwoDayFixture.tool.getPeriodFinancialSummaryTool(context, thirtyTwoDays);
   assert.deepEqual([
     thirtyTwoDaySummary.complete,
     thirtyTwoDaySummary.totalIncome,
@@ -168,61 +250,82 @@ async function main() {
     thirtyTwoDaySummary.expenseCount,
   ], [true, 3, 2, 1, 1]);
 
-  const maximumPeriod = { from: "2024-01-01", to: "2024-12-31" };
-  assert.deepEqual(tool.parsePeriodFinancialSummaryArguments(maximumPeriod), maximumPeriod);
-  const maximumPeriodDb = databaseDouble({
-    rows: {
-      tb_expenses: [
-        { expense_date: maximumPeriod.from, total_amount: "0.01" },
-        { expense_date: maximumPeriod.to, total_amount: "0.02" },
-      ],
-      tb_incomes: [
-        { income_date: maximumPeriod.from, amount: "1.00" },
-        { income_date: maximumPeriod.to, amount: "2.00" },
-      ],
+  const macroId = "42000000-0000-4000-8000-000000000099";
+  let combinedInterval = null;
+  const combinedSummary = await tool.getPeriodFinancialSummaryTool(
+    context,
+    { ...thirtyTwoDays, categoryLevel: "MACRO", categoryName: null },
+    {
+      snapshot: async () => { throw new Error("Combined summary must not use snapshot data."); },
+      combinedData: async (_dashboardContext, requestedInterval) => {
+        combinedInterval = requestedInterval;
+        return {
+          incomeCount: 1,
+          incomeAmount: "3.00",
+          categoryData: {
+            expenses: [{
+              totalAmount: "2.00",
+              categoryId: macroId,
+              categoryName: "Alimentación",
+              items: [],
+            }],
+            categories: [{
+              id: macroId,
+              name: "Alimentación",
+              movementType: "EXPENSE",
+              level: "MACRO",
+              parentId: null,
+              isActive: true,
+            }],
+            expenseCount: 1,
+            itemCount: 0,
+          },
+        };
+      },
     },
+  );
+  assert.equal(combinedSummary.complete, true);
+  assert.equal(combinedSummary.totalIncome, 3);
+  assert.equal(combinedSummary.totalSpent, 2);
+  assert.deepEqual(combinedInterval, {
+    from: thirtyTwoDays.from,
+    to: thirtyTwoDays.to,
   });
-  const maximumPeriodSummary = await fixtures(maximumPeriodDb).tool
-    .getPeriodFinancialSummaryTool(context, maximumPeriod);
-  assert.deepEqual([
-    maximumPeriodSummary.complete,
-    maximumPeriodSummary.totalIncome,
-    maximumPeriodSummary.totalSpent,
-    maximumPeriodSummary.incomeCount,
-    maximumPeriodSummary.expenseCount,
-  ], [true, 3, 0.03, 2, 2]);
-  assert.ok(operation(maximumPeriodDb, "gte", "tb_expenses", ([field, value]) =>
-    field === "expense_date" && value === maximumPeriod.from));
-  assert.ok(operation(maximumPeriodDb, "lte", "tb_expenses", ([field, value]) =>
-    field === "expense_date" && value === maximumPeriod.to));
-  assert.ok(operation(maximumPeriodDb, "gte", "tb_incomes", ([field, value]) =>
-    field === "income_date" && value === maximumPeriod.from));
-  assert.ok(operation(maximumPeriodDb, "lte", "tb_incomes", ([field, value]) =>
-    field === "income_date" && value === maximumPeriod.to));
 
-  const tooLongPeriod = { from: "2024-01-01", to: "2025-01-01" };
-  assert.equal(tool.parsePeriodFinancialSummaryArguments(tooLongPeriod), null);
-  const tooLongDb = databaseDouble({ rows: { tb_expenses: [], tb_incomes: [] } });
-  const tooLongSummary = await fixtures(tooLongDb).tool
-    .getPeriodFinancialSummaryTool(context, tooLongPeriod);
-  assert.deepEqual(tooLongSummary, { ...tooLongPeriod, complete: false });
-  assert.equal(tooLongDb.operations.length, 0);
   const result = await tool.getPeriodFinancialSummaryTool(context, interval);
   assert.deepEqual([result.complete, result.totalIncome, result.totalSpent, result.netAmount, result.movementCount], [true, 6, 5.01, 0.99, 503]);
   assert.equal(db.operations.filter((entry) => entry[0] === "from" && entry[1] === "tb_expenses").length, 2);
   assert.equal(db.operations.filter((entry) => entry[0] === "from" && entry[1] === "tb_incomes").length, 1);
   expectedSelect(db, "tb_expenses", "total_amount");
   expectedSelect(db, "tb_incomes", "amount");
+  assert.ok(operation(db, "gte", "tb_expenses", ([field, value]) => field === "expense_date" && value === interval.from));
+  assert.ok(operation(db, "lte", "tb_expenses", ([field, value]) => field === "expense_date" && value === interval.to));
+  assert.ok(operation(db, "gte", "tb_incomes", ([field, value]) => field === "income_date" && value === interval.from));
+  assert.ok(operation(db, "lte", "tb_incomes", ([field, value]) => field === "income_date" && value === interval.to));
+
+  for (const period of [
+    { ...interval, from: "2026-08-01", to: "2026-10-31" },
+    { ...interval, from: "2026-01-01", to: "2026-10-16" },
+  ]) {
+    const periodDb = databaseDouble();
+    const periodFixture = fixtures(periodDb);
+    assert.equal((await periodFixture.tool.getPeriodFinancialSummaryTool(context, period)).complete, true);
+    assert.ok(operation(periodDb, "gte", "tb_expenses", ([field, value]) => field === "expense_date" && value === period.from));
+    assert.ok(operation(periodDb, "lte", "tb_expenses", ([field, value]) => field === "expense_date" && value === period.to));
+    assert.ok(operation(periodDb, "gte", "tb_incomes", ([field, value]) => field === "income_date" && value === period.from));
+    assert.ok(operation(periodDb, "lte", "tb_incomes", ([field, value]) => field === "income_date" && value === period.to));
+  }
 
   const empty = fixtureForRows([], []);
   assert.deepEqual(await empty.tool.getPeriodFinancialSummaryTool(context, interval), {
-    ...interval, complete: true, totalIncome: 0, totalSpent: 0, netAmount: 0,
+    from: interval.from, to: interval.to,
+    complete: true, totalIncome: 0, totalSpent: 0, netAmount: 0,
     incomeCount: 0, expenseCount: 0, movementCount: 0,
   });
 
   for (const bad of [
-    fixtureForRows([{ total_amount: 20 }], []),
-    fixtureForRows([{ unexpected: "1.00" }], []),
+    fixtureForRows([expenseRow({ expense_date: interval.from, total_amount: 20 })], []),
+    fixtureForRows([expenseRow({ expense_date: interval.from, unexpected: "1.00", total_amount: undefined })], []),
     fixtures(databaseDouble({ rows: defaultRows, incomplete: { "tb_expenses:500": true } })),
     fixtures(databaseDouble({ rows: defaultRows, counts: { "tb_expenses:500": 502 } })),
     fixtures(databaseDouble({ rows: defaultRows, invalid: { "tb_incomes:0": { data: [], error: null, count: null } } })),
@@ -234,8 +337,53 @@ async function main() {
   }
   for (const [table, offset] of [["tb_expenses", 500], ["tb_incomes", 0]]) {
     const bad = fixtures(databaseDouble({ rows: defaultRows, failures: { [`${table}:${offset}`]: new Error(`${table} page failed`) } }));
-    assert.deepEqual(await bad.tool.getPeriodFinancialSummaryTool(context, interval), { ...interval, complete: false });
+    assert.deepEqual(await bad.tool.getPeriodFinancialSummaryTool(context, interval), {
+      from: interval.from,
+      to: interval.to,
+      complete: false,
+      failureReason: "INCOMPLETE",
+    });
   }
+
+  const boundaryPeriod = { ...interval, from: "2024-01-01", to: "2024-12-31" };
+  const boundaries = fixtureForRows(
+    [
+      expenseRow({ id: "expense-first", expense_date: boundaryPeriod.from, total_amount: "0.01" }),
+      expenseRow({ id: "expense-last", expense_date: boundaryPeriod.to, total_amount: "0.02" }),
+      expenseRow({ id: "expense-before", expense_date: "2023-12-31", total_amount: "100.00" }),
+      expenseRow({ id: "expense-after", expense_date: "2025-01-01", total_amount: "100.00" }),
+      expenseRow({ id: "expense-other-household", household_id: "42000000-0000-4000-8000-000000000099", total_amount: "100.00" }),
+      expenseRow({ id: "expense-pending", status: "PENDING", total_amount: "100.00" }),
+    ],
+    [
+      incomeRow({ id: "income-first", income_date: boundaryPeriod.from, amount: "10.00" }),
+      incomeRow({ id: "income-last", income_date: boundaryPeriod.to, amount: "20.00" }),
+      incomeRow({ id: "income-before", income_date: "2023-12-31", amount: "100.00" }),
+      incomeRow({ id: "income-after", income_date: "2025-01-01", amount: "100.00" }),
+      incomeRow({ id: "income-other-household", household_id: "42000000-0000-4000-8000-000000000099", amount: "100.00" }),
+    ],
+  );
+  const boundaryResult = await boundaries.tool.getPeriodFinancialSummaryTool(context, boundaryPeriod);
+  assert.deepEqual([
+    boundaryResult.complete,
+    boundaryResult.totalIncome,
+    boundaryResult.totalSpent,
+    boundaryResult.netAmount,
+    boundaryResult.incomeCount,
+    boundaryResult.expenseCount,
+  ], [true, 30, 0.03, 29.97, 2, 2]);
+
+  const exactLargeTotal = fixtureForRows(
+    [
+      expenseRow({ id: "expense-large-a", expense_date: interval.from, total_amount: "45035996273650.00" }),
+      expenseRow({ id: "expense-large-b", expense_date: interval.from, total_amount: "45035996273650.00" }),
+    ],
+    [],
+  );
+  const exactLargeResult = await exactLargeTotal.tool.getPeriodFinancialSummaryTool(context, interval);
+  assert.equal(exactLargeResult.complete, true);
+  assert.equal(exactLargeResult.totalSpent, 90071992547300);
+  assert.equal(exactLargeResult.netAmount, -90071992547300);
 
   let resolvePending;
   let fireTimeout;
@@ -278,7 +426,13 @@ async function main() {
     ].join("\n"),
   );
   assert.equal(requests.length, 2);
+  assert.equal(requests[0].parallel_tool_calls, false);
   assert.equal(requests[1].tool_choice, "none");
+  const registeredTool = requests[0].tools.find((row) => row.name === "get_period_financial_summary");
+  assert.equal(registeredTool.strict, true);
+  assert.deepEqual(registeredTool.parameters.required, [
+    "from", "to", "categoryLevel", "categoryName",
+  ]);
   const call = await integrated.adapter.interpretExpenseMessage("Resumen");
   assert.equal(await integrated.adapter.explainPeriodFinancialSummary(call, result), "Los ingresos superaron a los gastos confirmados del período.");
 
@@ -300,6 +454,27 @@ async function main() {
     const adapter = fixtures(databaseDouble(), { fetch: async () => ({ ok: true, json: async () => bad }) }).adapter;
     await assert.rejects(adapter.interpretExpenseMessage("Resumen"), { code: "INTERPRETATION_ERROR" });
   }
+
+  const diagnosticEvents = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => diagnosticEvents.push(args);
+  try {
+    const failedRequestAdapter = fixtures(databaseDouble(), {
+      fetch: async () => ({ ok: false, status: 400 }),
+    }).adapter;
+    await assert.rejects(
+      failedRequestAdapter.interpretExpenseMessage("Mensaje financiero privado de prueba"),
+      { code: "INTERPRETATION_ERROR" },
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.deepEqual(diagnosticEvents, [[
+    "[agent-interpretation-diagnostic]",
+    { stage: "http_rejected", status: 400 },
+  ]]);
+  assert.equal(JSON.stringify(diagnosticEvents).includes("privado"), false);
+  assert.equal(JSON.stringify(diagnosticEvents).includes("local-fake-key"), false);
   console.log("PASS period summary snapshot, limits, cancellation, response states and integrated local flow");
 }
 

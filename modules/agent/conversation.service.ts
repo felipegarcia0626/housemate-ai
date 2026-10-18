@@ -13,7 +13,6 @@ import { getCategoriesTool } from "./tools/get-categories.tool";
 import { getSharingRulesTool } from "./tools/get-sharing-rules.tool";
 import {
   getPeriodFinancialSummaryTool,
-  parsePeriodFinancialSummaryArguments,
   type PeriodFinancialSummary,
 } from "./tools/get-period-financial-summary.tool";
 import {
@@ -282,6 +281,76 @@ function operationClarification(): AgentMessageResult {
     ["operation"],
     "¿Quieres registrar un gasto o un ingreso?",
   );
+}
+
+function periodCategoryFailureMessage(reason: string | undefined): string {
+  const messages: Record<string, string> = {
+    PERIOD_TOO_LONG: "El período solicitado no puede superar 366 días.",
+    CATEGORY_UNRESOLVED: "No encontré esa categoría en el nivel solicitado.",
+    CATEGORY_AMBIGUOUS: "El nombre coincide con más de una categoría; necesito que la especifiques.",
+    CATEGORY_INACTIVE: "Esa categoría no está activa para nuevas consultas.",
+    INVALID_ARGUMENTS: "El período o los filtros de categoría no son válidos.",
+  };
+  return messages[reason ?? ""] ?? "No pude completar la consulta; no mostraré cifras parciales.";
+}
+
+function explicitPeriodCategoryFilter(message: string): {
+  categoryLevel: "MACRO" | "MICRO";
+  categoryName: string;
+} | null {
+  const match =
+    /\b(?:gastos?)\s+por\s+(?:la\s+)?categor[ií]a\s+(macro|micro)\s+["“«']([^"”»']+)["”»']/i.exec(message);
+  if (!match) return null;
+  const categoryName = match[2].trim();
+  if (!categoryName) return null;
+  return {
+    categoryLevel: match[1].toUpperCase() as "MACRO" | "MICRO",
+    categoryName,
+  };
+}
+
+function applyExplicitPeriodCategoryFilter(argumentsValue: unknown, message: string): unknown {
+  const categoryFilter = explicitPeriodCategoryFilter(message);
+  if (
+    !categoryFilter ||
+    typeof argumentsValue !== "object" ||
+    argumentsValue === null ||
+    Array.isArray(argumentsValue)
+  ) {
+    return argumentsValue;
+  }
+  return { ...argumentsValue, ...categoryFilter };
+}
+
+function periodCategoryDetailLines(summary: PeriodExpenseCategorySummary): string[] {
+  const lines: string[] = [];
+  if (summary.categoryName !== null && summary.matchedCategory) {
+    lines.push(
+      "Gasto en " + summary.matchedCategory.categoryName + ": " +
+      formatCopMoney(summary.matchedCategory.amount) + ".",
+    );
+  } else if (summary.topCategory) {
+    lines.push(
+      "Mayor gasto por categoría: " + summary.topCategory.categoryName +
+      " (" + formatCopMoney(summary.topCategory.amount) + ").",
+    );
+    const ranking = summary.categories ?? [];
+    lines.push(
+      "Ranking: " + ranking.slice(0, 10)
+        .map((row) => row.categoryName + " " + formatCopMoney(row.amount))
+        .join("; ") + (ranking.length > 10 ? "; ranking completo disponible en los datos." : "."),
+    );
+  } else {
+    lines.push("No hubo gastos asignables a categorías en el período.");
+  }
+  if (summary.uncategorizedAmount !== undefined && summary.uncategorizedAmount > 0) {
+    lines.push("Sin categoría: " + formatCopMoney(summary.uncategorizedAmount) + ".");
+  }
+  if (summary.unmappedAmount !== undefined && summary.unmappedAmount > 0) {
+    lines.push("Importe sin desglose seguro al nivel solicitado: " +
+      formatCopMoney(summary.unmappedAmount) + ".");
+  }
+  return lines;
 }
 
 function operationDetailsClarification(
@@ -2647,25 +2716,33 @@ export async function processAgentMessage(
   }
 
   if (interpretation.kind === "GET_PERIOD_FINANCIAL_SUMMARY_TOOL_CALL") {
-    const interval = parsePeriodFinancialSummaryArguments(
-      interpretation.arguments,
+    const summary: PeriodFinancialSummary = await getPeriodFinancialSummaryTool(
+      context,
+      applyExplicitPeriodCategoryFilter(interpretation.arguments, input.message),
     );
-    const summary: PeriodFinancialSummary = interval
-      ? await getPeriodFinancialSummaryTool(context, interval)
-      : { from: "", to: "", complete: false };
-    const explanation = await explainPeriodFinancialSummary(
-      interpretation,
-      summary,
-    );
-    const message = summary.complete
-      ? [
-          `Período ${summary.from} a ${summary.to} (fechas incluidas).`,
-          `Ingresos: ${formatCopMoney(summary.totalIncome!)}. Gastos confirmados: ${formatCopMoney(summary.totalSpent!)}. Neto financiero (ingresos menos gastos): ${formatCopMoney(summary.netAmount!)}. Movimientos: ${summary.movementCount}.`,
-          explanation,
-        ]
-          .filter(Boolean)
-          .join("\n")
-      : "No pude completar la consulta del período; no mostraré cifras parciales.";
+    const explanation = summary.complete
+      ? await explainPeriodFinancialSummary(interpretation, summary)
+      : null;
+    let message: string;
+    if (!summary.complete) {
+      message = summary.categorySummary && !summary.categorySummary.complete
+        ? periodCategoryFailureMessage(summary.categorySummary.failureReason)
+        : summary.failureReason === "PERIOD_TOO_LONG"
+          ? "El período solicitado no puede superar 366 días."
+          : summary.failureReason === "INVALID_ARGUMENTS"
+            ? "El período o los filtros no son válidos."
+            : "No pude completar la consulta del período; no mostraré cifras parciales.";
+    } else {
+      const lines = [
+        `Período ${summary.from} a ${summary.to} (fechas incluidas).`,
+        `Ingresos: ${formatCopMoney(summary.totalIncome!)}. Gastos confirmados: ${formatCopMoney(summary.totalSpent!)}. Neto financiero (ingresos menos gastos): ${formatCopMoney(summary.netAmount!)}. Movimientos: ${summary.movementCount}.`,
+      ];
+      if (summary.categorySummary) {
+        lines.push(...periodCategoryDetailLines(summary.categorySummary));
+      }
+      if (explanation) lines.push(explanation);
+      message = lines.join("\n");
+    }
     return {
       type: "READ_RESULT",
       operation: "GET_PERIOD_FINANCIAL_SUMMARY",
@@ -2679,45 +2756,13 @@ export async function processAgentMessage(
       await getPeriodExpenseCategorySummaryTool(context, interpretation.arguments);
     let message: string;
     if (!summary.complete) {
-      const failureMessages: Record<string, string> = {
-        CATEGORY_UNRESOLVED: "No encontré esa categoría en el nivel solicitado.",
-        CATEGORY_AMBIGUOUS: "El nombre coincide con más de una categoría; necesito que la especifiques.",
-        CATEGORY_INACTIVE: "Esa categoría no está activa para nuevas consultas.",
-        INVALID_ARGUMENTS: "El período o los filtros de categoría no son válidos.",
-      };
-      message = failureMessages[summary.failureReason ?? ""] ??
-        "No pude completar la consulta; no mostraré cifras parciales.";
+      message = periodCategoryFailureMessage(summary.failureReason);
     } else {
       const lines = [
         "Período " + summary.from + " a " + summary.to + " (fechas incluidas).",
         "Total de gastos confirmados: " + formatCopMoney(summary.totalSpent!) + ".",
       ];
-      if (summary.categoryName !== null && summary.matchedCategory) {
-        lines.push(
-          "Gasto en " + summary.matchedCategory.categoryName + ": " +
-          formatCopMoney(summary.matchedCategory.amount) + ".",
-        );
-      } else if (summary.topCategory) {
-        lines.push(
-          "Mayor gasto por categoría: " + summary.topCategory.categoryName +
-          " (" + formatCopMoney(summary.topCategory.amount) + ").",
-        );
-        const ranking = summary.categories ?? [];
-        lines.push(
-          "Ranking: " + ranking.slice(0, 10)
-            .map((row) => row.categoryName + " " + formatCopMoney(row.amount))
-            .join("; ") + (ranking.length > 10 ? "; ranking completo disponible en los datos." : "."),
-        );
-      } else {
-        lines.push("No hubo gastos asignables a categorías en el período.");
-      }
-      if (summary.uncategorizedAmount! > 0) {
-        lines.push("Sin categoría: " + formatCopMoney(summary.uncategorizedAmount!) + ".");
-      }
-      if (summary.unmappedAmount! > 0) {
-        lines.push("Importe sin desglose seguro al nivel solicitado: " +
-          formatCopMoney(summary.unmappedAmount!) + ".");
-      }
+      lines.push(...periodCategoryDetailLines(summary));
       message = lines.join("\n");
     }
     return {

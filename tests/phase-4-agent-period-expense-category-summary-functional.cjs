@@ -20,6 +20,7 @@ const paths = {
   validation: file("modules/dashboard/dashboard.validation.ts"),
   categoryTypes: file("modules/categories/category.types.ts"),
   tool: file("modules/agent/tools/get-period-expense-category-summary.tool.ts"),
+  financialTool: file("modules/agent/tools/get-period-financial-summary.tool.ts"),
 };
 const realFiles = new Set(Object.values(paths).filter((value) =>
   value.endsWith(".ts") && value !== paths.draft && value !== paths.database));
@@ -103,7 +104,15 @@ function baseRows() {
     id: uuid(15006), household_id: householdId, status: "CONFIRMED",
     expense_date: "2026-09-30", total_amount: "80.00", category_id: uuid(1), category: relation(uuid(1)),
   });
-  return { tb_expenses: expenses, tb_expense_items: items, tb_categories: categories };
+  return {
+    tb_expenses: expenses,
+    tb_expense_items: items,
+    tb_categories: categories,
+    tb_incomes: [
+      { id: uuid(60001), household_id: householdId, income_date: "2026-10-01", amount: "1250.00" },
+      { id: uuid(60002), household_id: householdId, income_date: "2026-10-31", amount: "750.00" },
+    ],
+  };
 }
 
 function databaseDouble(rows, options = {}) {
@@ -151,6 +160,7 @@ function databaseDouble(rows, options = {}) {
             tb_expenses: ["id", "total_amount", "category_id", "category"],
             tb_expense_items: ["id", "expense_id", "total_amount", "category_id", "category"],
             tb_categories: ["id", "name", "movement_type", "level", "parent_id", "is_active"],
+            tb_incomes: ["amount"],
           }[table];
           let data = found.slice(state.from, state.to + 1);
           if (selectedFields) {
@@ -224,6 +234,7 @@ function fixture(options = {}, runtime = {}) {
     calculator: load(paths.categoryCalculator),
     presentation: load(paths.presentation),
     tool: load(paths.tool),
+    financialTool: load(paths.financialTool),
     adapter: load(paths.adapter),
   };
 }
@@ -289,10 +300,34 @@ async function main() {
   assert.equal(rejectedLongPeriod.complete, false);
   assert.equal(rejectedLongPeriod.failureReason, "PERIOD_TOO_LONG");
   assert.equal(tooLong.db.operations.some((entry) => entry[0] === "from"), false);
+  const tooLongMessageFixture = fixture({}, {
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        id: "response-too-long-category",
+        status: "completed",
+        output: [{
+          type: "function_call",
+          name: "get_period_expense_category_summary",
+          call_id: "too-long-category-call",
+          arguments: JSON.stringify({
+            ...interval,
+            from: "2024-01-01",
+            to: "2025-01-01",
+          }),
+        }],
+      }),
+    }),
+  });
+  const tooLongCategoryMessage = await tooLongMessageFixture.load(paths.conversation)
+    .processAgentMessage(context, { message: "Resume categorías por un período muy largo" });
+  assert.equal(tooLongCategoryMessage.message, "El período solicitado no puede superar 366 días.");
+  assert.equal(tooLongMessageFixture.db.operations.some((entry) => entry[0] === "from"), false);
   const maxLengthFixture = fixture({ rows: {
     tb_expenses: [],
     tb_expense_items: [],
     tb_categories: categories,
+    tb_incomes: [],
   } });
   const maxLengthSummary = await maxLengthFixture.tool.getPeriodExpenseCategorySummaryTool(context, leapYearPeriod);
   assert.equal(maxLengthSummary.complete, true);
@@ -304,12 +339,12 @@ async function main() {
     }],
     tb_expense_items: [],
     tb_categories: categories,
+    tb_incomes: [],
   } });
   const thirtyTwoDaySummary = await thirtyTwoDayFixture.tool.getPeriodExpenseCategorySummaryTool(context, thirtyTwoDayPeriod);
   assert.equal(thirtyTwoDaySummary.complete, true);
   assert.equal(thirtyTwoDaySummary.totalSpent, 2);
   assert.equal(thirtyTwoDaySummary.expenseCount, 1);
-
 
   const macroSummary = await tool.getPeriodExpenseCategorySummaryTool(context, interval);
   assert.equal(macroSummary.complete, true);
@@ -654,6 +689,187 @@ async function main() {
       "Sin categoría: $ 1.",
     ].join("\n"),
   );
+
+  const combinedArgs = {
+    from: tenMonthPeriod.from,
+    to: tenMonthPeriod.to,
+    categoryLevel: "MACRO",
+    categoryName: null,
+  };
+  const combinedRequests = [];
+  const combinedFixture = fixture({ rows: longRangeRows }, {
+    fetch: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      combinedRequests.push(request);
+      return {
+        ok: true,
+        json: async () => request.previous_response_id
+          ? {
+              status: "completed",
+              output: [{ type: "message", content: [{
+                type: "output_text",
+                text: '{"observation":"EXPENSE_EXCEEDS_INCOME"}',
+              }] }],
+            }
+          : {
+              id: "response-combined-summary",
+              status: "completed",
+              output: [{
+                type: "function_call",
+                name: "get_period_financial_summary",
+                call_id: "combined-summary-call",
+                arguments: JSON.stringify(combinedArgs),
+              }],
+            },
+      };
+    },
+  });
+  const combinedResult = await combinedFixture.load(paths.conversation)
+    .processAgentMessage(context, {
+      message: "Resume ingresos, gastos y desglose macro por categoría de enero a octubre.",
+    });
+  assert.equal(combinedResult.operation, "GET_PERIOD_FINANCIAL_SUMMARY");
+  assert.equal(combinedResult.data.complete, true);
+  assert.equal(combinedResult.data.totalIncome, 1250);
+  assert.equal(combinedResult.data.totalSpent, 1589);
+  assert.equal(combinedResult.data.netAmount, -339);
+  assert.equal(combinedResult.data.incomeCount, 1);
+  assert.equal(combinedResult.data.expenseCount, 504);
+  assert.equal(combinedResult.data.categorySummary.totalSpent, 1589);
+  assert.equal(combinedResult.data.categorySummary.topCategory.categoryName, "Alimentación");
+  assert.match(combinedResult.message, /Ingresos: \$ 1\.250\. Gastos confirmados: \$ 1\.589\./);
+  assert.match(combinedResult.message, /Mayor gasto por categoría: Alimentación/);
+  assert.equal(
+    combinedFixture.db.operations.filter((entry) => entry[0] === "from" && entry[1] === "tb_expenses").length,
+    2,
+  );
+  assert.equal(
+    combinedFixture.db.operations.filter((entry) => entry[0] === "from" && entry[1] === "tb_incomes").length,
+    1,
+  );
+  const financialToolSchema = combinedRequests[0].tools.find((row) => row.name === "get_period_financial_summary");
+  assert.deepEqual(financialToolSchema.parameters.required, [
+    "from", "to", "categoryLevel", "categoryName",
+  ]);
+
+  const namedCombinedFixture = fixture({ rows: longRangeRows }, {
+    fetch: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      return {
+        ok: true,
+        json: async () => request.previous_response_id
+          ? {
+              status: "completed",
+              output: [{ type: "message", content: [{
+                type: "output_text",
+                text: '{"observation":"EXPENSE_EXCEEDS_INCOME"}',
+              }] }],
+            }
+          : {
+              id: "response-named-combined-summary",
+              status: "completed",
+              output: [{
+                type: "function_call",
+                name: "get_period_financial_summary",
+                call_id: "named-combined-summary-call",
+                arguments: JSON.stringify({
+                  from: tenMonthPeriod.from,
+                  to: tenMonthPeriod.to,
+                  categoryLevel: null,
+                  categoryName: null,
+                }),
+              }],
+            },
+      };
+    },
+  });
+  const namedCombinedResult = await namedCombinedFixture.load(paths.conversation)
+    .processAgentMessage(context, {
+      message: [
+        "Resume mis finanzas y el gasto por categoría macro “Alimentación”",
+        "del 1 de enero al 16 de octubre de 2026",
+      ].join(" "),
+    });
+  assert.equal(namedCombinedResult.operation, "GET_PERIOD_FINANCIAL_SUMMARY");
+  assert.equal(namedCombinedResult.data.complete, true);
+  assert.equal(namedCombinedResult.data.totalIncome, 1250);
+  assert.equal(namedCombinedResult.data.totalSpent, 1589);
+  assert.equal(namedCombinedResult.data.categorySummary.categoryName, "Alimentación");
+  assert.deepEqual(namedCombinedResult.data.categorySummary.matchedCategory, {
+    categoryName: "Alimentación",
+    amount: 1589,
+    isActive: true,
+  });
+  assert.match(namedCombinedResult.message, /Ingresos: \$ 1\.250\. Gastos confirmados: \$ 1\.589\./);
+  assert.match(namedCombinedResult.message, /Gasto en Alimentación: \$ 1\.589\./);
+
+  const combinedPageFailure = fixture({
+    rows: longRangeRows,
+    failures: { "tb_expenses:500": new Error("later combined expense page failed") },
+  });
+  const combinedPageFailureResult = await combinedPageFailure.financialTool
+    .getPeriodFinancialSummaryTool(context, combinedArgs);
+  assert.equal(combinedPageFailureResult.complete, false);
+  assert.equal(Object.hasOwn(combinedPageFailureResult, "totalIncome"), false);
+  assert.equal(Object.hasOwn(combinedPageFailureResult, "totalSpent"), false);
+
+  const ambiguousCombinedFixture = fixture({}, {
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        id: "response-combined-ambiguous",
+        status: "completed",
+        output: [{
+          type: "function_call",
+          name: "get_period_financial_summary",
+          call_id: "combined-ambiguous-call",
+          arguments: JSON.stringify({ ...combinedArgs, categoryName: "cafe" }),
+        }],
+      }),
+    }),
+  });
+  const ambiguousCombined = await ambiguousCombinedFixture.load(paths.conversation)
+    .processAgentMessage(context, {
+      message: "Dame el resumen financiero y el gasto por Cafe.",
+    });
+  assert.equal(ambiguousCombined.data.complete, false);
+  assert.equal(ambiguousCombined.data.categorySummary.failureReason, "CATEGORY_AMBIGUOUS");
+  assert.equal(Object.hasOwn(ambiguousCombined.data, "totalIncome"), false);
+  assert.equal(Object.hasOwn(ambiguousCombined.data, "totalSpent"), false);
+  assert.match(ambiguousCombined.message, /coincide con más de una categoría/);
+
+  const omittedCategoryFilter = fixture({}, {
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        id: "response-combined-omitted-category",
+        status: "completed",
+        output: [{
+          type: "function_call",
+          name: "get_period_financial_summary",
+          call_id: "combined-omitted-category-call",
+          arguments: JSON.stringify({
+            from: "2026-01-01",
+            to: "2026-10-16",
+            categoryLevel: null,
+            categoryName: null,
+          }),
+        }],
+      }),
+    }),
+  });
+  const omittedCategoryResult = await omittedCategoryFilter.load(paths.conversation)
+    .processAgentMessage(context, {
+      message: [
+        "Resume mis finanzas y el gasto por categoría macro “Cafe”",
+        "del 1 de enero al 16 de octubre de 2026",
+      ].join(" "),
+    });
+  assert.equal(omittedCategoryResult.data.complete, false);
+  assert.equal(omittedCategoryResult.data.categorySummary.failureReason, "CATEGORY_AMBIGUOUS");
+  assert.equal(Object.hasOwn(omittedCategoryResult.data, "totalIncome"), false);
+  assert.equal(Object.hasOwn(omittedCategoryResult.data, "totalSpent"), false);
+  assert.match(omittedCategoryResult.message, /coincide con más de una categoría/);
 
   const largeAmountRows = {
     tb_expenses: [{

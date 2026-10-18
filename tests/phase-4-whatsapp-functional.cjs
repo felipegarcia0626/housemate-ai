@@ -394,6 +394,50 @@ async function runHarness() {
           },
         };
       }
+      if (agentMode === "read-period-combined-summary") {
+        return {
+          type: "READ_RESULT",
+          operation: "GET_PERIOD_FINANCIAL_SUMMARY",
+          message: [
+            "Período 2026-01-01 a 2026-10-16 (fechas incluidas).",
+            "Ingresos: $ 1.250. Gastos confirmados: $ 1.589. Neto financiero (ingresos menos gastos): -$ 339. Movimientos: 505.",
+            "Mayor gasto por categoría: Alimentación ($ 1.589).",
+            "Ranking: Alimentación $ 1.589.",
+            "Los gastos confirmados superaron a los ingresos del período.",
+          ].join("\n"),
+          data: {
+            from: "2026-01-01",
+            to: "2026-10-16",
+            complete: true,
+            totalIncome: 1250,
+            totalSpent: 1589,
+            netAmount: -339,
+            incomeCount: 1,
+            expenseCount: 504,
+            movementCount: 505,
+            categorySummary: {
+              from: "2026-01-01",
+              to: "2026-10-16",
+              level: "MACRO",
+              categoryName: null,
+              complete: true,
+              totalSpent: 1589,
+              expenseCount: 504,
+              categories: [
+                { categoryName: "Alimentación", amount: 1589, isActive: true },
+              ],
+              topCategory: {
+                categoryName: "Alimentación",
+                amount: 1589,
+                isActive: true,
+              },
+              matchedCategory: null,
+              uncategorizedAmount: 0,
+              unmappedAmount: 0,
+            },
+          },
+        };
+      }
       if (agentMode === "read-category-summary") {
         return {
           type: "READ_RESULT",
@@ -923,6 +967,36 @@ async function runHarness() {
     agentMode = previousSummaryMode;
   }
   console.log("PASS WhatsApp period summary preserves formatted COP amounts");
+
+  const previousCombinedSummaryMode = agentMode;
+  agentMode = "read-period-combined-summary";
+  try {
+    const combinedSummary = await route.POST(
+      signedRequest(
+        rawBody(
+          incomingPayload(
+            "event-read-period-combined-summary",
+            "Resume ingresos, gastos y el desglose por categoría de enero a octubre.",
+          ),
+        ),
+      ),
+    );
+    assert.equal(combinedSummary.status, 200);
+    const combinedSummaryText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+    assert.equal(
+      combinedSummaryText,
+      [
+        "Período 2026-01-01 a 2026-10-16 (fechas incluidas).",
+        "Ingresos: $ 1.250. Gastos confirmados: $ 1.589. Neto financiero (ingresos menos gastos): -$ 339. Movimientos: 505.",
+        "Mayor gasto por categoría: Alimentación ($ 1.589).",
+        "Ranking: Alimentación $ 1.589.",
+        "Los gastos confirmados superaron a los ingresos del período.",
+      ].join("\n"),
+    );
+  } finally {
+    agentMode = previousCombinedSummaryMode;
+  }
+  console.log("PASS WhatsApp combined financial and category summary preserves Agent output");
 
   const previousAgentMode = agentMode;
   agentMode = "read-category-summary";

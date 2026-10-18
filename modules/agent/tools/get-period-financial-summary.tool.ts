@@ -1,17 +1,46 @@
-import { getPeriodFinancialSnapshot } from "@/modules/dashboard/dashboard.service";
+import {
+  getPeriodFinancialCategoryData,
+  getPeriodFinancialSnapshot,
+} from "@/modules/dashboard/dashboard.service";
+import {
+  calculatePeriodExpenseCategorySummary,
+  validatePeriodExpenseCategoryData,
+} from "@/modules/dashboard/dashboard-category-summary-calculator";
+import type {
+  ExpenseCategorySummaryLevel,
+  PeriodExpenseCategorySummary,
+} from "@/modules/dashboard/dashboard.types";
 import type { AgentContext } from "../agent.types";
+
+export interface PeriodFinancialSummaryArguments {
+  from: string;
+  to: string;
+  categoryLevel: ExpenseCategorySummaryLevel | null;
+  categoryName: string | null;
+}
+
+export type PeriodFinancialSummaryFailureReason =
+  | "INVALID_ARGUMENTS"
+  | "PERIOD_TOO_LONG"
+  | "INCOMPLETE";
 
 export interface PeriodFinancialSummary {
   from: string;
   to: string;
   complete: boolean;
+  failureReason?: PeriodFinancialSummaryFailureReason;
   totalIncome?: number;
   totalSpent?: number;
   netAmount?: number;
   incomeCount?: number;
   expenseCount?: number;
   movementCount?: number;
+  categorySummary?: PeriodExpenseCategorySummary;
 }
+
+type PeriodFinancialData =
+  | Awaited<ReturnType<typeof getPeriodFinancialSnapshot>>
+  | Awaited<ReturnType<typeof getPeriodFinancialCategoryData>>;
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MAX_DAYS = 366;
@@ -38,14 +67,52 @@ function dayNumber(value: unknown): number | null {
   return Math.floor(date.getTime() / 86400000);
 }
 
-export function parsePeriodFinancialSummaryArguments(value: unknown): { from: string; to: string } | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+function parseArguments(value: unknown): {
+  args: PeriodFinancialSummaryArguments | null;
+  from: string;
+  to: string;
+  failureReason: PeriodFinancialSummaryFailureReason | null;
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { args: null, from: "", to: "", failureReason: "INVALID_ARGUMENTS" };
+  }
   const fields = value as Record<string, unknown>;
-  if (Object.keys(fields).sort().join(",") !== "from,to") return null;
+  if (Object.keys(fields).sort().join(",") !== "categoryLevel,categoryName,from,to" ||
+    (fields.categoryLevel !== null && fields.categoryLevel !== "MACRO" && fields.categoryLevel !== "MICRO") ||
+    (fields.categoryName !== null &&
+      (typeof fields.categoryName !== "string" ||
+        !fields.categoryName.trim() ||
+        fields.categoryName.trim().length > 120)) ||
+    (fields.categoryLevel === null && fields.categoryName !== null)) {
+    return { args: null, from: "", to: "", failureReason: "INVALID_ARGUMENTS" };
+  }
   const fromDay = dayNumber(fields.from);
   const toDay = dayNumber(fields.to);
-  if (fromDay === null || toDay === null || toDay < fromDay || toDay - fromDay + 1 > MAX_DAYS) return null;
-  return { from: fields.from as string, to: fields.to as string };
+  if (fromDay === null || toDay === null || toDay < fromDay) {
+    return { args: null, from: "", to: "", failureReason: "INVALID_ARGUMENTS" };
+  }
+  const from = fields.from as string;
+  const to = fields.to as string;
+  if (toDay - fromDay + 1 > MAX_DAYS) {
+    return { args: null, from, to, failureReason: "PERIOD_TOO_LONG" };
+  }
+  return {
+    args: {
+      from,
+      to,
+      categoryLevel: fields.categoryLevel as ExpenseCategorySummaryLevel | null,
+      categoryName: typeof fields.categoryName === "string" ? fields.categoryName.trim() : null,
+    },
+    from,
+    to,
+    failureReason: null,
+  };
+}
+
+export function parsePeriodFinancialSummaryArguments(
+  value: unknown,
+): PeriodFinancialSummaryArguments | null {
+  return parseArguments(value).args;
 }
 
 function cents(value: string): bigint {
@@ -65,30 +132,49 @@ function safeAmount(value: bigint): number {
 }
 
 /**
- * Summarizes the rows retrieved and validated from separately paginated income
- * and expense reads. The result is complete for those reads, not a shared
- * transactional snapshot when financial records change concurrently.
+ * Summarizes validated rows returned by independent offset-paginated reads.
+ * Combined category results reuse their expense read; neither path provides a
+ * shared transactional snapshot when financial records change concurrently.
  */
 export async function getPeriodFinancialSummaryTool(
   context: AgentContext,
-  args: { from: string; to: string },
+  value: unknown,
   dependencies: {
     snapshot: typeof getPeriodFinancialSnapshot;
-  } = { snapshot: getPeriodFinancialSnapshot },
+    combinedData: typeof getPeriodFinancialCategoryData;
+  } = {
+    snapshot: getPeriodFinancialSnapshot,
+    combinedData: getPeriodFinancialCategoryData,
+  },
 ): Promise<PeriodFinancialSummary> {
-  const interval = parsePeriodFinancialSummaryArguments(args);
-  if (!interval) return { from: args.from, to: args.to, complete: false };
+  const parsed = parseArguments(value);
+  const interval = parsed.args;
+  if (!interval) {
+    return {
+      from: parsed.from,
+      to: parsed.to,
+      complete: false,
+      failureReason: parsed.failureReason ?? "INVALID_ARGUMENTS",
+    };
+  }
   const householdId = context.householdId;
   if (activeHouseholds.has(householdId) || (cooldownUntil.get(householdId) ?? 0) > Date.now()) {
-    return { ...interval, complete: false };
+    return { from: interval.from, to: interval.to, complete: false, failureReason: "INCOMPLETE" };
   }
   cooldownUntil.delete(householdId);
   activeHouseholds.add(householdId);
   const controller = new AbortController();
+  const dashboardInterval = { from: interval.from, to: interval.to };
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const snapshot = await Promise.race([
-      Promise.resolve().then(() => dependencies.snapshot({ householdId }, interval, controller.signal)),
+    const query = Promise.resolve().then(async (): Promise<PeriodFinancialData> => {
+      if (interval.categoryLevel === null) {
+        return dependencies.snapshot({ householdId }, dashboardInterval, controller.signal);
+      }
+      return dependencies.combinedData({ householdId }, dashboardInterval, controller.signal);
+    });
+    const data = await Promise.race([
+      query,
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           controller.abort();
@@ -98,33 +184,88 @@ export async function getPeriodFinancialSummaryTool(
       }),
     ]);
     if (controller.signal.aborted) throw new Error("Financial summary timed out.");
-    if (
-      !Number.isSafeInteger(snapshot.expenseCount) || snapshot.expenseCount < 0 ||
-      !Number.isSafeInteger(snapshot.incomeCount) || snapshot.incomeCount < 0 ||
-      snapshot.expenseCount > MAX_ROWS_PER_KIND || snapshot.incomeCount > MAX_ROWS_PER_KIND
-    ) throw new Error("Incomplete financial summary.");
-    const incomeCents = cents(snapshot.incomeAmount);
-    const expenseCents = cents(snapshot.expenseAmount);
-    if ((snapshot.incomeCount === 0 && incomeCents !== BigInt(0)) ||
-      (snapshot.expenseCount === 0 && expenseCents !== BigInt(0))) {
+
+    let incomeCount: number;
+    let expenseCount: number;
+    let incomeCents: bigint;
+    let expenseCents: bigint;
+    let categorySummary: PeriodExpenseCategorySummary | undefined;
+    if (interval.categoryLevel === null) {
+      if ("categoryData" in data) {
+        throw new Error("Unexpected category data for financial snapshot.");
+      }
+      const snapshot = data;
+      incomeCount = snapshot.incomeCount;
+      expenseCount = snapshot.expenseCount;
+      incomeCents = cents(snapshot.incomeAmount);
+      expenseCents = cents(snapshot.expenseAmount);
+    } else {
+      if (!("categoryData" in data)) {
+        throw new Error("Category summary data is missing.");
+      }
+      const combined = data;
+      validatePeriodExpenseCategoryData(combined.categoryData);
+      if (!Number.isSafeInteger(combined.incomeCount) || combined.incomeCount < 0) {
+        throw new Error("Financial income count is invalid.");
+      }
+      categorySummary = calculatePeriodExpenseCategorySummary(
+        combined.categoryData,
+        {
+          from: interval.from,
+          to: interval.to,
+          level: interval.categoryLevel,
+          categoryName: interval.categoryName,
+        },
+      );
+      if (!categorySummary.complete) {
+        return {
+          from: interval.from,
+          to: interval.to,
+          complete: false,
+          failureReason: "INCOMPLETE",
+          categorySummary,
+        };
+      }
+      incomeCount = combined.incomeCount;
+      expenseCount = categorySummary.expenseCount!;
+      incomeCents = cents(combined.incomeAmount);
+      expenseCents = cents(String(categorySummary.totalSpent));
+    }
+
+    if (!Number.isSafeInteger(expenseCount) || expenseCount < 0 ||
+      !Number.isSafeInteger(incomeCount) || incomeCount < 0 ||
+      expenseCount > MAX_ROWS_PER_KIND || incomeCount > MAX_ROWS_PER_KIND) {
+      throw new Error("Incomplete financial summary.");
+    }
+    if ((incomeCount === 0 && incomeCents !== BigInt(0)) ||
+      (expenseCount === 0 && expenseCents !== BigInt(0))) {
       throw new Error("Financial summary count and amount disagree.");
     }
     const netCents = incomeCents - expenseCents;
-    if (netCents > MAX_SAFE_CENTS || netCents < -MAX_SAFE_CENTS) throw new Error("Monetary summary exceeds safe range.");
-    const movementCount = snapshot.expenseCount + snapshot.incomeCount;
+    if (netCents > MAX_SAFE_CENTS || netCents < -MAX_SAFE_CENTS) {
+      throw new Error("Monetary summary exceeds safe range.");
+    }
+    const movementCount = expenseCount + incomeCount;
     if (!Number.isSafeInteger(movementCount)) throw new Error("Movement count exceeds safe range.");
     return {
-      ...interval,
+      from: interval.from,
+      to: interval.to,
       complete: true,
       totalIncome: safeAmount(incomeCents),
       totalSpent: safeAmount(expenseCents),
       netAmount: safeAmount(netCents),
-      incomeCount: snapshot.incomeCount,
-      expenseCount: snapshot.expenseCount,
+      incomeCount,
+      expenseCount,
       movementCount,
+      ...(categorySummary ? { categorySummary } : {}),
     };
   } catch {
-    return { ...interval, complete: false };
+    return {
+      from: interval.from,
+      to: interval.to,
+      complete: false,
+      failureReason: "INCOMPLETE",
+    };
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
     activeHouseholds.delete(householdId);

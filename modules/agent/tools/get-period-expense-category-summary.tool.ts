@@ -1,5 +1,8 @@
 import { getPeriodExpenseCategoryData } from "@/modules/dashboard/dashboard.service";
-import { calculatePeriodExpenseCategorySummary } from "@/modules/dashboard/dashboard-category-summary-calculator";
+import {
+  calculatePeriodExpenseCategorySummary,
+  validatePeriodExpenseCategoryData,
+} from "@/modules/dashboard/dashboard-category-summary-calculator";
 import type {
   ExpenseCategorySummaryFailureReason,
   ExpenseCategorySummaryLevel,
@@ -8,8 +11,6 @@ import type {
 import type { AgentContext } from "../agent.types";
 
 const MAX_DAYS = 366;
-const MAX_EXPENSE_ROWS = 5000;
-const MAX_ITEM_ROWS = 50000;
 const QUERY_TIMEOUT_MS = 15000;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const activeHouseholds = new Set<string>();
@@ -134,16 +135,8 @@ export async function getPeriodExpenseCategorySummaryTool(
         }, QUERY_TIMEOUT_MS);
       }),
     ]);
-    if (controller.signal.aborted ||
-      !Array.isArray(data.expenses) || !Array.isArray(data.categories) ||
-      !Number.isSafeInteger(data.expenseCount) ||
-      data.expenseCount !== data.expenses.length ||
-      data.expenseCount > MAX_EXPENSE_ROWS ||
-      !Number.isSafeInteger(data.itemCount) || data.itemCount < 0 ||
-      data.itemCount > MAX_ITEM_ROWS ||
-      data.expenses.reduce((sum, expense) => sum + (Array.isArray(expense?.items) ? expense.items.length : 0), 0) !== data.itemCount) {
-      throw new Error("Expense category summary is incomplete.");
-    }
+    if (controller.signal.aborted) throw new Error("Expense category summary timed out.");
+    validatePeriodExpenseCategoryData(data);
     return calculatePeriodExpenseCategorySummary(data, interval);
   } catch {
     return incomplete(interval, "INCOMPLETE");

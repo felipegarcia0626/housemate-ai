@@ -63,6 +63,12 @@ export interface PeriodExpenseCategoryData {
   itemCount: number;
 }
 
+export interface PeriodFinancialCategoryData {
+  incomeCount: number;
+  incomeAmount: string;
+  categoryData: PeriodExpenseCategoryData;
+}
+
 export interface ExpenseCategorySummaryEntry {
   categoryName: string;
   amount: number;

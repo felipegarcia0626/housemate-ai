@@ -89,7 +89,7 @@ const periodFinancialTool = {
   type: "function",
   name: "get_period_financial_summary",
   description:
-    "Summarize the authenticated household's retrieved and validated income, confirmed expenses and net amount for an inclusive period of at most 366 days. The separately paginated reads are not a transactional snapshot. Use for period financial summaries, never for creating or changing records.",
+    "Summarize the authenticated household's retrieved and validated income, confirmed expenses and net amount for an inclusive period of at most 366 days. Set categoryLevel to null and categoryName to null for financial totals only. Set categoryLevel to MACRO or MICRO to include a category ranking or exact category amount in the same expense read. The separately paginated reads are not a transactional snapshot. Use for period financial summaries, never for creating or changing records.",
   strict: true,
   parameters: {
     type: "object",
@@ -97,8 +97,17 @@ const periodFinancialTool = {
     properties: {
       from: { type: "string", description: "Inclusive start date, YYYY-MM-DD" },
       to: { type: "string", description: "Inclusive end date, YYYY-MM-DD" },
+      categoryLevel: {
+        type: ["string", "null"],
+        enum: ["MACRO", "MICRO", null],
+        description: "Null for totals only; otherwise the requested expense category level.",
+      },
+      categoryName: {
+        type: ["string", "null"],
+        description: "Null for the full category ranking, or an exact category name.",
+      },
     },
-    required: ["from", "to"],
+    required: ["from", "to", "categoryLevel", "categoryName"],
   },
 } as const;
 
@@ -152,6 +161,50 @@ export class OpenAIAdapterError extends Error {
     super("The message could not be interpreted.");
     this.name = "OpenAIAdapterError";
   }
+}
+
+type InterpretationDiagnosticStage =
+  | "configuration_rejected"
+  | "request_failed"
+  | "http_rejected"
+  | "response_invalid"
+  | "response_not_completed"
+  | "function_call_invalid"
+  | "function_arguments_invalid"
+  | "output_text_missing"
+  | "output_json_invalid"
+  | "output_intent_invalid";
+
+type InterpretationDiagnosticDetails = {
+  reason?:
+    | "missing_api_key"
+    | "message_too_long"
+    | "invalid_json"
+    | "invalid_call_count"
+    | "invalid_call_shape"
+    | "invalid_arguments"
+    | "empty_text"
+    | "invalid_json_text"
+    | "invalid_intent";
+  status?: number | "failed" | "incomplete" | "cancelled" | "other";
+};
+
+function logInterpretationDiagnostic(
+  stage: InterpretationDiagnosticStage,
+  details: InterpretationDiagnosticDetails = {},
+): void {
+  try {
+    console.warn("[agent-interpretation-diagnostic]", { stage, ...details });
+  } catch {
+    // Diagnostic logging must never alter interpretation behavior.
+  }
+}
+
+function safeResponseStatus(value: unknown): "failed" | "incomplete" | "cancelled" | "other" {
+  if (value === "failed" || value === "incomplete" || value === "cancelled") {
+    return value;
+  }
+  return "other";
 }
 
 const responseSchema = {
@@ -248,7 +301,7 @@ const responseSchema = {
   ],
 } as const;
 
-const systemPrompt = `For a request for income, confirmed expenses and net amount over a period, call get_period_financial_summary with only from and to. For spending by category, call get_period_expense_category_summary with inclusive dates, level MACRO or MICRO, and an exact categoryName or null for the full ranking. Do not choose category IDs, household, actor or permissions. Use at most one tool call. Otherwise interpret the user's message using only the supported HouseMate
+const systemPrompt = `For a request for income, confirmed expenses and net amount over a period, call get_period_financial_summary with inclusive from and to dates and categoryLevel=null, categoryName=null. If that request also asks for category spending or a category ranking, call the same financial tool with categoryLevel MACRO or MICRO and categoryName set to the exact requested name or null for a ranking; the backend combines these in one expense read. For category-only requests, call get_period_expense_category_summary with inclusive dates, level MACRO or MICRO, and an exact categoryName or null for the full ranking. Both tools support at most 366 inclusive days. Do not choose category IDs, household, actor or permissions. Use at most one tool call. Otherwise interpret the user's message using only the supported HouseMate
 intents: create expense, create income, correction, get expenses, get incomes, get balance,
 get categories, get sharing rules, ambiguous movement, or unsupported. Return only the requested JSON
 schema. Use null when a value is absent. Do not invent financial values.
@@ -574,6 +627,9 @@ export async function interpretExpenseMessage(
 ): Promise<ExpenseInterpretation | PeriodFinancialToolCall | PeriodExpenseCategoryToolCall> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || message.length > 2000) {
+    logInterpretationDiagnostic("configuration_rejected", {
+      reason: !apiKey ? "missing_api_key" : "message_too_long",
+    });
     throw new OpenAIAdapterError();
   }
   const currentDate = new Date().toISOString().slice(0, 10);
@@ -590,6 +646,7 @@ export async function interpretExpenseMessage(
       body: JSON.stringify({
         model: "gpt-4o-mini",
         max_output_tokens: 700,
+        parallel_tool_calls: false,
         tools: [periodFinancialTool, periodExpenseCategoryTool],
         input: [
           {
@@ -617,16 +674,21 @@ export async function interpretExpenseMessage(
       }),
     });
   } catch {
+    logInterpretationDiagnostic("request_failed");
     throw new OpenAIAdapterError();
   }
 
   if (!response.ok) {
+    logInterpretationDiagnostic("http_rejected", {
+      ...(Number.isSafeInteger(response.status) ? { status: response.status } : {}),
+    });
     throw new OpenAIAdapterError();
   }
   let body: unknown;
   try {
     body = await response.json();
   } catch {
+    logInterpretationDiagnostic("response_invalid", { reason: "invalid_json" });
     throw new OpenAIAdapterError();
   }
   if (isRecord(body) && body.status === "completed" && Array.isArray(body.output)) {
@@ -635,6 +697,7 @@ export async function interpretExpenseMessage(
     );
     if (calls.length > 0) {
       if (calls.length !== 1 || typeof body.id !== "string") {
+        logInterpretationDiagnostic("function_call_invalid", { reason: "invalid_call_count" });
         throw new OpenAIAdapterError();
       }
       const call = calls[0] as Record<string, unknown>;
@@ -644,12 +707,14 @@ export async function interpretExpenseMessage(
         typeof call.call_id !== "string" ||
         typeof call.arguments !== "string"
       ) {
+        logInterpretationDiagnostic("function_call_invalid", { reason: "invalid_call_shape" });
         throw new OpenAIAdapterError();
       }
       let args: unknown;
       try {
         args = JSON.parse(call.arguments);
       } catch {
+        logInterpretationDiagnostic("function_arguments_invalid", { reason: "invalid_arguments" });
         throw new OpenAIAdapterError();
       }
       return {
@@ -663,10 +728,14 @@ export async function interpretExpenseMessage(
     }
   }
   if (!isRecord(body) || body.status !== "completed") {
+    logInterpretationDiagnostic("response_not_completed", {
+      status: safeResponseStatus(isRecord(body) ? body.status : undefined),
+    });
     throw new OpenAIAdapterError();
   }
   const text = extractText(body);
   if (!text) {
+    logInterpretationDiagnostic("output_text_missing", { reason: "empty_text" });
     throw new OpenAIAdapterError();
   }
 
@@ -674,6 +743,7 @@ export async function interpretExpenseMessage(
   try {
     parsed = JSON.parse(text) as unknown;
   } catch {
+    logInterpretationDiagnostic("output_json_invalid", { reason: "invalid_json_text" });
     throw new OpenAIAdapterError();
   }
 
@@ -684,6 +754,7 @@ export async function interpretExpenseMessage(
     }
     return result as ExpenseInterpretation;
   } catch {
+    logInterpretationDiagnostic("output_intent_invalid", { reason: "invalid_intent" });
     throw new OpenAIAdapterError();
   }
 }

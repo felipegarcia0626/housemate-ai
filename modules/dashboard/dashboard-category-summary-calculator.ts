@@ -6,6 +6,7 @@ import type {
   ExpenseCategorySummaryEntry,
   ExpenseCategorySummaryFailureReason,
   ExpenseCategorySummaryLevel,
+  PeriodExpenseCategoryData,
   PeriodExpenseCategorySummary,
 } from "./dashboard.types";
 
@@ -22,6 +23,33 @@ export interface CategorySummaryCalculationData {
 }
 
 const MAX_SAFE_CENTS = BigInt(Number.MAX_SAFE_INTEGER);
+const MAX_EXPENSE_ROWS = 5000;
+const MAX_ITEM_ROWS = 50000;
+
+export function validatePeriodExpenseCategoryData(
+  value: unknown,
+): asserts value is PeriodExpenseCategoryData {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Expense category data is invalid.");
+  }
+  const data = value as Record<string, unknown>;
+  if (!Array.isArray(data.expenses) || !Array.isArray(data.categories) ||
+    !Number.isSafeInteger(data.expenseCount) || data.expenseCount !== data.expenses.length ||
+    (data.expenseCount as number) > MAX_EXPENSE_ROWS || !Number.isSafeInteger(data.itemCount) ||
+    (data.itemCount as number) < 0 || (data.itemCount as number) > MAX_ITEM_ROWS) {
+    throw new Error("Expense category data is incomplete.");
+  }
+  let itemCount = 0;
+  for (const expense of data.expenses) {
+    if (typeof expense !== "object" || expense === null || Array.isArray(expense) ||
+      !Array.isArray((expense as Record<string, unknown>).items)) {
+      throw new Error("Expense category row is invalid.");
+    }
+    itemCount += ((expense as Record<string, unknown>).items as unknown[]).length;
+    if (!Number.isSafeInteger(itemCount)) throw new Error("Expense item count is invalid.");
+  }
+  if (itemCount !== data.itemCount) throw new Error("Expense category data is incomplete.");
+}
 
 function failure(
   input: CategorySummaryCalculationInput,

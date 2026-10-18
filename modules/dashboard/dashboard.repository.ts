@@ -6,6 +6,7 @@ import type {
   DashboardIncomeRow,
   DashboardCategoryTaxonomyRow,
   PeriodExpenseCategoryData,
+  PeriodFinancialCategoryData,
 } from "./dashboard.types";
 
 interface DashboardCategoryRelation {
@@ -404,6 +405,25 @@ export async function readPeriodExpenseCategoryData(
     })),
   }));
   return { expenses, categories, expenseCount: rawExpenses.length, itemCount: itemResult.itemCount };
+}
+
+export async function readPeriodFinancialCategoryData(
+  householdId: string,
+  from: string,
+  to: string,
+  signal: AbortSignal,
+): Promise<PeriodFinancialCategoryData> {
+  const [incomes, categoryData] = await Promise.all([
+    readPeriodAmountCollection(
+      "tb_incomes", "amount", "income_date", householdId, from, to, signal,
+    ),
+    readPeriodExpenseCategoryData(householdId, from, to, signal),
+  ]);
+  return {
+    incomeCount: incomes.count,
+    incomeAmount: incomes.amount,
+    categoryData,
+  };
 }
 
 export async function listDashboardIncomes(
