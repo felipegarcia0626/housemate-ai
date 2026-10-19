@@ -471,6 +471,93 @@ async function runHarness() {
           },
         };
       }
+      if (agentMode === "proposal-uncategorized-expense") {
+        return {
+          type: "PROPOSAL_CREATED",
+          proposalId,
+          status: "AWAITING_CONFIRMATION",
+          operationType: "CREATE_EXPENSE",
+          payload: {
+            expense: {
+              totalAmount: 25000,
+              expenseDate: "2026-10-17",
+              description: "Compra general",
+              categoryId: null,
+              categoryPath: null,
+            },
+          },
+        };
+      }
+      if (agentMode === "proposal-uncategorized-income") {
+        return {
+          type: "PROPOSAL_CREATED",
+          proposalId,
+          status: "AWAITING_CONFIRMATION",
+          operationType: "CREATE_INCOME",
+          payload: {
+            income: {
+              amount: 90000,
+              incomeDate: "2026-10-17",
+              description: "Pago general",
+              categoryId: null,
+              categoryPath: null,
+            },
+          },
+        };
+      }
+      if (agentMode === "proposal-updated-uncategorized-expense") {
+        return {
+          type: "PROPOSAL_UPDATED",
+          proposalId,
+          operationType: "CREATE_EXPENSE",
+          status: "AWAITING_CONFIRMATION",
+          payload: {
+            actorMemberId: memberId,
+            source: "WHATSAPP",
+            expense: {
+              totalAmount: 25000,
+              expenseDate: "2026-10-17",
+              description: "Compra corregida",
+              paidByMemberId: memberId,
+              categoryId: null,
+            },
+          },
+        };
+      }
+      if (agentMode === "proposal-updated-uncategorized-income") {
+        return {
+          type: "PROPOSAL_UPDATED",
+          proposalId,
+          operationType: "CREATE_INCOME",
+          status: "AWAITING_CONFIRMATION",
+          payload: {
+            actorMemberId: memberId,
+            source: "WHATSAPP",
+            income: {
+              amount: 90000,
+              incomeDate: "2026-10-17",
+              description: "Pago corregido",
+              memberId,
+              categoryId: null,
+            },
+          },
+        };
+      }
+      if (agentMode === "proposal-missing-category") {
+        return {
+          type: "PROPOSAL_CREATED",
+          proposalId,
+          status: "AWAITING_CONFIRMATION",
+          operationType: "CREATE_EXPENSE",
+          payload: {
+            expense: {
+              totalAmount: 25000,
+              expenseDate: "2026-10-17",
+              description: "Datos incompletos",
+            },
+          },
+        };
+      }
       if (agentMode === "proposal-updated-expense") {
         return {
           type: "PROPOSAL_UPDATED",
@@ -829,6 +916,10 @@ async function runHarness() {
   assert.match(firstProposalText, /100/);
   assert.match(firstProposalText, /16\/08\/2026/);
   assert.match(firstProposalText, /Alimentación → Mercado/);
+  assert.equal(
+    (firstProposalText.match(/Categoría: Alimentación → Mercado/g) ?? []).length,
+    1,
+  );
   assert.doesNotMatch(firstProposalText, /Descripción:/);
   assert.doesNotMatch(firstProposalText, /42000000-/);
   assert.equal(operations.filter(({ type }) => type === "insert").length, 1);
@@ -842,6 +933,99 @@ async function runHarness() {
   assert.equal(agentCalls.length, 1);
   assert.equal(sentMessages.length, 1);
   console.log("PASS duplicate event does not invoke Agent or send again");
+
+  const uncategorizedProposalScenarios = [
+    {
+      mode: "proposal-uncategorized-expense",
+      eventId: "event-proposal-uncategorized-expense",
+      text: "Registra un gasto general de 25000",
+      expected: /Categoría: Sin categoría/,
+    },
+    {
+      mode: "proposal-uncategorized-income",
+      eventId: "event-proposal-uncategorized-income",
+      text: "Registra un ingreso general de 90000",
+      expected: /Categoría: Sin categoría/,
+    },
+    {
+      mode: "proposal-updated-uncategorized-expense",
+      eventId: "event-proposal-updated-uncategorized-expense",
+      text: "Corrige el gasto general",
+      expected: /Categoría: Sin categoría/,
+    },
+    {
+      mode: "proposal-updated-uncategorized-income",
+      eventId: "event-proposal-updated-uncategorized-income",
+      text: "Corrige el ingreso general",
+      expected: /Categoría: Sin categoría/,
+    },
+  ];
+  const presentationAgentCallsBefore = agentCalls.length;
+  const presentationMessagesBefore = sentMessages.length;
+  for (const scenario of uncategorizedProposalScenarios) {
+    agentMode = scenario.mode;
+    const response = await route.POST(
+      signedRequest(
+        rawBody(incomingPayload(scenario.eventId, scenario.text)),
+      ),
+    );
+    assert.equal(response.status, 200);
+    const visibleText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+    assert.match(visibleText, scenario.expected);
+    assert.equal(
+      (visibleText.match(/Categoría: Sin categoría/g) ?? []).length,
+      1,
+    );
+    assert.match(
+      visibleText,
+      /responde "sí" para confirmar o "no" para rechazar/i,
+    );
+  }
+  assert.equal(agentCalls.length, presentationAgentCallsBefore + 4);
+  assert.equal(sentMessages.length, presentationMessagesBefore + 4);
+
+  agentMode = "proposal-missing-category";
+  const missingCategoryResponse = await route.POST(
+    signedRequest(
+      rawBody(
+        incomingPayload(
+          "event-proposal-missing-category",
+          "Registra gasto con información incompleta",
+        ),
+      ),
+    ),
+  );
+  assert.equal(missingCategoryResponse.status, 200);
+  const missingCategoryText = JSON.parse(
+    sentMessages.at(-1).init.body,
+  ).text.body;
+  assert.doesNotMatch(missingCategoryText, /Categoría: Sin categoría/);
+
+  agentMode = "clarification";
+  const clarificationResponse = await route.POST(
+    signedRequest(
+      rawBody(
+        incomingPayload("event-proposal-clarification", "¿Cuánto fue?"),
+      ),
+    ),
+  );
+  assert.equal(clarificationResponse.status, 200);
+  const clarificationText = JSON.parse(
+    sentMessages.at(-1).init.body,
+  ).text.body;
+  assert.equal(clarificationText, "¿Cuál fue el monto del gasto?");
+  assert.doesNotMatch(clarificationText, /Categoría: Sin categoría/);
+  assert.equal(
+    operations.filter(
+      ({ type, table }) =>
+        type === "insert" &&
+        ["tb_expenses", "tb_incomes", "tb_pending_proposals"].includes(table),
+    ).length,
+    0,
+  );
+  console.log(
+    "PASS WhatsApp renders explicit uncategorized proposals without bypassing confirmation",
+  );
 
   agentMode = "read-expenses";
   const expenseRead = await route.POST(
@@ -1065,6 +1249,7 @@ async function runHarness() {
   assert.match(updatedExpenseText, /16\/08\/2026/);
   assert.match(updatedExpenseText, /Mercado de la semana/);
   assert.match(updatedExpenseText, /Alimentación/);
+  assert.equal((updatedExpenseText.match(/Categoría:/g) ?? []).length, 1);
   assert.match(updatedExpenseText, /Alejandra/);
   assert.match(updatedExpenseText, /Reparto:/);
   assert.match(updatedExpenseText, /50\.00%/);
@@ -1105,6 +1290,7 @@ async function runHarness() {
   assert.match(updatedIncomeText, /20\/08\/2026/);
   assert.match(updatedIncomeText, /Salario de agosto/);
   assert.match(updatedIncomeText, /Salario/);
+  assert.equal((updatedIncomeText.match(/Categoría:/g) ?? []).length, 1);
   assert.match(updatedIncomeText, /Felipe/);
   assert.doesNotMatch(updatedIncomeText, /Comercio:/);
   assert.doesNotMatch(updatedIncomeText, /Pagador:/);

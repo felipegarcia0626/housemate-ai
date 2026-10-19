@@ -9,6 +9,7 @@ import {
   copMoneyToCents,
   formatCopCents,
   formatCopMoney,
+  proposalCategoryLine,
 } from "@/modules/agent/agent-presentation";
 import { findActiveProposalId } from "@/modules/agent/agent.service";
 import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
@@ -295,7 +296,11 @@ function renderUpdatedProposal(
     const categoryName = expense.categoryId
       ? labels.categories.get(expense.categoryId)
       : undefined;
-    if (categoryName) lines.push(`Categoría: ${categoryName}`);
+    const categoryLine = proposalCategoryLine(
+      expense.categoryId,
+      categoryName,
+    );
+    if (categoryLine) lines.push(categoryLine);
     const payerName = expense.paidByMemberId
       ? labels.members.get(expense.paidByMemberId)
       : undefined;
@@ -316,7 +321,11 @@ function renderUpdatedProposal(
     const categoryName = income.categoryId
       ? labels.categories.get(income.categoryId)
       : undefined;
-    if (categoryName) lines.push(`Categoría: ${categoryName}`);
+    const categoryLine = proposalCategoryLine(
+      income.categoryId,
+      categoryName,
+    );
+    if (categoryLine) lines.push(categoryLine);
     const memberName = income.memberId
       ? labels.members.get(income.memberId)
       : undefined;
@@ -400,16 +409,22 @@ function renderCreatedProposal(
       : undefined;
     if (payerName) lines.push(`👤 Pagado por: ${payerName}`);
     lines.push(...renderExpenseSplits(expense.splits, labels));
-    if (expense.categoryPath)
-      lines.push(`📂 Categoría: ${expense.categoryPath}`);
+    const categoryLine = proposalCategoryLine(
+      expense.categoryId,
+      expense.categoryPath,
+    );
+    if (categoryLine) lines.push(`📂 ${categoryLine}`);
   } else if (!isExpense && "income" in payload && payload.income) {
     const income = payload.income;
     lines.push(`💰 Monto: ${formatCopMoney(income.amount)}`);
     lines.push(`📅 Fecha: ${formatWhatsAppDate(income.incomeDate)}`);
     if (income.description?.trim())
       lines.push(`📝 Descripción: ${income.description.trim()}`);
-    if (income.categoryPath)
-      lines.push(`📂 Categoría: ${income.categoryPath}`);
+    const categoryLine = proposalCategoryLine(
+      income.categoryId,
+      income.categoryPath,
+    );
+    if (categoryLine) lines.push(`📂 ${categoryLine}`);
     const memberName = income.memberId
       ? labels.members.get(income.memberId)
       : undefined;

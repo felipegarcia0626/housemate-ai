@@ -115,6 +115,12 @@ const conversationModule = path.join(
   "agent",
   "conversation.service.ts",
 );
+const agentPresentationModule = path.join(
+  root,
+  "modules",
+  "agent",
+  "agent-presentation.ts",
+);
 const categoryDraftServiceModule = path.join(
   root,
   "modules",
@@ -757,6 +763,19 @@ async function main() {
           ([id]) => id === "category-transporte",
         );
         categories.splice(transporteIndex, 1);
+        categories.push([
+          "category-income-salary",
+          "Sueldo mensual",
+          "income-salary",
+          "Salario",
+        ]);
+      } else {
+        categories.push([
+          "category-expense-restaurants",
+          "Restaurantes",
+          "Household",
+          "Household",
+        ]);
       }
       if (duplicateCategoryNames) {
         categories.push([
@@ -906,6 +925,16 @@ async function main() {
   const categoryDraftService = load(categoryDraftServiceModule);
   const tool = load(toolModule);
   const conversation = load(conversationModule);
+  const { proposalCategoryLine } = load(agentPresentationModule);
+  assert.equal(proposalCategoryLine(null), "Categoría: Sin categoría");
+  assert.equal(proposalCategoryLine(undefined), null);
+  assert.equal(
+    proposalCategoryLine("category-food", "Alimentación → Mercado"),
+    "Categoría: Alimentación → Mercado",
+  );
+  console.log(
+    "PASS proposal category presentation distinguishes null and absent",
+  );
   async function selectCategory(context, macro, micro) {
     const macroReply = await conversation.processAgentMessage(context, {
       message: macro,
@@ -2220,7 +2249,7 @@ async function main() {
     expenseDate: "2026-08-12",
     paidBySelf: false,
     paidByMemberName: "Alejandra",
-    categoryName: null,
+    categoryName: "Household",
   };
   const payerCategoryContext = {
     ...contextA,
@@ -2228,17 +2257,16 @@ async function main() {
   };
   const payerCategoryClarification = await conversation.processAgentMessage(
     payerCategoryContext,
-    { message: "Alejandra pagó 100 de mercado" },
+    { message: "Alejandra pagó 100 de mercado, categoría Household" },
   );
   assert.equal(payerCategoryClarification.type, "CLARIFICATION_REQUIRED");
   const payerDraft = categoryDrafts.find(
     (row) => row.conversation_key === payerCategoryContext.conversationKey,
   );
   assert.equal(payerDraft.payload.expense.paidByMemberId, memberB);
-  const payerCategoryProposal = await selectCategory(
+  const payerCategoryProposal = await conversation.processAgentMessage(
     payerCategoryContext,
-    "Household",
-    "Food",
+    { message: "Food" },
   );
   assert.equal(payerCategoryProposal.type, "PROPOSAL_CREATED");
   const payerCategoryStored = proposals.find(
@@ -2284,7 +2312,7 @@ async function main() {
     totalAmount: "10000",
     expenseDate: "2026-08-12",
     paidBySelf: true,
-    categoryName: null,
+    categoryName: "Household",
   };
   const categoryContext = {
     ...contextA,
@@ -2293,19 +2321,13 @@ async function main() {
   const beforeCategoryProposalCount = proposals.length;
   const categoryClarificationResult = await conversation.processAgentMessage(
     categoryContext,
-    { message: "Registra un gasto de 10000 pesos en Carulla" },
+    { message: "Registra un gasto de 10000 pesos en Carulla, categoría Household" },
   );
   assert.equal(categoryClarificationResult.type, "CLARIFICATION_REQUIRED");
   assert.equal(operations.at(-1).type, "category-hierarchical-read");
   assert.equal(operations.at(-1).movementType, "EXPENSE");
   assert.equal(categoryDrafts.length, 1);
   assert.equal(proposals.length, beforeCategoryProposalCount);
-  const categoryMacroReply = await conversation.processAgentMessage(
-    categoryContext,
-    { message: "Household" },
-  );
-  assert.equal(categoryMacroReply.type, "CLARIFICATION_REQUIRED");
-  assert.match(categoryMacroReply.message, /Household → Food/);
   assert.equal(
     categoryDrafts.find(
       (row) => row.conversation_key === categoryContext.conversationKey,
@@ -2316,8 +2338,22 @@ async function main() {
     (row) => row.conversation_key === categoryContext.conversationKey,
   );
   assert.equal(categoryDraftAfterMacro.payload.expense.categoryId, null);
+  assert.match(categoryClarificationResult.message, /Household → Food/);
   assert.equal(categoryDraftAfterMacro.payload.expense.totalAmount, 10000);
   assert.equal(categoryDraftAfterMacro.payload.expense.merchant, "Carulla");
+  const repeatedMacroClarification = await conversation.processAgentMessage(
+    categoryContext,
+    { message: "Household" },
+  );
+  assert.equal(repeatedMacroClarification.type, "CLARIFICATION_REQUIRED");
+  assert.match(repeatedMacroClarification.message, /Household → Food/);
+  assert.equal(
+    categoryDrafts.find(
+      (row) => row.conversation_key === categoryContext.conversationKey,
+    ).payload.pendingCategoryCreation,
+    null,
+  );
+  assert.equal(proposals.length, beforeCategoryProposalCount);
   const categoryProposal = await conversation.processAgentMessage(
     categoryContext,
     { message: "Food" },
@@ -2327,6 +2363,10 @@ async function main() {
     (row) => row.id === categoryProposal.proposalId,
   );
   assert.equal(categoryStored.payload.expense.categoryId, "category-1");
+  assert.equal(
+    categoryProposal.payload.expense.categoryPath,
+    "Household → Food",
+  );
   const categorySelectionUpdate = operations
     .filter(
       (operation) =>
@@ -2345,7 +2385,7 @@ async function main() {
   assert.equal(categoryConfirmed.type, "CONFIRMED");
   assert.equal(createdExpenses.at(-1).input.categoryId, "category-1");
   console.log(
-    "PASS category clarification resolves a real category before proposal",
+    "PASS macro-only category request asks for a linked micro before proposal",
   );
 
   mockInterpretation = {
@@ -2835,11 +2875,11 @@ async function main() {
     totalAmount: "80000",
     expenseDate: "2026-08-16",
     paidBySelf: true,
-    categoryName: null,
+    categoryName: "Household",
   };
   const draftBeforeTerminalFallback = await conversation.processAgentMessage(
     terminalVsDraftContext,
-    { message: "Registra 80000 en New Draft Market" },
+    { message: "Registra 80000 en New Draft Market, categoría Household" },
   );
   assert.equal(draftBeforeTerminalFallback.type, "CLARIFICATION_REQUIRED");
   const terminalProposalForDraft = {
@@ -2904,11 +2944,11 @@ async function main() {
     totalAmount: "81000",
     expenseDate: "2026-08-16",
     paidBySelf: true,
-    categoryName: null,
+    categoryName: "Household",
   };
   const compensationDraftStart = await conversation.processAgentMessage(
     draftCompensationContext,
-    { message: "Registra 81000 en Compensation Market" },
+    { message: "Registra 81000 en Compensation Market, categoría Household" },
   );
   assert.equal(compensationDraftStart.type, "CLARIFICATION_REQUIRED");
   const compensationMacro = await conversation.processAgentMessage(
@@ -2969,11 +3009,11 @@ async function main() {
     totalAmount: "82000",
     expenseDate: "2026-08-16",
     paidBySelf: true,
-    categoryName: null,
+    categoryName: "Household",
   };
   const creationFailureStart = await conversation.processAgentMessage(
     creationFailureContext,
-    { message: "Registra 82000 en Creation Failure Market" },
+    { message: "Registra 82000 en Creation Failure Market, categoría Household" },
   );
   assert.equal(creationFailureStart.type, "CLARIFICATION_REQUIRED");
   await conversation.processAgentMessage(creationFailureContext, {
@@ -3028,11 +3068,11 @@ async function main() {
     totalAmount: "83000",
     expenseDate: "2026-08-16",
     paidBySelf: true,
-    categoryName: null,
+    categoryName: "Household",
   };
   const doubleFailureStart = await conversation.processAgentMessage(
     doubleFailureContext,
-    { message: "Registra 83000 en Double Failure Market" },
+    { message: "Registra 83000 en Double Failure Market, categoría Household" },
   );
   assert.equal(doubleFailureStart.type, "CLARIFICATION_REQUIRED");
   await conversation.processAgentMessage(doubleFailureContext, {
@@ -3100,11 +3140,11 @@ async function main() {
     totalAmount: "84000",
     expenseDate: "2026-08-16",
     paidBySelf: true,
-    categoryName: null,
+    categoryName: "Household",
   };
   const restorationFailureStart = await conversation.processAgentMessage(
     restorationFailureContext,
-    { message: "Registra 84000 en Restoration Failure Market" },
+    { message: "Registra 84000 en Restoration Failure Market, categoría Household" },
   );
   assert.equal(restorationFailureStart.type, "CLARIFICATION_REQUIRED");
   await conversation.processAgentMessage(restorationFailureContext, {
@@ -3367,19 +3407,65 @@ async function main() {
 
   mockInterpretation = {
     kind: "CREATE_EXPENSE",
+    merchant: "Compra sin categoría",
+    description: "Compra general",
+    totalAmount: "25000",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const expenseWithoutCategoryContext = {
+    ...contextA,
+    conversationKey: "agent-expense-without-category",
+  };
+  const categoryReadsBeforeUncategorizedExpense = operations.filter(
+    ({ type }) => type === "category-hierarchical-read",
+  ).length;
+  const expenseWithoutCategoryWrites = createdExpenses.length;
+  const expenseWithoutCategory = await conversation.processAgentMessage(
+    expenseWithoutCategoryContext,
+    { message: "Gasté 25000 en una compra general" },
+  );
+  assert.equal(expenseWithoutCategory.type, "PROPOSAL_CREATED");
+  assert.equal(expenseWithoutCategory.payload.expense.categoryId, null);
+  assert.equal(expenseWithoutCategory.payload.expense.categoryPath, null);
+  assert.equal(
+    operations.filter(({ type }) => type === "category-hierarchical-read")
+      .length,
+    categoryReadsBeforeUncategorizedExpense,
+  );
+  assert.equal(createdExpenses.length, expenseWithoutCategoryWrites);
+  const expenseWithoutCategoryStored = proposals.find(
+    (row) => row.id === expenseWithoutCategory.proposalId,
+  );
+  assert.equal(expenseWithoutCategoryStored.payload.expense.categoryId, null);
+  const expenseWithoutCategoryConfirmation =
+    await conversation.processAgentMessage(expenseWithoutCategoryContext, {
+      message: "sí",
+    });
+  assert.equal(expenseWithoutCategoryConfirmation.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, expenseWithoutCategoryWrites + 1);
+  assert.equal(createdExpenses.at(-1).input.categoryId, null);
+  console.log(
+    "PASS expense without a requested category proposes and confirms as uncategorized",
+  );
+
+  mockInterpretation = {
+    kind: "CREATE_EXPENSE",
     merchant: "Carulla",
     description: null,
     totalAmount: "100",
     expenseDate: "2026-08-12",
     paidBySelf: true,
-    categoryName: null,
+    categoryName: "Household",
   };
   const invalidCategoryContext = {
     ...contextA,
     conversationKey: "agent-invalid-category",
   };
   await conversation.processAgentMessage(invalidCategoryContext, {
-    message: "Registra un gasto de 100 en Carulla",
+    message: "Registra un gasto de 100 en Carulla, categoría Household",
   });
   const invalidCategory = await conversation.processAgentMessage(
     invalidCategoryContext,
@@ -3421,14 +3507,14 @@ async function main() {
     expenseDate: "2026-08-16",
     paidBySelf: true,
     paidByMemberName: null,
-    categoryName: null,
+    categoryName: "Household",
   };
   const correctionLikeCategoryContext = {
     ...contextA,
     conversationKey: "agent-correction-like-category-draft",
   };
   await conversation.processAgentMessage(correctionLikeCategoryContext, {
-    message: "Registra un gasto de 101 en Correction-like Category Market",
+    message: "Registra un gasto de 101 en Correction-like Category Market, categoría Household",
   });
   const correctionLikeCategory = await conversation.processAgentMessage(
     correctionLikeCategoryContext,
@@ -3455,7 +3541,7 @@ async function main() {
     conversationKey: "agent-category-isolation",
   };
   await conversation.processAgentMessage(isolatedCategoryContext, {
-    message: "Registra un gasto de 200 en Carulla",
+    message: "Registra un gasto de 200 en Carulla, categoría Household",
   });
   const otherHouseholdCategory = await conversation.processAgentMessage(
     { ...isolatedCategoryContext, householdId: householdB, actorMemberId: memberB },
@@ -3526,7 +3612,9 @@ async function main() {
     "PASS ambiguous registration persists operation choice without financial persistence",
   );
 
-  const beforeCategoryResolutionCalls = operations.length;
+  const categoryReadsBeforeOperationChoice = operations.filter(
+    ({ type }) => type === "category-hierarchical-read",
+  ).length;
   const expenseOperationChoice = await conversation.processAgentMessage(
     ambiguousMovementContext,
     { message: "gasto" },
@@ -3534,39 +3622,37 @@ async function main() {
       throw new Error("OpenAI must not receive operation choices");
     },
   );
-  assert.equal(expenseOperationChoice.type, "CLARIFICATION_REQUIRED");
-  assert.equal(operationDraft.status, "AWAITING_CATEGORY");
-  assert.equal(operationDraft.operation_type, "CREATE_EXPENSE");
-  assert.equal("actorMemberId" in operationDraft.payload, false);
-  assert.equal("source" in operationDraft.payload, false);
-  assert.equal("splits" in operationDraft.payload.expense, false);
+  assert.equal(expenseOperationChoice.type, "PROPOSAL_CREATED");
+  assert.equal(expenseOperationChoice.payload.expense.categoryId, null);
+  assert.equal(expenseOperationChoice.payload.expense.categoryPath, null);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === operationDraft.id),
+    false,
+  );
   assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses);
   assert.equal(createdIncomes.length, beforeAmbiguousMovementIncomes);
-  assert.ok(operations.length > beforeCategoryResolutionCalls);
-  console.log("PASS gasto resolves the persisted operation without OpenAI");
-
-  const expenseCategoryProposal = await selectCategory(
-    ambiguousMovementContext,
-    "Household",
-    "Food",
+  assert.equal(
+    operations.filter(({ type }) => type === "category-hierarchical-read")
+      .length,
+    categoryReadsBeforeOperationChoice,
   );
-  assert.equal(expenseCategoryProposal.type, "PROPOSAL_CREATED");
   assert.equal(
     proposals.at(-1).payload.expense.totalAmount,
     50000,
   );
   assert.equal(proposals.at(-1).payload.expense.merchant, "Éxito");
+  assert.equal(proposals.at(-1).payload.expense.categoryId, null);
   assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses);
-  const expenseCategoryConfirmation = await conversation.processAgentMessage(
+  const expenseConfirmation = await conversation.processAgentMessage(
     ambiguousMovementContext,
     { message: "si" },
   );
-  assert.equal(expenseCategoryConfirmation.type, "CONFIRMED");
+  assert.equal(expenseConfirmation.type, "CONFIRMED");
   assert.equal(createdExpenses.length, beforeAmbiguousMovementExpenses + 1);
   assert.deepEqual(createdExpenses.at(-1).input.splits, [
     { householdMemberId: memberA, percentage: 100 },
   ]);
-  console.log("PASS ambiguous expense reaches proposal and confirms once");
+  console.log("PASS ambiguous expense reaches uncategorized proposal and confirms once");
 
   mockInterpretation = {
     kind: "AMBIGUOUS_MOVEMENT",
@@ -3655,27 +3741,14 @@ async function main() {
       throw new Error("OpenAI must not receive persisted details");
     },
   );
-  assert.equal(incomeDetails.type, "CLARIFICATION_REQUIRED");
-  assert.equal(incomeOperationDraft.status, "AWAITING_CATEGORY");
-  assert.equal("memberId" in incomeOperationDraft.payload.income, false);
-  const incomeDraftProposal = await selectCategory(
-    incomeOperationContext,
-    "Household",
-    "Food",
-  );
-  assert.equal(incomeDraftProposal.type, "PROPOSAL_CREATED");
+  assert.equal(incomeDetails.type, "PROPOSAL_CREATED");
+  assert.equal(incomeDetails.payload.income.categoryId, null);
+  assert.equal("memberId" in incomeOperationDraft.payload, false);
   assert.equal(createdIncomes.length, beforeAmbiguousIncomeCount);
-  const incomeCategoryUpdate = operations
-    .filter(
-      (operation) =>
-        operation.type === "update" &&
-        operation.table === "tb_agent_category_drafts" &&
-        operation.payload?.payload?.income?.categoryId === "category-1",
-    )
-    .at(-1);
-  assert.ok(incomeCategoryUpdate);
-  assert.equal(incomeCategoryUpdate.payload.payload.selectedMacroId, null);
-  assert.equal("memberId" in incomeOperationDraft.payload.income, false);
+  assert.equal(
+    categoryDrafts.some((row) => row.id === incomeOperationDraft.id),
+    false,
+  );
   const incomeDraftConfirmation = await conversation.processAgentMessage(
     incomeOperationContext,
     { message: "si" },
@@ -3694,7 +3767,7 @@ async function main() {
   );
   assert.equal(createdIncomes.length, beforeAmbiguousIncomeCount + 1);
   console.log(
-    "PASS ambiguous income persists details, category and contextual retry",
+    "PASS ambiguous income persists details, proposes without category and supports contextual retry",
   );
 
   mockInterpretation = {
@@ -3726,15 +3799,10 @@ async function main() {
       throw new Error("OpenAI must not receive plain details");
     },
   );
-  assert.equal(plainDescriptionResult.type, "CLARIFICATION_REQUIRED");
-  assert.equal(
-    categoryDrafts.find(
-      (row) => row.conversation_key === plainDescriptionContext.conversationKey,
-    ).status,
-    "AWAITING_CATEGORY",
-  );
+  assert.equal(plainDescriptionResult.type, "PROPOSAL_CREATED");
+  assert.equal(plainDescriptionResult.payload.income.categoryId, null);
   await conversation.processAgentMessage(plainDescriptionContext, {
-    message: "cancelar",
+    message: "no",
   });
 
   mockInterpretation = {
@@ -3766,17 +3834,14 @@ async function main() {
       throw new Error("OpenAI must not receive plain dates");
     },
   );
-  assert.equal(plainDateResult.type, "CLARIFICATION_REQUIRED");
-  const plainDateDraft = categoryDrafts.find(
-    (row) => row.conversation_key === plainDateContext.conversationKey,
-  );
-  assert.equal(plainDateDraft.status, "AWAITING_CATEGORY");
+  assert.equal(plainDateResult.type, "PROPOSAL_CREATED");
+  assert.equal(plainDateResult.payload.income.categoryId, null);
   assert.equal(
-    plainDateDraft.payload.income.incomeDate,
+    plainDateResult.payload.income.incomeDate,
     new Date().toISOString().slice(0, 10),
   );
   await conversation.processAgentMessage(plainDateContext, {
-    message: "cancelar",
+    message: "no",
   });
   console.log("PASS plain description and natural date details continue drafts");
 
@@ -3983,14 +4048,14 @@ async function main() {
     totalAmount: "100",
     expenseDate: "2026-08-16",
     paidBySelf: true,
-    categoryName: null,
+    categoryName: "Household",
   };
   const concurrentDraftContext = {
     ...contextA,
     conversationKey: "agent-draft-concurrency",
   };
   await conversation.processAgentMessage(concurrentDraftContext, {
-    message: "Registra 100 en Concurrency",
+    message: "Registra 100 en Concurrency, categoría Household",
   });
   const beforeConcurrentProposalCount = proposals.length;
   const concurrentResults = await Promise.allSettled([
@@ -4028,6 +4093,16 @@ async function main() {
   const isolatedOperationContext = {
     ...contextA,
     conversationKey: "agent-operation-isolation",
+  };
+  mockInterpretation = {
+    kind: "AMBIGUOUS_MOVEMENT",
+    amount: "100",
+    date: null,
+    merchant: "Aislado",
+    description: null,
+    paidBySelf: null,
+    paidByMemberName: null,
+    categoryName: null,
   };
   await conversation.processAgentMessage(isolatedOperationContext, {
     message: "Registra 100 en Aislado",
@@ -4082,56 +4157,32 @@ async function main() {
 
   mockInterpretation = {
     kind: "CREATE_INCOME",
-    amount: "125",
-    incomeDate: "2026-08-12",
-    description: "Salary",
-    categoryName: null,
-  };
-  const incomeCategoryContext = {
-    ...contextA,
-    conversationKey: "agent-income-category",
-  };
-  const incomeCategoryClarification = await conversation.processAgentMessage(
-    incomeCategoryContext,
-    { message: "Recibí un salario de 125" },
-  );
-  assert.equal(incomeCategoryClarification.type, "CLARIFICATION_REQUIRED");
-  assert.equal(operations.at(-1).type, "category-hierarchical-read");
-  assert.equal(operations.at(-1).movementType, "INCOME");
-  const incomeCategoryProposal = await selectCategory(
-    incomeCategoryContext,
-    "Household",
-    "Food",
-  );
-  assert.equal(incomeCategoryProposal.type, "PROPOSAL_CREATED");
-  const incomeCategoryStored = proposals.find(
-    (row) => row.id === incomeCategoryProposal.proposalId,
-  );
-  assert.equal(incomeCategoryStored.payload.income.categoryId, "category-1");
-  console.log("PASS income category clarification creates a categorized proposal");
-
-  mockInterpretation = {
-    kind: "CREATE_INCOME",
     amount: "126",
     incomeDate: "2026-08-12",
     description: "Otro ingreso",
-    categoryName: null,
+    categoryName: "Mobility",
   };
   const wrongMovementCategoryContext = {
     ...contextA,
     conversationKey: "agent-income-wrong-movement-category",
   };
+  const wrongMovementProposalCount = proposals.length;
+  const wrongMovementIncomeCount = createdIncomes.length;
   const wrongMovementInitial = await conversation.processAgentMessage(
     wrongMovementCategoryContext,
-    { message: "Recibí un ingreso de 126" },
+    { message: "Recibí un ingreso de 126 por movilidad" },
   );
   assert.equal(wrongMovementInitial.type, "CLARIFICATION_REQUIRED");
+  assert.equal(proposals.length, wrongMovementProposalCount);
+  assert.equal(createdIncomes.length, wrongMovementIncomeCount);
   const wrongMovementCategory = await conversation.processAgentMessage(
     wrongMovementCategoryContext,
     { message: "Mobility" },
   );
   assert.equal(wrongMovementCategory.type, "CLARIFICATION_REQUIRED");
   assert.doesNotMatch(wrongMovementCategory.message, /Mobility/);
+  assert.equal(proposals.length, wrongMovementProposalCount);
+  assert.equal(createdIncomes.length, wrongMovementIncomeCount);
   await conversation.processAgentMessage(wrongMovementCategoryContext, {
     message: "cancelar",
   });
@@ -4195,6 +4246,7 @@ async function main() {
     conversationKey: "agent-expense-details-continuation",
   };
   const beforeExpenseDetailsCreated = createdExpenses.length;
+  const beforeExpenseDetailsProposals = proposals.length;
   const expenseDetailsInitial = await conversation.processAgentMessage(
     expenseDetailsContext,
     { message: "Gasté en un restaurante" },
@@ -4210,25 +4262,28 @@ async function main() {
       throw new Error("OpenAI must not receive persisted expense details");
     },
   );
-  assert.equal(expenseDetailsCompleted.type, "CLARIFICATION_REQUIRED");
-  assert.deepEqual(expenseDetailsCompleted.missingFields, ["categoryId"]);
-  assert.equal(expenseDetailsDraft.status, "AWAITING_CATEGORY");
-  assert.equal(expenseDetailsDraft.payload.expense.totalAmount, 45000);
-  assert.equal(expenseDetailsDraft.payload.expense.expenseDate, "2026-08-16");
-  assert.equal(expenseDetailsDraft.payload.expense.description, "Almuerzo");
-  const expenseDetailsProposal = await selectCategory(
-    expenseDetailsContext,
-    "Household",
-    "Food",
-  );
-  assert.equal(expenseDetailsProposal.type, "PROPOSAL_CREATED");
+  assert.equal(expenseDetailsCompleted.type, "PROPOSAL_CREATED");
+  assert.equal(expenseDetailsCompleted.payload.expense.categoryId, null);
+  assert.equal(expenseDetailsCompleted.payload.expense.categoryPath, null);
+  assert.equal(proposals.length, beforeExpenseDetailsProposals + 1);
   assert.equal(proposals.at(-1).payload.expense.totalAmount, 45000);
+  assert.equal(proposals.at(-1).payload.expense.categoryId, null);
+  assert.equal(
+    categoryDrafts.some(
+      (row) => row.conversation_key === expenseDetailsContext.conversationKey,
+    ),
+    false,
+  );
   assert.equal(createdExpenses.length, beforeExpenseDetailsCreated);
-  await conversation.processAgentMessage(expenseDetailsContext, {
-    message: "no",
-  });
+  const expenseDetailsConfirmation = await conversation.processAgentMessage(
+    expenseDetailsContext,
+    { message: "sí" },
+  );
+  assert.equal(expenseDetailsConfirmation.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, beforeExpenseDetailsCreated + 1);
+  assert.equal(createdExpenses.at(-1).input.categoryId, null);
   console.log(
-    "PASS incomplete Expense preserves amount, date and description through category selection",
+    "PASS incomplete Expense completes without an unrequested category",
   );
 
   mockInterpretation = {
@@ -4995,7 +5050,13 @@ async function main() {
     contextA,
     "EXPENSE",
   );
-  assert.equal(expenseCategories.length, 9);
+  assert.equal(
+    expenseCategories.length,
+    7 +
+      createdAgentCategories.filter(
+        (category) => category.movementType === "EXPENSE",
+      ).length,
+  );
   assert.equal(expenseCategories[0].id, "category-1");
   assert.equal(expenseCategories[0].path, "Household → Food");
   assert.ok(
@@ -5032,7 +5093,10 @@ async function main() {
     contextA,
     "EXPENSE",
   );
-  assert.equal(duplicateExpenseCategories.length, 10);
+  assert.equal(
+    duplicateExpenseCategories.length,
+    expenseCategories.length + 1,
+  );
   assert.notEqual(
     duplicateExpenseCategories.find(({ id }) => id === "category-1").path,
     duplicateExpenseCategories.find(({ id }) => id === "category-food-duplicate").path,
@@ -5044,7 +5108,13 @@ async function main() {
     contextA,
     "INCOME",
   );
-  assert.equal(incomeCategories.length, 7);
+  assert.equal(
+    incomeCategories.length,
+    6 +
+      createdAgentCategories.filter(
+        (category) => category.movementType === "INCOME",
+      ).length,
+  );
   assert.equal(incomeCategories[0].id, "category-1");
   assert.equal(incomeCategories[0].path, "Household → Food");
   assert.equal(operations.at(-1).movementType, "INCOME");
@@ -5225,36 +5295,25 @@ async function main() {
   };
   const beforeIncomeWithoutCategoryProposals = proposals.length;
   const beforeIncomeWithoutCategoryCount = createdIncomes.length;
-  const completeIncomeCategoryClarification =
+  const categoryReadsBeforeUncategorizedIncome = operations.filter(
+    ({ type }) => type === "category-hierarchical-read",
+  ).length;
+  const completeIncomeWithoutCategory =
     await conversation.processAgentMessage(incomeWithoutCategoryContext, {
       message: "Recibí 2750000 el 20 de agosto de 2026, salario de agosto",
     });
+  assert.equal(completeIncomeWithoutCategory.type, "PROPOSAL_CREATED");
+  assert.equal(completeIncomeWithoutCategory.payload.income.categoryId, null);
+  assert.equal(completeIncomeWithoutCategory.payload.income.categoryPath, null);
+  assert.equal(proposals.length, beforeIncomeWithoutCategoryProposals + 1);
   assert.equal(
-    completeIncomeCategoryClarification.type,
-    "CLARIFICATION_REQUIRED",
+    operations.filter(({ type }) => type === "category-hierarchical-read")
+      .length,
+    categoryReadsBeforeUncategorizedIncome,
   );
-  assert.deepEqual(completeIncomeCategoryClarification.missingFields, [
-    "categoryId",
-  ]);
-  assert.ok(
-    completeIncomeCategoryClarification.options.some(
-      ({ name }) => name === "Household",
-    ),
-  );
-  assert.equal(proposals.length, beforeIncomeWithoutCategoryProposals);
   assert.equal(createdIncomes.length, beforeIncomeWithoutCategoryCount);
-  const completeIncomeCategoryMacro =
-    await conversation.processAgentMessage(incomeWithoutCategoryContext, {
-      message: "Household",
-    });
-  assert.equal(completeIncomeCategoryMacro.type, "CLARIFICATION_REQUIRED");
-  const completeIncomeCategoryProposal =
-    await conversation.processAgentMessage(incomeWithoutCategoryContext, {
-      message: "Food",
-    });
-  assert.equal(completeIncomeCategoryProposal.type, "PROPOSAL_CREATED");
   const completeIncomeCategoryStoredProposal = proposals.find(
-    (row) => row.id === completeIncomeCategoryProposal.proposalId,
+    (row) => row.id === completeIncomeWithoutCategory.proposalId,
   );
   assert.equal(
     completeIncomeCategoryStoredProposal.payload.income.amount,
@@ -5276,8 +5335,9 @@ async function main() {
   assert.equal(completeIncomeCategoryConfirmation.type, "CONFIRMED");
   assert.equal(createdIncomes.length, beforeIncomeWithoutCategoryCount + 1);
   assert.equal(createdIncomes.at(-1).input.amount, 2750000);
+  assert.equal(createdIncomes.at(-1).input.categoryId, null);
   console.log(
-    "PASS complete CREATE_INCOME without category asks, proposes and confirms",
+    "PASS complete CREATE_INCOME without category proposes and confirms uncategorized",
   );
 
   mockInterpretation = {
@@ -5434,28 +5494,21 @@ async function main() {
       throw new Error("OpenAI must not receive persisted income details");
     },
   );
-  assert.equal(incomeDetailsCompleted.type, "CLARIFICATION_REQUIRED");
-  assert.deepEqual(incomeDetailsCompleted.missingFields, ["categoryId"]);
-  assert.equal(incomeDetailsDraft.status, "AWAITING_CATEGORY");
-  assert.equal(incomeDetailsDraft.operation_type, "CREATE_INCOME");
-  assert.equal(incomeDetailsDraft.payload.income.amount, 3000000);
-  assert.equal(
-    incomeDetailsDraft.payload.income.incomeDate,
-    new Date().toISOString().slice(0, 10),
-  );
-  assert.equal(incomeDetailsDraft.payload.income.description, "salario");
-  assert.equal(proposals.length, beforeIncomeDetailsProposals);
+  assert.equal(incomeDetailsCompleted.type, "PROPOSAL_CREATED");
+  assert.equal(incomeDetailsCompleted.payload.income.categoryId, null);
+  assert.equal(incomeDetailsCompleted.payload.income.categoryPath, null);
+  assert.equal(proposals.length, beforeIncomeDetailsProposals + 1);
   assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes);
-  const incomeDetailsProposal = await selectCategory(
-    incomeDetailsContext,
-    "Household",
-    "Food",
-  );
-  assert.equal(incomeDetailsProposal.type, "PROPOSAL_CREATED");
   const incomeDetailsStoredProposal = proposals.find(
-    (row) => row.id === incomeDetailsProposal.proposalId,
+    (row) => row.id === incomeDetailsCompleted.proposalId,
   );
   assert.equal(incomeDetailsStoredProposal.payload.income.amount, 3000000);
+  assert.equal(incomeDetailsStoredProposal.payload.income.categoryId, null);
+  assert.equal(
+    incomeDetailsStoredProposal.payload.income.incomeDate,
+    new Date().toISOString().slice(0, 10),
+  );
+  assert.equal(incomeDetailsStoredProposal.payload.income.description, "salario");
   assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes);
   const incomeDetailsConfirmation = await conversation.processAgentMessage(
     incomeDetailsContext,
@@ -5464,6 +5517,7 @@ async function main() {
   assert.equal(incomeDetailsConfirmation.type, "CONFIRMED");
   assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes + 1);
   assert.equal(createdIncomes.at(-1).input.amount, 3000000);
+  assert.equal(createdIncomes.at(-1).input.categoryId, null);
   const repeatedIncomeDetailsConfirmation = await conversation.processAgentMessage(
     incomeDetailsContext,
     { message: "sí" },
@@ -5476,7 +5530,7 @@ async function main() {
   );
   assert.equal(createdIncomes.length, beforeIncomeDetailsIncomes + 1);
   console.log(
-    "PASS incomplete CREATE_INCOME preserves amount through details, category and confirmation",
+    "PASS incomplete CREATE_INCOME preserves amount through details and confirms without a category",
   );
 
   mockInterpretation = {
@@ -5506,18 +5560,20 @@ async function main() {
       throw new Error("OpenAI must not receive multi-field draft details");
     },
   );
-  assert.deepEqual(multiFieldIncomeCompleted.missingFields, ["categoryId"]);
-  const multiFieldIncomeDraft = categoryDrafts.find(
-    (row) => row.conversation_key === multiFieldIncomeContext.conversationKey,
+  assert.equal(multiFieldIncomeCompleted.type, "PROPOSAL_CREATED");
+  assert.equal(multiFieldIncomeCompleted.payload.income.categoryId, null);
+  const multiFieldIncomeProposal = proposals.find(
+    (row) => row.id === multiFieldIncomeCompleted.proposalId,
   );
-  assert.equal(multiFieldIncomeDraft.payload.income.amount, 3000000);
+  assert.equal(multiFieldIncomeProposal.payload.income.amount, 3000000);
+  assert.equal(multiFieldIncomeProposal.payload.income.categoryId, null);
   assert.equal(
-    multiFieldIncomeDraft.payload.income.incomeDate,
+    multiFieldIncomeProposal.payload.income.incomeDate,
     new Date().toISOString().slice(0, 10),
   );
-  assert.equal(multiFieldIncomeDraft.payload.income.description, "salario");
+  assert.equal(multiFieldIncomeProposal.payload.income.description, "salario");
   await conversation.processAgentMessage(multiFieldIncomeContext, {
-    message: "cancelar",
+    message: "no",
   });
   console.log("PASS multi-field income details merge in one turn");
 
@@ -5600,9 +5656,6 @@ async function main() {
     { message: "Recibí un ingreso por concepto de Subsidio Sismo" },
   );
   assert.deepEqual(labeledDateInitial.missingFields, ["amount", "incomeDate"]);
-  const labeledDateDraft = categoryDrafts.find(
-    (row) => row.conversation_key === labeledConversationalDateContext.conversationKey,
-  );
   const labeledDateCompleted = await conversation.processAgentMessage(
     labeledConversationalDateContext,
     { message: "Monto: 357000\nFecha: 03/09/2026" },
@@ -5610,14 +5663,17 @@ async function main() {
       throw new Error("OpenAI must not receive labeled draft details");
     },
   );
-  assert.equal(labeledDateCompleted.type, "CLARIFICATION_REQUIRED");
-  assert.deepEqual(labeledDateCompleted.missingFields, ["categoryId"]);
-  assert.equal(labeledDateDraft.status, "AWAITING_CATEGORY");
-  assert.equal(labeledDateDraft.payload.income.amount, 357000);
-  assert.equal(labeledDateDraft.payload.income.incomeDate, "2026-09-03");
-  assert.equal(labeledDateDraft.payload.income.description, "Subsidio Sismo");
+  assert.equal(labeledDateCompleted.type, "PROPOSAL_CREATED");
+  assert.equal(labeledDateCompleted.payload.income.categoryId, null);
+  const labeledDateProposal = proposals.find(
+    (row) => row.id === labeledDateCompleted.proposalId,
+  );
+  assert.equal(labeledDateProposal.payload.income.amount, 357000);
+  assert.equal(labeledDateProposal.payload.income.categoryId, null);
+  assert.equal(labeledDateProposal.payload.income.incomeDate, "2026-09-03");
+  assert.equal(labeledDateProposal.payload.income.description, "Subsidio Sismo");
   await conversation.processAgentMessage(labeledConversationalDateContext, {
-    message: "cancelar",
+    message: "no",
   });
   console.log("PASS labeled DD/MM/YYYY details complete income draft date");
 
@@ -6896,10 +6952,10 @@ async function main() {
     expenseDate: "2026-09-15",
     paidBySelf: true,
     paidByMemberName: null,
-    categoryName: null,
+    categoryName: "Household",
   };
   await conversation.processAgentMessage(categoryDraftContext, {
-    message: "Pagué 1000 en Category Draft Market",
+    message: "Pagué 1000 en Category Draft Market, categoría Household",
   });
   const categoryDraftRow = categoryDrafts.find(
     (row) => row.conversation_key === categoryDraftContext.conversationKey,
@@ -7239,25 +7295,18 @@ async function main() {
       throw new Error("OpenAI must not receive persisted income details");
     },
   );
-  assert.deepEqual(splitIncome2ICompleted.missingFields, ["categoryId"]);
-  assert.equal(splitIncome2IDraft.status, "AWAITING_CATEGORY");
-  assert.equal(splitIncome2IDraft.payload.income.amount, 357000);
-  assert.equal(
-    splitIncome2IDraft.payload.income.incomeDate,
-    new Date().toISOString().slice(0, 10),
-  );
-  assert.equal(splitIncome2IDraft.payload.income.description, "subsidio");
-  const splitIncome2IProposal = await selectCategory(
-    splitIncome2IContext,
-    "Household",
-    "Food",
-  );
-  assert.equal(splitIncome2IProposal.type, "PROPOSAL_CREATED");
+  assert.equal(splitIncome2ICompleted.type, "PROPOSAL_CREATED");
+  assert.equal(splitIncome2ICompleted.payload.income.categoryId, null);
   const splitIncome2IStored = proposals.find(
-    (row) => row.id === splitIncome2IProposal.proposalId,
+    (row) => row.id === splitIncome2ICompleted.proposalId,
   );
   assert.equal(splitIncome2IStored.payload.income.amount, 357000);
   assert.equal(splitIncome2IStored.payload.income.description, "subsidio");
+  assert.equal(splitIncome2IStored.payload.income.categoryId, null);
+  assert.equal(
+    splitIncome2IStored.payload.income.incomeDate,
+    new Date().toISOString().slice(0, 10),
+  );
   const splitIncome2IBeforeWrites = createdIncomes.length;
   await conversation.processAgentMessage(splitIncome2IContext, {
     message: "no",
@@ -7292,18 +7341,20 @@ async function main() {
       throw new Error("OpenAI must not receive persisted income details");
     },
   );
-  assert.deepEqual(threeTurnIncome2IDescription.missingFields, ["categoryId"]);
-  const threeTurnIncome2IDraft = categoryDrafts.find(
-    (row) => row.conversation_key === threeTurnIncome2IContext.conversationKey,
+  assert.equal(threeTurnIncome2IDescription.type, "PROPOSAL_CREATED");
+  assert.equal(threeTurnIncome2IDescription.payload.income.categoryId, null);
+  const threeTurnIncome2IProposal = proposals.find(
+    (row) => row.id === threeTurnIncome2IDescription.proposalId,
   );
-  assert.equal(threeTurnIncome2IDraft.payload.income.amount, 357000);
+  assert.equal(threeTurnIncome2IProposal.payload.income.amount, 357000);
+  assert.equal(threeTurnIncome2IProposal.payload.income.categoryId, null);
   assert.equal(
-    threeTurnIncome2IDraft.payload.income.incomeDate,
+    threeTurnIncome2IProposal.payload.income.incomeDate,
     new Date().toISOString().slice(0, 10),
   );
-  assert.equal(threeTurnIncome2IDraft.payload.income.description, "Subsidio");
+  assert.equal(threeTurnIncome2IProposal.payload.income.description, "Subsidio");
   await conversation.processAgentMessage(threeTurnIncome2IContext, {
-    message: "cancelar",
+    message: "no",
   });
   record2ICase("income details merge across three turns without repeating amount");
 
@@ -7387,25 +7438,18 @@ async function main() {
       throw new Error("OpenAI must not receive persisted expense details");
     },
   );
-  assert.deepEqual(splitExpense2ICompleted.missingFields, ["categoryId"]);
-  assert.equal(splitExpense2IDraft.status, "AWAITING_CATEGORY");
-  assert.equal(splitExpense2IDraft.payload.expense.totalAmount, 45000);
-  assert.equal(
-    splitExpense2IDraft.payload.expense.expenseDate,
-    new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-  );
-  assert.equal(splitExpense2IDraft.payload.expense.description, "restaurante");
-  const splitExpense2IProposal = await selectCategory(
-    splitExpense2IContext,
-    "Household",
-    "Food",
-  );
-  assert.equal(splitExpense2IProposal.type, "PROPOSAL_CREATED");
+  assert.equal(splitExpense2ICompleted.type, "PROPOSAL_CREATED");
+  assert.equal(splitExpense2ICompleted.payload.expense.categoryId, null);
   const splitExpense2IStored = proposals.find(
-    (row) => row.id === splitExpense2IProposal.proposalId,
+    (row) => row.id === splitExpense2ICompleted.proposalId,
   );
   assert.equal(splitExpense2IStored.payload.expense.totalAmount, 45000);
   assert.equal(splitExpense2IStored.payload.expense.description, "restaurante");
+  assert.equal(splitExpense2IStored.payload.expense.categoryId, null);
+  assert.equal(
+    splitExpense2IStored.payload.expense.expenseDate,
+    new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+  );
   const splitExpense2IBeforeWrites = createdExpenses.length;
   await conversation.processAgentMessage(splitExpense2IContext, {
     message: "no",
@@ -7540,14 +7584,14 @@ async function main() {
     expenseDate: "2026-09-02",
     paidBySelf: true,
     paidByMemberName: null,
-    categoryName: null,
+    categoryName: "Household",
   };
   const wrongExpenseCategory2IContext = {
     ...contextA,
     conversationKey: "agent-2i-expense-wrong-category",
   };
   await conversation.processAgentMessage(wrongExpenseCategory2IContext, {
-    message: "Gasté 1000",
+    message: "Gasté 1000 en categoría Household",
   });
   const wrongExpenseCategory2IResult = await conversation.processAgentMessage(
     wrongExpenseCategory2IContext,
@@ -7555,6 +7599,13 @@ async function main() {
   );
   assert.equal(wrongExpenseCategory2IResult.type, "CLARIFICATION_REQUIRED");
   assert.doesNotMatch(wrongExpenseCategory2IResult.message, /Salario/);
+  assert.equal(
+    categoryDrafts.find(
+      (row) =>
+        row.conversation_key === wrongExpenseCategory2IContext.conversationKey,
+    ).payload.pendingCategoryCreation,
+    null,
+  );
   await conversation.processAgentMessage(wrongExpenseCategory2IContext, {
     message: "cancelar",
   });
@@ -7564,14 +7615,14 @@ async function main() {
     amount: "1000",
     incomeDate: "2026-09-02",
     description: "Ingreso",
-    categoryName: null,
+    categoryName: "Household",
   };
   const wrongIncomeCategory2IContext = {
     ...contextA,
     conversationKey: "agent-2i-income-wrong-category",
   };
   await conversation.processAgentMessage(wrongIncomeCategory2IContext, {
-    message: "Recibí 1000",
+    message: "Recibí 1000 en categoría Household",
   });
   const wrongIncomeCategory2IResult = await conversation.processAgentMessage(
     wrongIncomeCategory2IContext,
@@ -7579,6 +7630,13 @@ async function main() {
   );
   assert.equal(wrongIncomeCategory2IResult.type, "CLARIFICATION_REQUIRED");
   assert.doesNotMatch(wrongIncomeCategory2IResult.message, /Restaurantes/);
+  assert.equal(
+    categoryDrafts.find(
+      (row) =>
+        row.conversation_key === wrongIncomeCategory2IContext.conversationKey,
+    ).payload.pendingCategoryCreation,
+    null,
+  );
   await conversation.processAgentMessage(wrongIncomeCategory2IContext, {
     message: "cancelar",
   });
@@ -7592,7 +7650,7 @@ async function main() {
     expenseDate: "2026-09-02",
     paidBySelf: true,
     paidByMemberName: null,
-    categoryName: null,
+    categoryName: "Household",
   };
   const idempotent2IContext = {
     ...contextA,
@@ -7601,7 +7659,7 @@ async function main() {
   const idempotent2IStartProposals = proposals.length;
   const idempotent2IStartExpenses = createdExpenses.length;
   await conversation.processAgentMessage(idempotent2IContext, {
-    message: "Gasté 50000",
+    message: "Gasté 50000 en categoría Household",
   });
   const idempotent2IDraft = categoryDrafts.find(
     (row) => row.conversation_key === idempotent2IContext.conversationKey,
@@ -8171,18 +8229,10 @@ async function main() {
   const operationChoice = await conversation.processAgentMessage(operationCausalContext, {
     message: "gasto",
   });
-  assert.equal(operationChoice.type, "CLARIFICATION_REQUIRED");
-  const operationMacro = await conversation.processAgentMessage(operationCausalContext, {
-    message: "Household",
-  });
-  assert.equal(operationMacro.type, "CLARIFICATION_REQUIRED");
-  const operationProposal = await conversation.processAgentMessage(
-    operationCausalContext,
-    { message: "Food" },
-  );
-  assert.equal(operationProposal.type, "PROPOSAL_CREATED");
+  assert.equal(operationChoice.type, "PROPOSAL_CREATED");
+  assert.equal(operationChoice.payload.expense.categoryId, null);
   const operationStored = proposals.find(
-    (row) => row.id === operationProposal.proposalId,
+    (row) => row.id === operationChoice.proposalId,
   );
   assert.equal(operationStored.payload.draftId, operationCausalDraft.id);
   await conversation.processAgentMessage(operationCausalContext, {
@@ -8286,7 +8336,7 @@ async function main() {
     amount: "300000",
     incomeDate: "2026-08-12",
     description: "Income causal",
-    categoryName: null,
+    categoryName: "Household",
   };
   const incomeCausalContext = {
     ...contextA,
@@ -8294,7 +8344,7 @@ async function main() {
   };
   const incomeCausalCategoryClarification = await conversation.processAgentMessage(
     incomeCausalContext,
-    { message: "Recibí 300000" },
+    { message: "Recibí 300000 en categoría Household" },
   );
   assert.equal(incomeCausalCategoryClarification.type, "CLARIFICATION_REQUIRED");
   const incomeCausalDraft = categoryDrafts.find(
@@ -8363,7 +8413,7 @@ async function main() {
     expenseDate: "2026-09-22",
     paidBySelf: true,
     paidByMemberName: null,
-    categoryName: null,
+    categoryName: "Household",
   };
   const foreignGuardContext = {
     ...contextA,
@@ -8383,7 +8433,7 @@ async function main() {
   proposals.push(foreignGuardProposal);
   const foreignGuardResult = await conversation.processAgentMessage(
     foreignGuardCurrentContext,
-    { message: "Registra 12000" },
+    { message: "Registra 12000 en categoría Household" },
   );
   assert.equal(foreignGuardResult.type, "CLARIFICATION_REQUIRED");
   const foreignGuardDraft = categoryDrafts.find(
@@ -9058,6 +9108,57 @@ async function main() {
   console.log("PASS generic direct split is deterministic without interpreter fallback");
 
   mockInterpretation = {
+    kind: "CREATE_EXPENSE",
+    merchant: "Mercado sin categoría",
+    description: "Compra compartida",
+    totalAmount: "20000",
+    expenseDate: "2026-08-12",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+    splitRequested: true,
+    splitInstructions: null,
+  };
+  const uncategorizedSplitContext = {
+    ...contextA,
+    conversationKey: "agent-uncategorized-split",
+  };
+  const uncategorizedSplitWrites = createdExpenses.length;
+  const uncategorizedSplitInitial = await conversation.processAgentMessage(
+    uncategorizedSplitContext,
+    { message: "Gasté 20000 en una compra compartida y quiero repartirla" },
+  );
+  assert.equal(uncategorizedSplitInitial.type, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(uncategorizedSplitInitial.missingFields, ["splits"]);
+  const uncategorizedSplitProposal = await conversation.processAgentMessage(
+    uncategorizedSplitContext,
+    { message: "50% yo y 50% Alejandra" },
+    async () => {
+      throw new Error("OpenAI must not receive persisted split details");
+    },
+  );
+  assert.equal(uncategorizedSplitProposal.type, "PROPOSAL_CREATED");
+  assert.equal(uncategorizedSplitProposal.payload.expense.categoryId, null);
+  assert.equal(uncategorizedSplitProposal.payload.expense.categoryPath, null);
+  const uncategorizedSplitStored = proposals.find(
+    (row) => row.id === uncategorizedSplitProposal.proposalId,
+  );
+  assert.equal(uncategorizedSplitStored.payload.expense.categoryId, null);
+  assert.deepEqual(uncategorizedSplitStored.payload.expense.splits, [
+    { householdMemberId: memberA, percentage: 50 },
+    { householdMemberId: memberB, percentage: 50 },
+  ]);
+  assert.equal(createdExpenses.length, uncategorizedSplitWrites);
+  const uncategorizedSplitConfirmation = await conversation.processAgentMessage(
+    uncategorizedSplitContext,
+    { message: "sí" },
+  );
+  assert.equal(uncategorizedSplitConfirmation.type, "CONFIRMED");
+  assert.equal(createdExpenses.length, uncategorizedSplitWrites + 1);
+  assert.equal(createdExpenses.at(-1).input.categoryId, null);
+  console.log("PASS uncategorized split proposal preserves explicit confirmation");
+
+  mockInterpretation = {
     kind: "AMBIGUOUS_MOVEMENT",
     amount: "120000",
     date: "2026-08-12",
@@ -9080,40 +9181,26 @@ async function main() {
     { message: "gasto" },
   );
   assert.equal(multiTurnExpense.type, "CLARIFICATION_REQUIRED");
-  const multiTurnCategory = await selectCategory(
-    multiTurnSplitContext,
-    "Household",
-    "Food",
+  assert.deepEqual(multiTurnExpense.missingFields, ["splits"]);
+  const multiTurnSplitDraft = categoryDrafts.find(
+    (row) => row.conversation_key === multiTurnSplitContext.conversationKey,
   );
-  assert.equal(multiTurnCategory.type, "CLARIFICATION_REQUIRED");
-  mockInterpretation = {
-    kind: "CREATE_EXPENSE",
-    merchant: "Mercado",
-    description: "Reparto multi-turno",
-    totalAmount: "120000",
-    expenseDate: "2026-08-12",
-    paidBySelf: true,
-    paidByMemberName: null,
-    categoryName: "Food",
-    splitRequested: true,
-    splitInstructions: [
-      { participant: "SELF", name: null, percentage: "70", equalShare: false },
-      { participant: "NAME", name: "Alejandra", percentage: "30", equalShare: false },
-    ],
-  };
+  assert.equal(multiTurnSplitDraft.status, "AWAITING_DETAILS");
+  assert.equal(multiTurnSplitDraft.payload.categoryName, null);
   const callsBeforeDeterministicReply = interpreterCalls;
   const multiTurnProposal = await conversation.processAgentMessage(
     multiTurnSplitContext,
     { message: "70% yo y 30% Alejandra" },
   );
   assert.equal(multiTurnProposal.type, "PROPOSAL_CREATED");
+  assert.equal(multiTurnProposal.payload.expense.categoryId, null);
   const multiTurnStored = proposals.find((row) => row.id === multiTurnProposal.proposalId);
   assert.deepEqual(multiTurnStored.payload.expense.splits, [
     { householdMemberId: memberA, percentage: 70 },
     { householdMemberId: memberB, percentage: 30 },
   ]);
   assert.equal(interpreterCalls, callsBeforeDeterministicReply);
-  console.log("PASS multi-turn direct split survives operation and category drafts");
+  console.log("PASS multi-turn direct split survives operation and details drafts without category");
 
   mockInterpretation = {
     kind: "CREATE_EXPENSE",

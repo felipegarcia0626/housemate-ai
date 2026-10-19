@@ -825,19 +825,21 @@ Si llega otra intención de escritura antes de resolver la propuesta vigente, no
 
 La confirmación o rechazo se vinculará además al `PendingProposal.id` presentado. Una respuesta tardía sobre una propuesta `REJECTED` será idempotente y no ejecutará ninguna tool de escritura; una respuesta de rechazo sobre una propuesta `COMPLETED` devolverá un resultado no disponible sin modificarla. Una propuesta inexistente, de otro contexto o de una operación no soportada devolverá `PROPOSAL_NOT_AVAILABLE`; el agente no ejecutará ninguna tool de escritura.
 
-Cuando un `CREATE_EXPENSE` o `CREATE_INCOME` conversacional no incluya
-categoría, el Agent consulta `getCategoriesTool()` y persiste un
-`AgentCategoryDraft` con estado `AWAITING_CATEGORY`. Si falta una MICRO pero
-existe una MACRO activa compatible, el draft conserva `pendingCategoryCreation`
-con el nombre solicitado, el `movement_type` y el `parent_macro_id`; una
-confirmación positiva crea o reutiliza esa MICRO y limpia el bloque antes de
-continuar. La `PendingProposal` financiera solo se crea después de esa
-confirmación y requiere una segunda confirmación para persistir el movimiento.
-El draft se recupera por hogar, actor, `conversationKey` y source; una
-selección válida se resuelve contra el catálogo real y una cancelación de la
-creación vuelve a mostrar las categorías existentes sin insertar. Este estado
-específico del Agent no amplía `PendingProposal` ni introduce memoria en
-proceso.
+Cuando un `CREATE_EXPENSE` o `CREATE_INCOME` conversacional no incluya una
+categoría, el Agent no consulta la taxonomía ni infiere una macro o micro: crea
+una propuesta financiera cuyo `categoryId` es `null`; la respuesta del Agent
+también muestra `categoryPath=null`. El movimiento sigue requiriendo
+confirmación explícita y la categoría ausente no se convierte en una categoría
+macro. Si el usuario indica una categoría, el Agent la resuelve contra el
+catálogo activo y compatible con `movement_type`; una selección inválida o
+ambigua, incluida una macro sin micro específica, conserva el flujo de
+aclaración `AWAITING_CATEGORY` y nunca asigna una micro por defecto. La relación
+de una micro con su macro procede del `parent_id` persistido en la taxonomía. La
+creación explícita de una categoría nueva mantiene su flujo separado: el draft
+conserva `pendingCategoryCreation` con el nombre solicitado, `movement_type` y
+`parent_macro_id`, y requiere confirmación antes de crear o reutilizar la MICRO.
+Este estado específico del Agent no amplía `PendingProposal` ni introduce
+memoria en proceso.
 
 # 22. Ejemplo completo: gasto simple
 

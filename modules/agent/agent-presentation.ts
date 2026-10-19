@@ -54,3 +54,13 @@ export function formatCopCents(cents: bigint): string {
 export function formatCopMoney(value: number): string {
   return formatCopCents(copMoneyToCents(value));
 }
+
+/** Renders a proposal category only when its state or label is explicit. */
+export function proposalCategoryLine(
+  categoryId: string | null | undefined,
+  categoryLabel?: string | null,
+): string | null {
+  if (categoryId === null) return "Categoría: Sin categoría";
+  const label = categoryLabel?.trim();
+  return label ? `Categoría: ${label}` : null;
+}

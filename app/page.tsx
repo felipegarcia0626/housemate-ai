@@ -23,6 +23,7 @@ import {
   copMoneyToCents,
   formatCopCents,
   formatCopMoney,
+  proposalCategoryLine,
 } from "@/modules/agent/agent-presentation";
 
 type Section = "dashboard" | "expenses" | "incomes" | "balance" | "agent";
@@ -2242,7 +2243,11 @@ function HomePageContent() {
         ? categories.find((category) => category.id === expense.categoryId)
             ?.name
         : undefined;
-      if (categoryName) lines.push(`Categoría: ${categoryName}`);
+      const categoryLine = proposalCategoryLine(
+        expense?.categoryId,
+        categoryName,
+      );
+      if (categoryLine) lines.push(categoryLine);
       const payerName = expense?.paidByMemberId
         ? members.find((member) => member.id === expense.paidByMemberId)
             ?.displayName
@@ -2259,7 +2264,11 @@ function HomePageContent() {
       const categoryName = income?.categoryId
         ? categories.find((category) => category.id === income.categoryId)?.name
         : undefined;
-      if (categoryName) lines.push(`Categoría: ${categoryName}`);
+      const categoryLine = proposalCategoryLine(
+        income?.categoryId,
+        categoryName,
+      );
+      if (categoryLine) lines.push(categoryLine);
       const memberName = income?.memberId
         ? members.find((member) => member.id === income.memberId)?.displayName
         : undefined;
@@ -2306,7 +2315,11 @@ function HomePageContent() {
               (category) => category.id === expense.categoryId,
             )?.path
           : undefined);
-      if (categoryName) lines.push(`📂 Categoría: ${categoryName}`);
+      const categoryLine = proposalCategoryLine(
+        expense?.categoryId,
+        categoryName,
+      );
+      if (categoryLine) lines.push(`📂 ${categoryLine}`);
     } else {
       const income = proposal as NonNullable<AgentResult["payload"]>["income"];
       if (typeof income?.amount === "number")
@@ -2320,7 +2333,11 @@ function HomePageContent() {
         (income?.categoryId
           ? incomeCategoryLabel(income.categoryId)
           : undefined);
-      if (categoryName) lines.push(`📂 Categoría: ${categoryName}`);
+      const categoryLine = proposalCategoryLine(
+        income?.categoryId,
+        categoryName,
+      );
+      if (categoryLine) lines.push(`📂 ${categoryLine}`);
       const memberName = income?.memberId
         ? memberNames[income.memberId]
         : undefined;
