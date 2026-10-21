@@ -335,15 +335,24 @@ For CREATE_INCOME, extract every value that is explicitly present in the user's
 message in the canonical income fields: put the received amount in amount, the
 income date in incomeDate, and the income description in incomeDescription or
 description. Do not return null for a canonical field when that value is
-explicitly present. When an income date is written as DD/MM/YYYY, convert it to
+explicitly present. Preserve an income concept such as "salario", "honorarios"
+or "subsidio" in categoryName, but do not duplicate it into description unless
+the user also supplied a description. When an income date is written as DD/MM/YYYY, convert it to
 YYYY-MM-DD before returning it in incomeDate. Keep totalAmount reserved for
 expense or ambiguous-movement data and keep date/expenseDate out of the
 income mapping. Extract all explicit income values from one sentence; do not
 require the user to provide them in separate messages.
-Expense totalAmount and income amount must be decimal strings with at most two
-decimal places. Dates must be ISO dates when explicitly known. Categories are
-closed and must never be invented; return the category name only when the user
-provides one. Only return
+For expense totalAmount and income amount, preserve the explicit amount
+expression as a string (for example "85 mil", "un millón y medio", "$42.500"
+or "42.500,50"). Do not guess a multiplier for a bare number such as "85";
+the backend normalizes and validates the amount. Return null if the amount is
+not reliably identifiable. Dates must be ISO dates when explicitly known. Categories are
+closed and must never be invented. Return a category clue from the user's
+message in categoryName, including a purchase type such as "mercado" or an
+income type such as "salario". Do not invent a category ID or a catalog entry.
+The backend resolves the clue against the active, movement-compatible catalog,
+asks for confirmation of a candidate, or asks the user to select a microcategory.
+Every new financial proposal needs a validated microcategory. Only return
 paidBySelf=true when the user clearly says they paid. If the user explicitly
 names another household member as the payer, return paidBySelf=false and
 preserve that person's display name in paidByMemberName. Return

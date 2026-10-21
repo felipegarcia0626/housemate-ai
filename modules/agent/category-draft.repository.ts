@@ -98,6 +98,7 @@ function isOperationPayload(value: unknown): boolean {
   const allowed = new Set([
     "amount",
     "date",
+    "dateProvided",
     "merchant",
     "description",
     "paidBySelf",
@@ -110,6 +111,7 @@ function isOperationPayload(value: unknown): boolean {
   return (
     isNullableString(value.amount) &&
     isNullableString(value.date) &&
+    (!("dateProvided" in value) || typeof value.dateProvided === "boolean") &&
     isNullableString(value.merchant) &&
     isNullableString(value.description) &&
     (value.paidBySelf === null || typeof value.paidBySelf === "boolean") &&
@@ -232,6 +234,7 @@ function isCategoryPayload(value: unknown, operationType: AgentCategoryDraftOper
     "actorMemberId",
     "source",
     "selectedMacroId",
+    "suggestedCategoryId",
     "pendingCategoryCreation",
     "expense",
     "income",
@@ -241,6 +244,8 @@ function isCategoryPayload(value: unknown, operationType: AgentCategoryDraftOper
     ("actorMemberId" in value && !isString(value.actorMemberId)) ||
     ("source" in value && !isSource(value.source)) ||
     ("selectedMacroId" in value && !isNullableString(value.selectedMacroId)) ||
+    ("suggestedCategoryId" in value &&
+      !isNullableString(value.suggestedCategoryId)) ||
     ("pendingCategoryCreation" in value &&
       value.pendingCategoryCreation !== null &&
       !isPendingCategoryCreation(value.pendingCategoryCreation))

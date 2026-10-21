@@ -471,6 +471,14 @@ async function runHarness() {
           },
         };
       }
+      if (agentMode === "category-candidate-clarification") {
+        return {
+          type: "CLARIFICATION_REQUIRED",
+          missingFields: ["categoryId"],
+          message: '¿Lo clasifico como Alimentación → Supermercado? Responde "sí" para aceptar o "no" para elegir otra categoría.',
+          options: [{ id: "category-market", name: "Alimentación → Supermercado" }],
+        };
+      }
       if (agentMode === "proposal-uncategorized-expense") {
         return {
           type: "PROPOSAL_CREATED",
@@ -479,7 +487,7 @@ async function runHarness() {
           operationType: "CREATE_EXPENSE",
           payload: {
             expense: {
-              totalAmount: 25000,
+              totalAmount: 85000,
               expenseDate: "2026-10-17",
               description: "Compra general",
               categoryId: null,
@@ -496,7 +504,7 @@ async function runHarness() {
           operationType: "CREATE_INCOME",
           payload: {
             income: {
-              amount: 90000,
+              amount: 1500000,
               incomeDate: "2026-10-17",
               description: "Pago general",
               categoryId: null,
@@ -934,18 +942,34 @@ async function runHarness() {
   assert.equal(sentMessages.length, 1);
   console.log("PASS duplicate event does not invoke Agent or send again");
 
+  agentMode = "category-candidate-clarification";
+  const candidateResponse = await route.POST(
+    signedRequest(rawBody(incomingPayload(
+      "event-category-candidate-clarification",
+      "Gasté 85 mil en mercado",
+    ))),
+  );
+  assert.equal(candidateResponse.status, 200);
+  const candidateVisibleText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+  assert.match(candidateVisibleText, /Alimentación → Supermercado/);
+  assert.match(candidateVisibleText, /"sí" para aceptar o "no" para elegir otra categoría/);
+  assert.doesNotMatch(candidateVisibleText, /Sí, confirmar|Operación confirmada/);
+  console.log("PASS WhatsApp renders candidate clarification without a confirmable proposal");
+
   const uncategorizedProposalScenarios = [
     {
       mode: "proposal-uncategorized-expense",
       eventId: "event-proposal-uncategorized-expense",
-      text: "Registra un gasto general de 25000",
+      text: "Gasté 85 mil en una compra general",
       expected: /Categoría: Sin categoría/,
+      expectedAmount: /\$ 85\.000/,
     },
     {
       mode: "proposal-uncategorized-income",
       eventId: "event-proposal-uncategorized-income",
-      text: "Registra un ingreso general de 90000",
+      text: "Recibí un millón y medio de salario",
       expected: /Categoría: Sin categoría/,
+      expectedAmount: /\$ 1\.500\.000/,
     },
     {
       mode: "proposal-updated-uncategorized-expense",
@@ -972,6 +996,7 @@ async function runHarness() {
     assert.equal(response.status, 200);
     const visibleText = JSON.parse(sentMessages.at(-1).init.body).text.body;
     assert.match(visibleText, scenario.expected);
+    if (scenario.expectedAmount) assert.match(visibleText, scenario.expectedAmount);
     assert.equal(
       (visibleText.match(/Categoría: Sin categoría/g) ?? []).length,
       1,

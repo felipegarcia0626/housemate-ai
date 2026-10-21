@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { listHierarchicalCategories } from "@/modules/categories/category.service";
+import type { CategoryMovementType } from "@/modules/categories/category.types";
 import {
   getExpenseById,
   prepareExpenseCreation,
@@ -88,6 +90,34 @@ function validateProposalShape(input: ExpenseProposalInput): void {
   }
 }
 
+async function requireActiveMicroCategory(
+  categoryId: string | null | undefined,
+  movementType: CategoryMovementType,
+): Promise<void> {
+  if (!categoryId || typeof categoryId !== "string") {
+    throw new AgentDomainError("VALIDATION_ERROR", "A microcategory is required.");
+  }
+  let categories;
+  try {
+    categories = await listHierarchicalCategories(movementType);
+  } catch {
+    throw new AgentDomainError(
+      "PERSISTENCE_ERROR",
+      "The category catalog could not be checked.",
+    );
+  }
+  if (!categories.some((category) =>
+    category.id === categoryId &&
+    category.level === "MICRO" &&
+    category.isActive === true &&
+    category.movementType === movementType &&
+    category.parentId === category.macroId &&
+    Boolean(category.macroName),
+  )) {
+    throw new AgentDomainError("VALIDATION_ERROR", "The microcategory is unavailable.");
+  }
+}
+
 function persistenceError(): AgentDomainError {
   return new AgentDomainError(
     "PERSISTENCE_ERROR",
@@ -137,6 +167,7 @@ export async function createExpenseProposal(
 ): Promise<ExpenseProposalResult> {
   validateContext(context);
   validateProposalShape(input);
+  await requireActiveMicroCategory(input.categoryId, "EXPENSE");
 
   const payload: PendingExpenseProposalPayload = {
     actorMemberId: context.actorMemberId,
@@ -166,6 +197,7 @@ export async function createIncomeProposal(
   draftId?: string,
 ): Promise<IncomeProposalResult> {
   validateContext(context);
+  await requireActiveMicroCategory(input.categoryId, "INCOME");
   const payload: PendingIncomeProposalPayload = {
     actorMemberId: context.actorMemberId,
     source: context.source,
@@ -224,6 +256,9 @@ export async function confirmIncomeProposal(
 
   let persistenceInput: IncomeCreatePersistenceInput | null = null;
   if (proposal) {
+    if (proposal.status === "AWAITING_CONFIRMATION") {
+      await requireActiveMicroCategory(proposal.payload.income.categoryId, "INCOME");
+    }
     try {
       persistenceInput = await prepareIncomeCreation(
         {
@@ -462,6 +497,9 @@ export async function confirmExpenseProposal(
 
   let persistenceInput: ExpenseCreatePersistenceInput | null = null;
   if (proposal) {
+    if (proposal.status === "AWAITING_CONFIRMATION") {
+      await requireActiveMicroCategory(proposal.payload.expense.categoryId, "EXPENSE");
+    }
     const input: ExpenseCreateInput = {
       ...proposal.payload.expense,
       createdBy: context.actorMemberId,

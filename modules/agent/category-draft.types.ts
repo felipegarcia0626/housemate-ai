@@ -20,6 +20,7 @@ export interface PendingCategoryCreation {
 export interface AgentOperationDraftPayload {
   amount: string | null;
   date: string | null;
+  dateProvided?: boolean;
   merchant: string | null;
   description: string | null;
   paidBySelf: boolean | null;
@@ -33,6 +34,7 @@ export interface CategoryDraftExpensePayload {
   actorMemberId?: string;
   source?: ExpenseSource;
   selectedMacroId?: string | null;
+  suggestedCategoryId?: string | null;
   pendingCategoryCreation?: PendingCategoryCreation | null;
   expense: Omit<ExpenseProposalInput, "splits"> & {
     splits?: ExpenseProposalInput["splits"];
@@ -45,6 +47,7 @@ export interface CategoryDraftIncomePayload {
   actorMemberId?: string;
   source?: ExpenseSource;
   selectedMacroId?: string | null;
+  suggestedCategoryId?: string | null;
   pendingCategoryCreation?: PendingCategoryCreation | null;
   income: Omit<IncomeCreateInput, "memberId"> & { memberId?: string };
 }

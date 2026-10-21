@@ -122,7 +122,7 @@ description?
 totalAmount
 expenseDate
 paidByMemberId
-categoryId?
+categoryId (microcategoría activa obligatoria para nuevas propuestas)
 receiptId?
 items?
 splits
@@ -174,10 +174,10 @@ memberId
 amount
 incomeDate
 description
-categoryId?
+categoryId (microcategoría activa obligatoria para nuevas propuestas)
 ```
 
-`created_by` identifica al integrante que registra el ingreso y se obtiene del contexto controlado; no forma parte del input de la tool. `memberId` identifica al integrante al que pertenece el ingreso y corresponde a `Income.member_id`. Pueden ser diferentes, pero ambos deberán pertenecer al mismo hogar. `categoryId` será opcional.
+`created_by` identifica al integrante que registra el ingreso y se obtiene del contexto controlado; no forma parte del input de la tool. `memberId` identifica al integrante al que pertenece el ingreso y corresponde a `Income.member_id`. Pueden ser diferentes, pero ambos deberán pertenecer al mismo hogar. Una nueva propuesta requiere `categoryId` de una microcategoría activa de ingresos.
 
 La herramienta utilizará el servicio del backend. El agente no persistirá directamente ni accederá a PostgreSQL.
 
@@ -326,7 +326,7 @@ description?: string
 totalAmount: number
 expenseDate: string (YYYY-MM-DD)
 paidByMemberId: string
-categoryId?: string | null
+categoryId: string (microcategoría activa obligatoria para nuevas propuestas)
 receiptId?: string
 items?: Array<{ name: string; quantity?: number; unitPrice?: number; totalPrice: number; categoryId?: string | null }>
 splits: Array<{ memberId: string; percentage: number }>
@@ -825,21 +825,39 @@ Si llega otra intención de escritura antes de resolver la propuesta vigente, no
 
 La confirmación o rechazo se vinculará además al `PendingProposal.id` presentado. Una respuesta tardía sobre una propuesta `REJECTED` será idempotente y no ejecutará ninguna tool de escritura; una respuesta de rechazo sobre una propuesta `COMPLETED` devolverá un resultado no disponible sin modificarla. Una propuesta inexistente, de otro contexto o de una operación no soportada devolverá `PROPOSAL_NOT_AVAILABLE`; el agente no ejecutará ninguna tool de escritura.
 
-Cuando un `CREATE_EXPENSE` o `CREATE_INCOME` conversacional no incluya una
-categoría, el Agent no consulta la taxonomía ni infiere una macro o micro: crea
-una propuesta financiera cuyo `categoryId` es `null`; la respuesta del Agent
-también muestra `categoryPath=null`. El movimiento sigue requiriendo
-confirmación explícita y la categoría ausente no se convierte en una categoría
-macro. Si el usuario indica una categoría, el Agent la resuelve contra el
-catálogo activo y compatible con `movement_type`; una selección inválida o
-ambigua, incluida una macro sin micro específica, conserva el flujo de
-aclaración `AWAITING_CATEGORY` y nunca asigna una micro por defecto. La relación
+Cada nueva propuesta `CREATE_EXPENSE` o `CREATE_INCOME` requiere una
+microcategoría activa del tipo de movimiento correcto, vinculada a una macro
+activa. El backend consulta la taxonomía vigente: una micro inequívoca nombrada
+por el usuario puede resolverse directamente; una coincidencia inferida se
+presenta como candidata y requiere aceptación antes de crear la propuesta.
+Un rechazo de la candidata abre la selección manual sin rechazar el movimiento.
+Una macro sin micro específica o una categoría no identificada conserva el
+movimiento en `AWAITING_CATEGORY` y ofrece selección por macro y luego micro.
+No se asignan microcategorías por defecto ni se aceptan IDs del modelo. La
+selección se revalida contra el catálogo antes de crear o confirmar la propuesta.
+Los movimientos históricos sin categoría permanecen sin cambios. La relación
 de una micro con su macro procede del `parent_id` persistido en la taxonomía. La
 creación explícita de una categoría nueva mantiene su flujo separado: el draft
 conserva `pendingCategoryCreation` con el nombre solicitado, `movement_type` y
 `parent_macro_id`, y requiere confirmación antes de crear o reutilizar la MICRO.
 Este estado específico del Agent no amplía `PendingProposal` ni introduce
 memoria en proceso.
+
+Los importes explícitos de `CREATE_EXPENSE` y `CREATE_INCOME` se conservan como
+texto extraído por el modelo y se normalizan en el backend antes de preparar
+una propuesta. Se admiten enteros y decimales de hasta dos cifras, punto de
+miles con coma decimal (`42.500,50`), `mil` y `millón`/`millones` con un
+coeficiente explícito, y `un millón y medio`. Un número desnudo como `85`
+conserva el valor 85; separadores ambiguos, expresiones incompletas, importes
+no positivos o fuera de `NUMERIC(14,2)` requieren aclaración. La normalización
+usa centavos enteros y no cambia la confirmación explícita del movimiento.
+
+Cuando un nuevo ingreso no incluye una fecha, el flujo usa la fecha de
+ejecución como valor predeterminado, incluso al continuar un borrador anterior
+que no tenga fecha. Una fecha explícita inválida sigue requiriendo aclaración.
+La pista de categoría y la descripción permanecen separadas: identificar una
+macro como `Salario` permite restringir después las microcategorías, pero no
+inventa la descripción cuando el usuario no la indicó.
 
 # 22. Ejemplo completo: gasto simple
 
