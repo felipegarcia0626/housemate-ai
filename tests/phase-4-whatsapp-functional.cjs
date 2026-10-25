@@ -40,7 +40,7 @@ const operations = [];
 const agentCalls = [];
 const sentMessages = [];
 let agentMode = "proposal";
-let nextSendFails = false;
+let outboundMode = "success";
 let operationStep = 0;
 let updatedProposalAmount = 70000;
 let updatedProposalDate = "2026-08-16";
@@ -52,6 +52,24 @@ const proposalCategories = [
   { id: "category-food", name: "Alimentación" },
   { id: "category-salary", name: "Salario" },
 ];
+
+async function captureInfo(action) {
+  const entries = [];
+  const originalInfo = console.info;
+  console.info = (...args) => entries.push(args);
+  try {
+    const result = await action();
+    return { result, entries };
+  } finally {
+    console.info = originalInfo;
+  }
+}
+
+function outboundDiagnostics(entries) {
+  return entries
+    .filter(([label]) => label === "[whatsapp-outbound-diagnostic]")
+    .map(([, diagnostic]) => diagnostic);
+}
 
 class FakeQuery {
   constructor(table) {
@@ -120,7 +138,12 @@ class FakeQuery {
     if (this.table === "tb_household_members") {
       return {
         data: [
-          { id: memberId, household_id: householdId, display_name: "Felipe", status: "ACTIVE" },
+          {
+            id: memberId,
+            household_id: householdId,
+            display_name: "Felipe",
+            status: "ACTIVE",
+          },
           {
             id: secondMemberId,
             household_id: householdId,
@@ -261,11 +284,31 @@ async function runHarness() {
 
   global.fetch = async (url, init) => {
     sentMessages.push({ url, init });
-    if (nextSendFails) {
-      nextSendFails = false;
-      return { ok: false };
+    if (outboundMode === "network") {
+      throw new Error("private-network-message");
     }
-    return { ok: true };
+    if (outboundMode === "http-numeric-code") {
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({
+          error: { code: 131047, message: "private-response-body" },
+        }),
+      };
+    }
+    if (outboundMode === "http-invalid-code") {
+      return {
+        ok: false,
+        status: 403,
+        json: async () => ({
+          error: {
+            code: "not-a-numeric-code",
+            message: "private-response-body",
+          },
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
   };
 
   const fakeConversation = {
@@ -475,8 +518,11 @@ async function runHarness() {
         return {
           type: "CLARIFICATION_REQUIRED",
           missingFields: ["categoryId"],
-          message: '¿Lo clasifico como Alimentación → Supermercado? Responde "sí" para aceptar o "no" para elegir otra categoría.',
-          options: [{ id: "category-market", name: "Alimentación → Supermercado" }],
+          message:
+            '¿Lo clasifico como Alimentación → Supermercado? Responde "sí" para aceptar o "no" para elegir otra categoría.',
+          options: [
+            { id: "category-market", name: "Alimentación → Supermercado" },
+          ],
         };
       }
       if (agentMode === "proposal-uncategorized-expense") {
@@ -696,7 +742,10 @@ async function runHarness() {
           };
         }
         if (operationStep === 2) {
-          assert.equal(input.message, "fecha: 2026-08-16; descripción: trabajo");
+          assert.equal(
+            input.message,
+            "fecha: 2026-08-16; descripción: trabajo",
+          );
           operationStep = 3;
           return {
             type: "CLARIFICATION_REQUIRED",
@@ -925,7 +974,8 @@ async function runHarness() {
   assert.match(firstProposalText, /16\/08\/2026/);
   assert.match(firstProposalText, /Alimentación → Mercado/);
   assert.equal(
-    (firstProposalText.match(/Categoría: Alimentación → Mercado/g) ?? []).length,
+    (firstProposalText.match(/Categoría: Alimentación → Mercado/g) ?? [])
+      .length,
     1,
   );
   assert.doesNotMatch(firstProposalText, /Descripción:/);
@@ -944,17 +994,30 @@ async function runHarness() {
 
   agentMode = "category-candidate-clarification";
   const candidateResponse = await route.POST(
-    signedRequest(rawBody(incomingPayload(
-      "event-category-candidate-clarification",
-      "Gasté 85 mil en mercado",
-    ))),
+    signedRequest(
+      rawBody(
+        incomingPayload(
+          "event-category-candidate-clarification",
+          "Gasté 85 mil en mercado",
+        ),
+      ),
+    ),
   );
   assert.equal(candidateResponse.status, 200);
-  const candidateVisibleText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+  const candidateVisibleText = JSON.parse(sentMessages.at(-1).init.body).text
+    .body;
   assert.match(candidateVisibleText, /Alimentación → Supermercado/);
-  assert.match(candidateVisibleText, /"sí" para aceptar o "no" para elegir otra categoría/);
-  assert.doesNotMatch(candidateVisibleText, /Sí, confirmar|Operación confirmada/);
-  console.log("PASS WhatsApp renders candidate clarification without a confirmable proposal");
+  assert.match(
+    candidateVisibleText,
+    /"sí" para aceptar o "no" para elegir otra categoría/,
+  );
+  assert.doesNotMatch(
+    candidateVisibleText,
+    /Sí, confirmar|Operación confirmada/,
+  );
+  console.log(
+    "PASS WhatsApp renders candidate clarification without a confirmable proposal",
+  );
 
   const uncategorizedProposalScenarios = [
     {
@@ -989,14 +1052,13 @@ async function runHarness() {
   for (const scenario of uncategorizedProposalScenarios) {
     agentMode = scenario.mode;
     const response = await route.POST(
-      signedRequest(
-        rawBody(incomingPayload(scenario.eventId, scenario.text)),
-      ),
+      signedRequest(rawBody(incomingPayload(scenario.eventId, scenario.text))),
     );
     assert.equal(response.status, 200);
     const visibleText = JSON.parse(sentMessages.at(-1).init.body).text.body;
     assert.match(visibleText, scenario.expected);
-    if (scenario.expectedAmount) assert.match(visibleText, scenario.expectedAmount);
+    if (scenario.expectedAmount)
+      assert.match(visibleText, scenario.expectedAmount);
     assert.equal(
       (visibleText.match(/Categoría: Sin categoría/g) ?? []).length,
       1,
@@ -1021,23 +1083,18 @@ async function runHarness() {
     ),
   );
   assert.equal(missingCategoryResponse.status, 200);
-  const missingCategoryText = JSON.parse(
-    sentMessages.at(-1).init.body,
-  ).text.body;
+  const missingCategoryText = JSON.parse(sentMessages.at(-1).init.body).text
+    .body;
   assert.doesNotMatch(missingCategoryText, /Categoría: Sin categoría/);
 
   agentMode = "clarification";
   const clarificationResponse = await route.POST(
     signedRequest(
-      rawBody(
-        incomingPayload("event-proposal-clarification", "¿Cuánto fue?"),
-      ),
+      rawBody(incomingPayload("event-proposal-clarification", "¿Cuánto fue?")),
     ),
   );
   assert.equal(clarificationResponse.status, 200);
-  const clarificationText = JSON.parse(
-    sentMessages.at(-1).init.body,
-  ).text.body;
+  const clarificationText = JSON.parse(sentMessages.at(-1).init.body).text.body;
   assert.equal(clarificationText, "¿Cuál fue el monto del gasto?");
   assert.doesNotMatch(clarificationText, /Categoría: Sin categoría/);
   assert.equal(
@@ -1191,7 +1248,8 @@ async function runHarness() {
       ),
     );
     assert.equal(combinedSummary.status, 200);
-    const combinedSummaryText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+    const combinedSummaryText = JSON.parse(sentMessages.at(-1).init.body).text
+      .body;
     assert.equal(
       combinedSummaryText,
       [
@@ -1205,7 +1263,9 @@ async function runHarness() {
   } finally {
     agentMode = previousCombinedSummaryMode;
   }
-  console.log("PASS WhatsApp combined financial and category summary preserves Agent output");
+  console.log(
+    "PASS WhatsApp combined financial and category summary preserves Agent output",
+  );
 
   const previousAgentMode = agentMode;
   agentMode = "read-category-summary";
@@ -1221,9 +1281,8 @@ async function runHarness() {
       ),
     );
     assert.equal(categorySummary.status, 200);
-    const categorySummaryText = JSON.parse(
-      sentMessages.at(-1).init.body,
-    ).text.body;
+    const categorySummaryText = JSON.parse(sentMessages.at(-1).init.body).text
+      .body;
     assert.equal(
       categorySummaryText,
       [
@@ -1241,7 +1300,9 @@ async function runHarness() {
   } finally {
     agentMode = previousAgentMode;
   }
-  console.log("PASS WhatsApp category summary renders the Agent summary message");
+  console.log(
+    "PASS WhatsApp category summary renders the Agent summary message",
+  );
 
   agentMode = "clarification";
   const clarification = await route.POST(
@@ -1264,11 +1325,14 @@ async function runHarness() {
   updatedProposalPayerId = secondMemberId;
   const updatedExpense = await route.POST(
     signedRequest(
-      rawBody(incomingPayload("event-proposal-updated-expense", "Fueron 70000")),
+      rawBody(
+        incomingPayload("event-proposal-updated-expense", "Fueron 70000"),
+      ),
     ),
   );
   assert.equal(updatedExpense.status, 200);
-  const updatedExpenseText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+  const updatedExpenseText = JSON.parse(sentMessages.at(-1).init.body).text
+    .body;
   assert.match(updatedExpenseText, /Propuesta actualizada/);
   assert.match(updatedExpenseText, /Monto: \$ 70\.000/);
   assert.match(updatedExpenseText, /16\/08\/2026/);
@@ -1280,23 +1344,28 @@ async function runHarness() {
   assert.match(updatedExpenseText, /50\.00%/);
   assert.match(updatedExpenseText, /Responde "sí" para confirmar/);
   assert.doesNotMatch(updatedExpenseText, /42000000-/);
-  console.log("PASS WhatsApp corrected Expense proposal renders updated fields");
+  console.log(
+    "PASS WhatsApp corrected Expense proposal renders updated fields",
+  );
 
   updatedProposalAmount = 80000;
   updatedProposalDescription = "Mercado actualizado";
   const secondUpdatedExpense = await route.POST(
     signedRequest(
-      rawBody(incomingPayload("event-proposal-updated-expense-2", "Fueron 80000")),
+      rawBody(
+        incomingPayload("event-proposal-updated-expense-2", "Fueron 80000"),
+      ),
     ),
   );
   assert.equal(secondUpdatedExpense.status, 200);
-  const secondUpdatedExpenseText = JSON.parse(
-    sentMessages.at(-1).init.body,
-  ).text.body;
+  const secondUpdatedExpenseText = JSON.parse(sentMessages.at(-1).init.body)
+    .text.body;
   assert.match(secondUpdatedExpenseText, /80[.,]000/);
   assert.doesNotMatch(secondUpdatedExpenseText, /70[.,]000/);
   assert.match(secondUpdatedExpenseText, /Mercado actualizado/);
-  console.log("PASS consecutive WhatsApp corrections render the latest proposal");
+  console.log(
+    "PASS consecutive WhatsApp corrections render the latest proposal",
+  );
 
   agentMode = "proposal-updated-income";
   updatedProposalAmount = 3000000;
@@ -1305,7 +1374,9 @@ async function runHarness() {
   updatedProposalCategoryId = "category-salary";
   const updatedIncome = await route.POST(
     signedRequest(
-      rawBody(incomingPayload("event-proposal-updated-income", "Fueron 3000000")),
+      rawBody(
+        incomingPayload("event-proposal-updated-income", "Fueron 3000000"),
+      ),
     ),
   );
   assert.equal(updatedIncome.status, 200);
@@ -1376,13 +1447,102 @@ async function runHarness() {
   console.log("PASS Agent errors are sanitized");
 
   agentMode = "proposal";
-  nextSendFails = true;
-  const providerError = await route.POST(
-    signedRequest(rawBody(incomingPayload("event-provider-error", "Hola"))),
+  const savedAccessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  delete process.env.WHATSAPP_ACCESS_TOKEN;
+  const missingConfiguration = await captureInfo(() =>
+    route.POST(
+      signedRequest(
+        rawBody(
+          incomingPayload("event-provider-missing-configuration", "Hola"),
+        ),
+      ),
+    ),
   );
-  assert.equal(providerError.status, 500);
-  assert.ok(!(await providerError.text()).includes("access-token"));
-  console.log("PASS WhatsApp provider errors are sanitized");
+  process.env.WHATSAPP_ACCESS_TOKEN = savedAccessToken;
+  assert.equal(missingConfiguration.result.status, 500);
+  assert.deepEqual(outboundDiagnostics(missingConfiguration.entries), [
+    { stage: "whatsapp_outbound", failureKind: "missing_configuration" },
+  ]);
+
+  outboundMode = "network";
+  const networkFailure = await captureInfo(() =>
+    route.POST(
+      signedRequest(rawBody(incomingPayload("event-provider-network", "Hola"))),
+    ),
+  );
+  assert.equal(networkFailure.result.status, 500);
+  assert.deepEqual(outboundDiagnostics(networkFailure.entries), [
+    { stage: "whatsapp_outbound", failureKind: "network" },
+  ]);
+
+  outboundMode = "http-numeric-code";
+  const numericHttpFailure = await captureInfo(() =>
+    route.POST(
+      signedRequest(
+        rawBody(incomingPayload("event-provider-http-numeric", "Hola")),
+      ),
+    ),
+  );
+  assert.equal(numericHttpFailure.result.status, 500);
+  assert.deepEqual(outboundDiagnostics(numericHttpFailure.entries), [
+    {
+      stage: "whatsapp_outbound",
+      failureKind: "http",
+      httpStatus: 400,
+      providerCode: 131047,
+    },
+  ]);
+
+  outboundMode = "http-invalid-code";
+  const invalidHttpFailure = await captureInfo(() =>
+    route.POST(
+      signedRequest(
+        rawBody(incomingPayload("event-provider-http-invalid", "Hola")),
+      ),
+    ),
+  );
+  assert.equal(invalidHttpFailure.result.status, 500);
+  assert.deepEqual(outboundDiagnostics(invalidHttpFailure.entries), [
+    { stage: "whatsapp_outbound", failureKind: "http", httpStatus: 403 },
+  ]);
+
+  outboundMode = "success";
+  const successfulOutbound = await captureInfo(() =>
+    route.POST(
+      signedRequest(rawBody(incomingPayload("event-provider-success", "Hola"))),
+    ),
+  );
+  assert.equal(successfulOutbound.result.status, 200);
+  assert.deepEqual(outboundDiagnostics(successfulOutbound.entries), []);
+
+  const providerDiagnosticText = JSON.stringify([
+    ...missingConfiguration.entries,
+    ...networkFailure.entries,
+    ...numericHttpFailure.entries,
+    ...invalidHttpFailure.entries,
+    ...successfulOutbound.entries,
+  ]);
+  for (const forbidden of [
+    savedAccessToken,
+    process.env.WHATSAPP_PHONE_NUMBER_ID,
+    sender,
+    "graph.facebook.com",
+    "private-network-message",
+    "private-response-body",
+  ]) {
+    assert.equal(providerDiagnosticText.includes(forbidden), false);
+  }
+  assert.doesNotMatch(
+    await networkFailure.result.text(),
+    /access-token|phone-1/,
+  );
+  assert.doesNotMatch(
+    await numericHttpFailure.result.text(),
+    /private-response-body/,
+  );
+  console.log(
+    "PASS WhatsApp outbound diagnostics classify failures without sensitive data",
+  );
 
   agentMode = "operation";
   operationStep = 0;
@@ -1398,7 +1558,8 @@ async function runHarness() {
     );
     assert.equal(response.status, 200);
     if (eventId === "event-operation-category") {
-      var operationProposalText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+      var operationProposalText = JSON.parse(sentMessages.at(-1).init.body).text
+        .body;
     }
   }
   const operationCalls = agentCalls.slice(-4);
@@ -1438,9 +1599,8 @@ async function runHarness() {
     );
     assert.equal(response.status, 200);
     if (text === "Salario")
-      incomeOperationProposalText = JSON.parse(
-        sentMessages.at(-1).init.body,
-      ).text.body;
+      incomeOperationProposalText = JSON.parse(sentMessages.at(-1).init.body)
+        .text.body;
   }
   const incomeOperationCalls = agentCalls.slice(-5);
   assert.deepEqual(
@@ -1501,13 +1661,20 @@ async function runHarness() {
   operationStep = 0;
   const categoryRejectStart = await route.POST(
     signedRequest(
-      rawBody(incomingPayload("event-category-create-reject-start", "Gasté 120000 en veterinaria")),
+      rawBody(
+        incomingPayload(
+          "event-category-create-reject-start",
+          "Gasté 120000 en veterinaria",
+        ),
+      ),
     ),
   );
   assert.equal(categoryRejectStart.status, 200);
   const categoryReject = await route.POST(
     signedRequest(
-      rawBody(incomingPayload("event-category-create-reject", "No, no la crees")),
+      rawBody(
+        incomingPayload("event-category-create-reject", "No, no la crees"),
+      ),
     ),
   );
   assert.equal(categoryReject.status, 200);
@@ -1515,7 +1682,9 @@ async function runHarness() {
     JSON.parse(sentMessages.at(-1).init.body).text.body,
     "Está bien. Elige una categoría existente:",
   );
-  console.log("PASS WhatsApp category creation rejection preserves selection flow");
+  console.log(
+    "PASS WhatsApp category creation rejection preserves selection flow",
+  );
 
   for (const source of [
     fs.readFileSync(routeModule, "utf8"),

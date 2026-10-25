@@ -11,6 +11,34 @@ interface RecordValue {
   [key: string]: unknown;
 }
 
+type WhatsAppOutboundFailureKind = "missing_configuration" | "network" | "http";
+
+function logWhatsAppOutboundFailure(
+  failureKind: WhatsAppOutboundFailureKind,
+  details: { httpStatus?: number; providerCode?: number } = {},
+): void {
+  console.info("[whatsapp-outbound-diagnostic]", {
+    stage: "whatsapp_outbound",
+    failureKind,
+    ...details,
+  });
+}
+
+async function readSafeProviderCode(
+  response: Response,
+): Promise<number | undefined> {
+  try {
+    const payload: unknown = await response.json();
+    if (!isRecord(payload) || !isRecord(payload.error)) return undefined;
+    const code = payload.error.code;
+    return typeof code === "number" && Number.isSafeInteger(code) && code >= 0
+      ? code
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface WhatsAppTextMessage {
   eventId: string;
   sender: string;
@@ -123,7 +151,10 @@ export async function sendWhatsAppText(
 ): Promise<void> {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  if (!accessToken || !phoneNumberId) throw new WhatsAppAdapterError();
+  if (!accessToken || !phoneNumberId) {
+    logWhatsAppOutboundFailure("missing_configuration");
+    throw new WhatsAppAdapterError();
+  }
 
   let response: Response;
   try {
@@ -144,8 +175,16 @@ export async function sendWhatsAppText(
       },
     );
   } catch {
+    logWhatsAppOutboundFailure("network");
     throw new WhatsAppAdapterError();
   }
 
-  if (!response.ok) throw new WhatsAppAdapterError();
+  if (!response.ok) {
+    const providerCode = await readSafeProviderCode(response);
+    logWhatsAppOutboundFailure("http", {
+      httpStatus: response.status,
+      ...(providerCode === undefined ? {} : { providerCode }),
+    });
+    throw new WhatsAppAdapterError();
+  }
 }

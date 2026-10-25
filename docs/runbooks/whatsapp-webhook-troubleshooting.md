@@ -113,12 +113,32 @@ Diagnóstico por punto de corte:
 | `payload_parsed recognized=false` | Parser/evento | Verificar `object`, `field`, `messages` y `phone_number_id` |
 | `CONTEXT_UNAVAILABLE` | Supabase/identidad/configuración | Verificar permisos de lectura y asociación `external_identifier` → usuario → household |
 | `processing_failed` | Agent, persistencia o outbound | Usar el código sanitizado del error |
+| `whatsapp_outbound` con `missing_configuration` | Configuración outbound | Comprobar únicamente la presencia y el ámbito de las variables obligatorias |
+| `whatsapp_outbound` con `network` | Transporte hacia Graph API | Comprobar conectividad sin registrar mensajes crudos de la excepción |
+| `whatsapp_outbound` con `http` | Graph API rechazó la solicitud | Usar solo `httpStatus` y el `providerCode` numérico sanitizado, cuando exista |
 | `response_sent status=200` con respuesta de error al usuario | Agent devolvió `ERROR` o `UNSUPPORTED` y WhatsApp outbound funcionó | Diagnosticar interpretación; no asumir fallo del webhook |
 
 Una respuesta HTTP `200` con el texto “No pude procesar la solicitud en este
 momento” significa que el webhook sí procesó el evento y envió una respuesta,
 pero el Agent devolvió `ERROR` con código `INTERPRETATION_ERROR`. No se debe
 interpretar como un fallo de HMAC ni como una escritura financiera.
+
+Los fallos outbound emiten un único registro estructurado desde el adaptador,
+donde todavía puede distinguirse la causa:
+
+```text
+[whatsapp-outbound-diagnostic] {
+  stage: "whatsapp_outbound",
+  failureKind: "missing_configuration" | "network" | "http",
+  httpStatus?: 400,
+  providerCode?: 131047
+}
+```
+
+`httpStatus` aparece solo cuando Graph API respondió y `providerCode` solo si
+`error.code` es un entero seguro no negativo. El diagnóstico no debe contener
+tokens, teléfonos, destinatarios, URLs completas, cuerpos de solicitud o
+respuesta, ni mensajes crudos de excepciones.
 
 ## 6. Diagnóstico de `CONTEXT_UNAVAILABLE`
 
