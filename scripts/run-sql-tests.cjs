@@ -145,7 +145,7 @@ async function main() {
 
     const bootstrapClient = postgres.getPgClient("housemate_test");
     await bootstrapClient.connect();
-    await bootstrapClient.query("CREATE ROLE service_role NOLOGIN");
+    await bootstrapClient.query("CREATE ROLE service_role NOLOGIN BYPASSRLS");
     // Supabase supplies this publication before migration 0037 in production.
     await bootstrapClient.query("CREATE PUBLICATION supabase_realtime");
     await bootstrapClient.end();
