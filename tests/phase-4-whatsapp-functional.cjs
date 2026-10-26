@@ -28,18 +28,41 @@ const agentServiceModule = path.join(
 );
 
 const householdId = "42000000-0000-4000-8000-000000000001";
+const secondHouseholdId = "42000000-0000-4000-8000-000000000002";
 const memberId = "42000000-0000-4000-8000-000000000011";
 const secondMemberId = "42000000-0000-4000-8000-000000000012";
+const secondHouseholdMemberId = "42000000-0000-4000-8000-000000000021";
 const sender = "573001234567";
 const unknownSender = "573009999999";
 const proposalId = "52000000-0000-4000-8000-000000000001";
 const appSecret = "whatsapp-app-secret";
 
 const processedEvents = new Set();
+const whatsappUserContext = {
+  selected_household_id: null,
+  selected_member_id: null,
+  menu_household_ids: null,
+  menu_phone_number_id: null,
+  menu_expires_at: null,
+  processing_lease_id: null,
+  processing_epoch: 0,
+  processing_expires_at: null,
+};
+let activeWhatsAppHouseholds = [
+  {
+    householdId,
+    householdName: "Casa principal",
+    memberId,
+  },
+];
+let fakeActiveAgentDraft = null;
+let fakePendingProposal = null;
 const operations = [];
 const agentCalls = [];
 const sentMessages = [];
 let agentMode = "proposal";
+let agentStarted;
+let agentGate = Promise.resolve();
 let outboundMode = "success";
 let operationStep = 0;
 let updatedProposalAmount = 70000;
@@ -128,6 +151,29 @@ class FakeQuery {
         error: null,
       };
     }
+    if (this.table === "tb_whatsapp_user_contexts") {
+      return { data: { ...whatsappUserContext }, error: null };
+    }
+    if (this.table === "tb_agent_category_drafts") {
+      return {
+        data:
+          fakeActiveAgentDraft &&
+          this.filters.every(
+            ({ column, value }) => fakeActiveAgentDraft[column] === value,
+          )
+            ? fakeActiveAgentDraft
+            : null,
+        error: null,
+      };
+    }
+    if (this.table === "tb_pending_proposals") {
+      return {
+        data: fakePendingProposal && this.filters.every(({ column, value }) =>
+          fakePendingProposal[column] === value,
+        ) ? fakePendingProposal : null,
+        error: null,
+      };
+    }
     throw new Error(`Unexpected maybeSingle table: ${this.table}`);
   }
 
@@ -136,6 +182,21 @@ class FakeQuery {
       return { data: proposalCategories, error: null };
     }
     if (this.table === "tb_household_members") {
+      const userFilter = this.filters.find(({ column }) => column === "user_id");
+      if (userFilter) {
+        return {
+          data: activeWhatsAppHouseholds.map((household) => ({
+            id: household.memberId,
+            household_id: household.householdId,
+            display_name: "Felipe",
+            status: "ACTIVE",
+            user_id: "user-1",
+          })).filter((row) =>
+            this.filters.every((filter) => row[filter.column] === filter.value),
+          ),
+          error: null,
+        };
+      }
       return {
         data: [
           {
@@ -156,6 +217,19 @@ class FakeQuery {
         error: null,
       };
     }
+    if (this.table === "tb_households") {
+      return {
+        data: activeWhatsAppHouseholds
+          .filter((household) => this.inFilters?.every(({ column, values }) =>
+            column !== "id" || values.includes(household.householdId),
+          ))
+          .map((household) => ({ id: household.householdId, name: household.householdName })),
+        error: null,
+      };
+    }
+    if (this.table === "tb_agent_category_drafts" || this.table === "tb_pending_proposals") {
+      return { data: [], error: null };
+    }
     if (this.table !== "tb_processed_whatsapp_events") {
       throw new Error(`Unexpected table: ${this.table}`);
     }
@@ -166,12 +240,126 @@ class FakeQuery {
     processedEvents.add(eventId);
     return { data: null, error: null };
   }
+
+  in(column, values) {
+    this.inFilters ??= [];
+    this.inFilters.push({ column, values });
+    return this;
+  }
 }
 
 const fakeClient = {
   from(table) {
     operations.push({ type: "from", table });
     return new FakeQuery(table);
+  },
+  async rpc(name, args) {
+    operations.push({ type: "rpc", name, args });
+    const leaseMatches = () =>
+      whatsappUserContext.processing_lease_id === args.p_lease_id &&
+      whatsappUserContext.processing_epoch === args.p_lease_epoch &&
+      Date.parse(whatsappUserContext.processing_expires_at ?? "") > Date.now();
+    const activeMembership = (householdId, memberId) =>
+      activeWhatsAppHouseholds.find((household) =>
+        household.householdId === householdId &&
+        household.memberId === memberId,
+      );
+    if (name === "fn_acquire_whatsapp_context_lease") {
+      if (Date.parse(whatsappUserContext.processing_expires_at ?? "") > Date.now()) {
+        return { data: { acquired: false, epoch: null }, error: null };
+      }
+      whatsappUserContext.processing_lease_id = args.p_lease_id;
+      whatsappUserContext.processing_epoch += 1;
+      whatsappUserContext.processing_expires_at = new Date(Date.now() + 120000).toISOString();
+      return { data: { acquired: true, epoch: whatsappUserContext.processing_epoch }, error: null };
+    }
+    if (name === "fn_renew_whatsapp_context_lease") {
+      if (!leaseMatches()) return { data: false, error: null };
+      whatsappUserContext.processing_expires_at = new Date(Date.now() + 120000).toISOString();
+      return { data: true, error: null };
+    }
+    if (name === "fn_assert_whatsapp_context_lease") {
+      return { data: leaseMatches(), error: null };
+    }
+    if (name === "fn_assert_whatsapp_active_context") {
+      return {
+        data: leaseMatches() &&
+          whatsappUserContext.selected_household_id === args.p_household_id &&
+          whatsappUserContext.selected_member_id === args.p_actor_member_id &&
+          Boolean(activeMembership(args.p_household_id, args.p_actor_member_id)),
+        error: null,
+      };
+    }
+    if (name === "fn_release_whatsapp_context_lease") {
+      if (whatsappUserContext.processing_lease_id === args.p_lease_id &&
+          whatsappUserContext.processing_epoch === args.p_lease_epoch) {
+        whatsappUserContext.processing_lease_id = null;
+        whatsappUserContext.processing_expires_at = null;
+        return { data: true, error: null };
+      }
+      return { data: false, error: null };
+    }
+    if (name === "fn_transition_whatsapp_household_context") {
+      if (!leaseMatches()) return { data: null, error: { code: "40001" } };
+      if (args.p_action === "SET_SELECTION") {
+        if (!activeMembership(args.p_household_id, args.p_member_id)) {
+          return { data: { status: "MEMBERSHIP_UNAVAILABLE" }, error: null };
+        }
+        whatsappUserContext.selected_household_id = args.p_household_id;
+        whatsappUserContext.selected_member_id = args.p_member_id;
+        whatsappUserContext.menu_household_ids = null;
+        whatsappUserContext.menu_phone_number_id = null;
+        whatsappUserContext.menu_expires_at = null;
+        return { data: { status: "SELECTED", household_id: args.p_household_id, member_id: args.p_member_id }, error: null };
+      }
+      if (args.p_action === "OPEN_MENU") {
+        whatsappUserContext.menu_household_ids = args.p_household_ids;
+        whatsappUserContext.menu_phone_number_id = args.p_phone_number_id;
+        whatsappUserContext.menu_expires_at = new Date(Date.now() + 1800000).toISOString();
+        return { data: { status: "MENU_OPENED" }, error: null };
+      }
+      if (args.p_action === "CHOOSE_OPTION") {
+        if (!whatsappUserContext.menu_household_ids ||
+            whatsappUserContext.menu_phone_number_id !== args.p_phone_number_id) {
+          return { data: { status: "NO_CURRENT_MENU" }, error: null };
+        }
+        if (Date.parse(whatsappUserContext.menu_expires_at) <= Date.now()) {
+          whatsappUserContext.menu_household_ids = null;
+          whatsappUserContext.menu_phone_number_id = null;
+          whatsappUserContext.menu_expires_at = null;
+          return { data: { status: "MENU_EXPIRED" }, error: null };
+        }
+        const chosenId = whatsappUserContext.menu_household_ids[args.p_option_number - 1];
+        const chosen = activeWhatsAppHouseholds.find((household) => household.householdId === chosenId);
+        if (!chosen) {
+          whatsappUserContext.menu_household_ids = null;
+          whatsappUserContext.menu_phone_number_id = null;
+          whatsappUserContext.menu_expires_at = null;
+          return { data: { status: "MEMBERSHIP_UNAVAILABLE" }, error: null };
+        }
+        whatsappUserContext.selected_household_id = chosen.householdId;
+        whatsappUserContext.selected_member_id = chosen.memberId;
+        whatsappUserContext.menu_household_ids = null;
+        whatsappUserContext.menu_phone_number_id = null;
+        whatsappUserContext.menu_expires_at = null;
+        return { data: { status: "SELECTED", household_id: chosen.householdId, member_id: chosen.memberId }, error: null };
+      }
+      if (args.p_action === "CANCEL_MENU") {
+        whatsappUserContext.menu_household_ids = null;
+        whatsappUserContext.menu_phone_number_id = null;
+        whatsappUserContext.menu_expires_at = null;
+        return { data: { status: "MENU_CANCELLED" }, error: null };
+      }
+      if (args.p_action === "CLEAR_SELECTION") {
+        whatsappUserContext.selected_household_id = null;
+        whatsappUserContext.selected_member_id = null;
+        whatsappUserContext.menu_household_ids = null;
+        whatsappUserContext.menu_phone_number_id = null;
+        whatsappUserContext.menu_expires_at = null;
+        return { data: { status: "SELECTION_CLEARED" }, error: null };
+      }
+    }
+    throw new Error(`Unexpected RPC: ${name}`);
   },
 };
 
@@ -220,7 +408,7 @@ function createLoader(overrides = new Map()) {
   return load;
 }
 
-function incomingPayload(id, text, from = sender) {
+function incomingPayload(id, text, from = sender, phoneNumberId = "phone-1") {
   return {
     object: "whatsapp_business_account",
     entry: [
@@ -229,7 +417,7 @@ function incomingPayload(id, text, from = sender) {
           {
             field: "messages",
             value: {
-              metadata: { phone_number_id: "phone-1" },
+              metadata: { phone_number_id: phoneNumberId },
               messages: [
                 {
                   id,
@@ -276,7 +464,7 @@ function unsignedRequest(body) {
 }
 
 async function runHarness() {
-  process.env.HOUSEMATE_MVP_HOUSEHOLD_ID = householdId;
+  delete process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
   process.env.WHATSAPP_VERIFY_TOKEN = "verify-token";
   process.env.WHATSAPP_APP_SECRET = appSecret;
   process.env.WHATSAPP_ACCESS_TOKEN = "access-token";
@@ -314,6 +502,10 @@ async function runHarness() {
   const fakeConversation = {
     async processAgentMessage(context, input) {
       agentCalls.push({ context, input });
+      if (agentMode === "delay") {
+        agentStarted?.();
+        await agentGate;
+      }
       if (agentMode === "error") throw new Error("internal agent details");
       if (agentMode === "confirmed") {
         return {
@@ -962,6 +1154,8 @@ async function runHarness() {
   assert.equal(agentCalls[0].context.householdId, householdId);
   assert.equal(agentCalls[0].context.actorMemberId, memberId);
   assert.equal(agentCalls[0].context.source, "WHATSAPP");
+  assert.equal(agentCalls[0].context.whatsappExecution.userId, "user-1");
+  assert.equal(agentCalls[0].context.whatsappExecution.epoch, 1);
   assert.equal(
     agentCalls[0].context.conversationKey,
     `whatsapp:phone-1:${sender}`,
@@ -1686,6 +1880,299 @@ async function runHarness() {
     "PASS WhatsApp category creation rejection preserves selection flow",
   );
 
+  agentMode = "proposal";
+  activeWhatsAppHouseholds = [
+    { householdId, householdName: "Casa principal", memberId },
+    {
+      householdId: secondHouseholdId,
+      householdName: "Casa compartida",
+      memberId: secondHouseholdMemberId,
+    },
+  ];
+  const callsBeforeHouseholdCommands = agentCalls.length;
+  const listHomes = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-list", "Ver hogares"))),
+  );
+  assert.equal(listHomes.status, 200);
+  const listHomesText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+  assert.match(listHomesText, /Casa principal/);
+  assert.match(listHomesText, /Casa compartida/);
+  assert.equal(whatsappUserContext.selected_household_id, householdId);
+  assert.equal(agentCalls.length, callsBeforeHouseholdCommands);
+  console.log("PASS WhatsApp Ver hogares lists active homes without changing selection");
+
+  const openHomeMenu = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-change", "Cambiar hogar"))),
+  );
+  assert.equal(openHomeMenu.status, 200);
+  const homeMenuText = JSON.parse(sentMessages.at(-1).init.body).text.body;
+  assert.match(homeMenuText, /1\. Casa principal/);
+  assert.match(homeMenuText, /2\. Casa compartida/);
+  assert.equal(whatsappUserContext.menu_phone_number_id, "phone-1");
+  assert.equal(agentCalls.length, callsBeforeHouseholdCommands);
+  console.log("PASS WhatsApp change command opens an owned, expiring numeric menu");
+
+  const wrongPhoneOption = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-households-wrong-phone", "2", sender, "phone-2")),
+    ),
+  );
+  assert.equal(wrongPhoneOption.status, 200);
+  assert.equal(whatsappUserContext.selected_household_id, householdId);
+  assert.equal(whatsappUserContext.menu_phone_number_id, "phone-1");
+  assert.equal(agentCalls.length, callsBeforeHouseholdCommands);
+  console.log("PASS WhatsApp numeric selection cannot consume another phone context's menu");
+
+  const chooseSecondHome = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-choose-second", "2"))),
+  );
+  assert.equal(chooseSecondHome.status, 200);
+  assert.equal(whatsappUserContext.selected_household_id, secondHouseholdId);
+  assert.equal(whatsappUserContext.selected_member_id, secondHouseholdMemberId);
+  assert.equal(whatsappUserContext.menu_household_ids, null);
+  assert.match(JSON.parse(sentMessages.at(-1).init.body).text.body, /Casa compartida/);
+  assert.equal(agentCalls.length, callsBeforeHouseholdCommands);
+  console.log("PASS WhatsApp accepts a valid menu option and persists the selected household");
+
+  const numericWithoutMenu = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-number-no-menu", "1"))),
+  );
+  assert.equal(numericWithoutMenu.status, 200);
+  assert.equal(agentCalls.length, callsBeforeHouseholdCommands);
+  assert.match(
+    JSON.parse(sentMessages.at(-1).init.body).text.body,
+    /No hay una selección pendiente/,
+  );
+  console.log("PASS WhatsApp numeric text without a live menu never reaches the Agent");
+
+  const selectedHouseQuery = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-persisted-query", "Pagué 100"))),
+  );
+  assert.equal(selectedHouseQuery.status, 200);
+  assert.equal(agentCalls.at(-1).context.householdId, secondHouseholdId);
+  assert.equal(agentCalls.at(-1).context.actorMemberId, secondHouseholdMemberId);
+  console.log("PASS WhatsApp reuses the persisted household on later messages");
+
+  const reopenForExpiry = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-expiry-open", "Cambiar hogar"))),
+  );
+  assert.equal(reopenForExpiry.status, 200);
+  whatsappUserContext.menu_expires_at = new Date(Date.now() - 1000).toISOString();
+  const expiredOption = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-expired-option", "1"))),
+  );
+  assert.equal(expiredOption.status, 200);
+  assert.equal(whatsappUserContext.selected_household_id, secondHouseholdId);
+  assert.ok(whatsappUserContext.menu_expires_at);
+  assert.equal(agentCalls.length, callsBeforeHouseholdCommands + 1);
+  console.log("PASS WhatsApp expired numeric option is rejected and a fresh menu is issued");
+
+  const cancelMenu = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-cancel-menu", "Cancelar"))),
+  );
+  assert.equal(cancelMenu.status, 200);
+  assert.equal(whatsappUserContext.selected_household_id, secondHouseholdId);
+  assert.equal(whatsappUserContext.menu_household_ids, null);
+  assert.match(JSON.parse(sentMessages.at(-1).init.body).text.body, /El hogar activo no cambió/);
+  console.log("PASS WhatsApp Cancelar clears only the menu and preserves the selected household");
+
+  const openBeforeRevocation = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-revoke-open", "Cambiar hogar"))),
+  );
+  assert.equal(openBeforeRevocation.status, 200);
+  activeWhatsAppHouseholds = [activeWhatsAppHouseholds[1]];
+  const chooseRevokedHome = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-revoked-choice", "1"))),
+  );
+  assert.equal(chooseRevokedHome.status, 200);
+  assert.equal(whatsappUserContext.selected_household_id, secondHouseholdId);
+  assert.equal(whatsappUserContext.selected_member_id, secondHouseholdMemberId);
+  assert.equal(agentCalls.length, callsBeforeHouseholdCommands + 1);
+  console.log("PASS WhatsApp revalidates membership before consuming a menu choice");
+
+  activeWhatsAppHouseholds = [];
+  const noActiveHome = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-zero-active", "Muéstrame los gastos"))),
+  );
+  assert.equal(noActiveHome.status, 200);
+  assert.equal(agentCalls.length, callsBeforeHouseholdCommands + 1);
+  assert.equal(whatsappUserContext.selected_household_id, null);
+  assert.match(JSON.parse(sentMessages.at(-1).init.body).text.body, /No tienes hogares activos/);
+  console.log("PASS WhatsApp with zero active memberships does not invoke Agent tools");
+
+  activeWhatsAppHouseholds = [
+    { householdId: secondHouseholdId, householdName: "Casa compartida", memberId: secondHouseholdMemberId },
+  ];
+  const soleHomeQuery = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-one-active", "Muéstrame los gastos"))),
+  );
+  assert.equal(soleHomeQuery.status, 200);
+  assert.equal(whatsappUserContext.selected_household_id, secondHouseholdId);
+  assert.equal(agentCalls.at(-1).context.householdId, secondHouseholdId);
+  console.log("PASS WhatsApp automatically persists its only active membership");
+
+  activeWhatsAppHouseholds = [
+    { householdId, householdName: "Casa principal", memberId },
+    { householdId: secondHouseholdId, householdName: "Casa compartida", memberId: secondHouseholdMemberId },
+  ];
+  whatsappUserContext.selected_household_id = null;
+  whatsappUserContext.selected_member_id = null;
+  const callsBeforeMultiHomePrompt = agentCalls.length;
+  const multiHomeWithoutSelection = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-multiple-no-selection", "Muéstrame los gastos"))),
+  );
+  assert.equal(multiHomeWithoutSelection.status, 200);
+  assert.equal(agentCalls.length, callsBeforeMultiHomePrompt);
+  assert.deepEqual(whatsappUserContext.menu_household_ids, [householdId, secondHouseholdId]);
+  assert.match(JSON.parse(sentMessages.at(-1).init.body).text.body, /Selecciona un hogar activo/);
+  console.log("PASS WhatsApp re-prompts for selection before processing without a valid saved home");
+
+  const chooseHomeBeforeDraftChecks = await route.POST(
+    signedRequest(
+      rawBody(
+        incomingPayload("event-households-choose-before-draft-checks", "2"),
+      ),
+    ),
+  );
+  assert.equal(chooseHomeBeforeDraftChecks.status, 200);
+  assert.equal(whatsappUserContext.selected_household_id, secondHouseholdId);
+  assert.equal(whatsappUserContext.selected_member_id, secondHouseholdMemberId);
+  assert.equal(whatsappUserContext.menu_household_ids, null);
+  assert.equal(agentCalls.length, callsBeforeMultiHomePrompt);
+  console.log("PASS WhatsApp selects a valid current household before pending-work checks");
+
+  const detailsDraftPayload = {
+    amount: "100",
+    date: "2026-10-21",
+    dateProvided: true,
+    merchant: null,
+    description: "Compra",
+    paidBySelf: true,
+    paidByMemberName: null,
+    categoryName: null,
+  };
+  const draftStates = [
+    ["AWAITING_OPERATION", null, detailsDraftPayload],
+    ["AWAITING_DETAILS", "CREATE_EXPENSE", detailsDraftPayload],
+    ["AWAITING_CATEGORY", "CREATE_EXPENSE", {
+      actorMemberId: secondHouseholdMemberId,
+      source: "WHATSAPP",
+      expense: {
+        paidByMemberId: secondHouseholdMemberId,
+        totalAmount: 100,
+        expenseDate: "2026-10-21",
+        categoryId: "category-food",
+        splits: [],
+      },
+    }],
+  ];
+  for (const [status, operationType, payload] of draftStates) {
+    fakeActiveAgentDraft = {
+      id: `draft-${status}`,
+      household_id: secondHouseholdId,
+      actor_member_id: secondHouseholdMemberId,
+      conversation_key: `whatsapp:phone-1:${sender}`,
+      source: "WHATSAPP",
+      operation_type: operationType,
+      payload,
+      status,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const beforeBlockedChange = agentCalls.length;
+    const blockedChange = await route.POST(
+      signedRequest(rawBody(incomingPayload(`event-households-block-${status}`, "Cambiar hogar"))),
+    );
+    assert.equal(blockedChange.status, 200);
+    assert.equal(agentCalls.length, beforeBlockedChange);
+    assert.equal(whatsappUserContext.selected_household_id, secondHouseholdId);
+    assert.match(JSON.parse(sentMessages.at(-1).init.body).text.body, /borrador o propuesta pendiente/);
+  }
+  fakeActiveAgentDraft = null;
+  console.log("PASS WhatsApp household switching is blocked by every live AgentDraft state");
+
+  fakeActiveAgentDraft = {
+    id: "draft-other-household",
+    household_id: householdId,
+    actor_member_id: memberId,
+    conversation_key: `whatsapp:phone-1:${sender}`,
+    source: "WHATSAPP",
+    operation_type: "CREATE_EXPENSE",
+    payload: { actorMemberId: memberId, source: "WHATSAPP", expense: {} },
+    status: "AWAITING_DETAILS",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  const beforeOtherHouseholdDraft = agentCalls.length;
+  const switchWithOtherHouseholdDraft = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-other-draft", "Cambiar hogar"))),
+  );
+  assert.equal(switchWithOtherHouseholdDraft.status, 200);
+  assert.equal(agentCalls.length, beforeOtherHouseholdDraft);
+  assert.equal(whatsappUserContext.menu_household_ids?.length, 2);
+  assert.match(JSON.parse(sentMessages.at(-1).init.body).text.body, /Selecciona un hogar activo/);
+  const cancelAfterOtherHouseholdDraft = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-other-draft-cancel", "Cancelar"))),
+  );
+  assert.equal(cancelAfterOtherHouseholdDraft.status, 200);
+  fakeActiveAgentDraft = null;
+  console.log("PASS a draft scoped to another household does not block the current household switch");
+
+  for (const status of ["AWAITING_CONFIRMATION", "COMPLETED", "REJECTED"]) {
+    fakePendingProposal = {
+      id: proposalId,
+      household_id: secondHouseholdId,
+      conversation_key: `whatsapp:phone-1:${sender}`,
+      actor_member_id: secondHouseholdMemberId,
+      source: "WHATSAPP",
+      operation_type: "CREATE_EXPENSE",
+      payload: { actorMemberId: secondHouseholdMemberId, source: "WHATSAPP", expense: {} },
+      status,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      resolved_at: status === "AWAITING_CONFIRMATION" ? null : new Date().toISOString(),
+      expense_id: null,
+      income_id: null,
+    };
+    const beforeProposalChange = agentCalls.length;
+    const proposalChange = await route.POST(
+      signedRequest(rawBody(incomingPayload(`event-households-proposal-${status}`, "Cambiar hogar"))),
+    );
+    assert.equal(proposalChange.status, 200);
+    if (status === "AWAITING_CONFIRMATION") {
+      assert.equal(agentCalls.length, beforeProposalChange);
+      assert.match(JSON.parse(sentMessages.at(-1).init.body).text.body, /borrador o propuesta pendiente/);
+    } else {
+      assert.equal(whatsappUserContext.menu_household_ids?.length, 2);
+    }
+    whatsappUserContext.menu_household_ids = null;
+    whatsappUserContext.menu_phone_number_id = null;
+    whatsappUserContext.menu_expires_at = null;
+  }
+  fakePendingProposal = null;
+  console.log("PASS only AWAITING_CONFIRMATION proposals block household switching");
+
+  let signalAgentStarted;
+  const startedAgent = new Promise((resolve) => { signalAgentStarted = resolve; });
+  let releaseAgent;
+  agentGate = new Promise((resolve) => { releaseAgent = resolve; });
+  agentMode = "delay";
+  const callsBeforeConcurrentEvents = agentCalls.length;
+  const firstConcurrent = route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-concurrent-1", "Pagué 100"))),
+  );
+  await startedAgent;
+  const secondConcurrent = await route.POST(
+    signedRequest(rawBody(incomingPayload("event-households-concurrent-2", "Pagué 200"))),
+  );
+  assert.equal(secondConcurrent.status, 500);
+  assert.equal(agentCalls.length, callsBeforeConcurrentEvents + 1);
+  releaseAgent();
+  assert.equal((await firstConcurrent).status, 200);
+  agentGate = Promise.resolve();
+  agentMode = "proposal";
+  console.log("PASS a per-user lease fences distinct concurrent WhatsApp events");
+
   for (const source of [
     fs.readFileSync(routeModule, "utf8"),
     fs.readFileSync(
@@ -1697,6 +2184,10 @@ async function runHarness() {
       "utf8",
     ),
   ]) {
+    assert.ok(
+      !source.includes("HOUSEMATE_MVP_HOUSEHOLD_ID"),
+      "WhatsApp must not use the configured MVP household",
+    );
     for (const forbidden of [
       "getSupabaseAdminClient",
       "database/client",

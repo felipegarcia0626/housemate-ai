@@ -305,6 +305,14 @@ La herramienta devolverá `receiptId`, `storagePath` y `processingStatus`. El re
 
 Las tools utilizarán camelCase, igual que la API. `householdId`, `createdBy`, identidad del usuario y `conversationKey` siempre provendrán del contexto controlado del backend y nunca serán parámetros que el LLM pueda definir libremente. Los errores se devolverán como `{ code, message }`; como mínimo podrán informar `VALIDATION_ERROR`, `NOT_FOUND`, `HOUSEHOLD_MISMATCH`, `PENDING_PROPOSAL_EXISTS` y `PROPOSAL_NOT_AVAILABLE` cuando correspondan.
 
+Para WhatsApp, el backend resuelve el usuario desde el remitente, obtiene sus
+memberships `ACTIVE` y carga la selección persistente del canal antes de llamar
+a `processAgentMessage()`. Una selección ausente o inválida con varios hogares
+activos se resuelve primero mediante el menú del canal; no se ejecutan tools
+mientras espera la elección. `householdId` y `actorMemberId` son contexto
+controlado y nunca son parámetros que el modelo pueda elegir. Web conserva su
+flujo de contexto existente.
+
 En esta sección, `ExpenseResponse`, `ExpenseListItem`, `IncomeResponse`, `CategoryResponse` y `SharingRuleResponse` representan exactamente las estructuras camelCase documentadas para sus endpoints en `api_contract.md`; las tools no crearán variantes adicionales de esos DTO.
 
 ### create_expense

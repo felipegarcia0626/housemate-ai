@@ -408,18 +408,19 @@ Responsable de la lógica específica del canal WhatsApp.
 
 La implementación mínima de texto utiliza `whatsapp.service.ts` para resolver
 el contexto controlado, deduplicar eventos y delegar en el Conversation Service.
-La resolución de identidad usa el hogar configurado y el `external_identifier`
-del usuario; una configuración real de ese vínculo sigue siendo necesaria en
-cada entorno.
+`whatsapp.repository.ts` resuelve el usuario por `external_identifier` y reserva
+eventos; `whatsapp-household.repository.ts` persiste la selección y el menú del
+usuario, y administra el lease de procesamiento. La selección se limita a
+memberships `ACTIVE` y es independiente del contexto de Web.
 
 Ejemplo:
 
 modules/
 └── whatsapp/
-├── whatsapp.service.ts
-├── processed-whatsapp-event.repository.ts
-├── whatsapp.types.ts
-└── whatsapp.mapper.ts
+    ├── whatsapp.service.ts
+    ├── whatsapp.repository.ts
+    ├── whatsapp-household.repository.ts
+    └── whatsapp.types.ts
 
 Responsabilidades:
 

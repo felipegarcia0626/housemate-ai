@@ -20,6 +20,13 @@ export interface AgentContext {
   actorMemberId: string;
   conversationKey: string;
   source: ExpenseSource;
+  /** Trusted channel execution guard. Never included in model input or schemas. */
+  whatsappExecution?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    assertCurrent: () => Promise<void>;
+  };
 }
 
 export interface ConversationIdentity {

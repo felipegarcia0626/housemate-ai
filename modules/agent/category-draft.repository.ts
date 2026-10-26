@@ -313,6 +313,7 @@ export async function createCategoryDraft(input: {
   source: ExpenseSource;
   operationType: AgentCategoryDraftOperation;
   payload: AgentCategoryDraftPayload;
+  whatsappLease?: { userId: string; leaseId: string; epoch: number };
 }): Promise<AgentCategoryDraft> {
   const draft = await createAgentDraft({
     ...input,
@@ -331,7 +332,31 @@ export async function createAgentDraft(input: {
   operationType: AgentCategoryDraftOperation | null;
   status: AgentCategoryDraftStatus;
   payload: AgentCategoryDraftPayload;
+  whatsappLease?: { userId: string; leaseId: string; epoch: number };
 }): Promise<AgentDraft> {
+  if (input.source === "WHATSAPP") {
+    if (!input.whatsappLease) handleError(new Error("Missing WhatsApp execution lease"), "create_agent_draft");
+    const { data, error } = await getSupabaseAdminClient().rpc(
+      "fn_create_whatsapp_agent_draft",
+      {
+        p_id: input.id,
+        p_household_id: input.householdId,
+        p_actor_member_id: input.actorMemberId,
+        p_conversation_key: input.conversationKey,
+        p_operation_type: input.operationType,
+        p_payload: input.payload,
+        p_status: input.status,
+        p_user_id: input.whatsappLease.userId,
+        p_lease_id: input.whatsappLease.leaseId,
+        p_lease_epoch: input.whatsappLease.epoch,
+      },
+    );
+    if (error || !data || typeof data !== "object" || Array.isArray(data)) {
+      handleError(error ?? new Error("Invalid WhatsApp draft result"), "create_agent_draft");
+    }
+    return parseDraftRow(data);
+  }
+
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_agent_category_drafts")
     .insert({
@@ -400,7 +425,32 @@ export async function updateAgentDraft(
   status: AgentCategoryDraftStatus,
   payload: AgentCategoryDraftPayload,
   expectedUpdatedAt?: string,
+  whatsappLease?: { userId: string; leaseId: string; epoch: number },
 ): Promise<AgentDraft> {
+  if (source === "WHATSAPP") {
+    if (!whatsappLease) handleError(new Error("Missing WhatsApp execution lease"), "update_agent_draft");
+    const { data, error } = await getSupabaseAdminClient().rpc(
+      "fn_update_whatsapp_agent_draft",
+      {
+        p_id: id,
+        p_household_id: householdId,
+        p_actor_member_id: actorMemberId,
+        p_conversation_key: conversationKey,
+        p_operation_type: operationType,
+        p_payload: payload,
+        p_status: status,
+        p_expected_updated_at: expectedUpdatedAt ?? null,
+        p_user_id: whatsappLease.userId,
+        p_lease_id: whatsappLease.leaseId,
+        p_lease_epoch: whatsappLease.epoch,
+      },
+    );
+    if (error || !data || typeof data !== "object" || Array.isArray(data)) {
+      handleError(error ?? new Error("Draft is no longer current"), "update_agent_draft");
+    }
+    return parseDraftRow(data);
+  }
+
   let query = getSupabaseAdminClient()
     .from("tb_agent_category_drafts")
     .update({ payload, operation_type: operationType, status })
@@ -424,7 +474,32 @@ export async function updateCategoryDraft(
   source: ExpenseSource,
   payload: AgentCategoryDraftPayload,
   expectedUpdatedAt?: string,
+  whatsappLease?: { userId: string; leaseId: string; epoch: number },
 ): Promise<AgentCategoryDraft> {
+  if (source === "WHATSAPP") {
+    if (!whatsappLease) handleError(new Error("Missing WhatsApp execution lease"), "update_category_draft");
+    const { data, error } = await getSupabaseAdminClient().rpc(
+      "fn_update_whatsapp_agent_draft",
+      {
+        p_id: id,
+        p_household_id: householdId,
+        p_actor_member_id: actorMemberId,
+        p_conversation_key: conversationKey,
+        p_operation_type: "expense" in payload ? "CREATE_EXPENSE" : "CREATE_INCOME",
+        p_payload: payload,
+        p_status: "AWAITING_CATEGORY",
+        p_expected_updated_at: expectedUpdatedAt ?? null,
+        p_user_id: whatsappLease.userId,
+        p_lease_id: whatsappLease.leaseId,
+        p_lease_epoch: whatsappLease.epoch,
+      },
+    );
+    if (error || !data || typeof data !== "object" || Array.isArray(data)) {
+      handleError(error ?? new Error("Draft is no longer current"), "update_category_draft");
+    }
+    return parseDraftRow(data) as AgentCategoryDraft;
+  }
+
   let query = getSupabaseAdminClient()
     .from("tb_agent_category_drafts")
     .update({ payload })
@@ -448,7 +523,38 @@ export async function deleteAgentDraft(
   conversationKey: string,
   source: ExpenseSource,
   expectedUpdatedAt: string,
+  whatsappLease?: { userId: string; leaseId: string; epoch: number },
 ): Promise<CategoryDraftDeleteResult> {
+  if (source === "WHATSAPP") {
+    if (!whatsappLease) handleError(new Error("Missing WhatsApp execution lease"), "delete_agent_draft");
+    const { data, error } = await getSupabaseAdminClient().rpc(
+      "fn_delete_whatsapp_agent_draft",
+      {
+        p_id: id,
+        p_household_id: householdId,
+        p_actor_member_id: actorMemberId,
+        p_conversation_key: conversationKey,
+        p_expected_updated_at: expectedUpdatedAt,
+        p_user_id: whatsappLease.userId,
+        p_lease_id: whatsappLease.leaseId,
+        p_lease_epoch: whatsappLease.epoch,
+      },
+    );
+    if (error) handleError(error, "delete_agent_draft");
+    if (data === true) return "DELETED";
+    const { data: currentDraft, error: currentError } = await getSupabaseAdminClient()
+      .from("tb_agent_category_drafts")
+      .select("id")
+      .eq("id", id)
+      .eq("household_id", householdId)
+      .eq("actor_member_id", actorMemberId)
+      .eq("conversation_key", conversationKey)
+      .eq("source", source)
+      .maybeSingle();
+    if (currentError) handleError(currentError, "find_agent_draft_after_delete");
+    return currentDraft ? "VERSION_CONFLICT" : "NOT_FOUND";
+  }
+
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_agent_category_drafts")
     .delete()
@@ -486,6 +592,7 @@ export async function deleteCategoryDraft(
   conversationKey: string,
   source: ExpenseSource,
   expectedUpdatedAt: string,
+  whatsappLease?: { userId: string; leaseId: string; epoch: number },
 ): Promise<CategoryDraftDeleteResult> {
   return deleteAgentDraft(
     id,
@@ -494,5 +601,6 @@ export async function deleteCategoryDraft(
     conversationKey,
     source,
     expectedUpdatedAt,
+    whatsappLease,
   );
 }

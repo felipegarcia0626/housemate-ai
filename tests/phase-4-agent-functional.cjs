@@ -147,6 +147,19 @@ const contextA = {
   conversationKey: "agent-test-conversation",
   source: "WEB",
 };
+
+function withWhatsAppExecution(context, assertCurrent = async () => {}) {
+  return {
+    ...context,
+    whatsappExecution: {
+      userId: "42000000-0000-4000-8000-000000000099",
+      leaseId: "52000000-0000-4000-8000-000000000099",
+      epoch: 1,
+      assertCurrent,
+    },
+  };
+}
+
 const expenseInput = {
   paidByMemberId: memberA,
   totalAmount: 100,
@@ -362,8 +375,13 @@ class FakeQuery {
         matches(candidate, this.filters),
       );
       if (!row) return { data: [], error: null };
+      const previousUpdatedAt = Date.parse(row.updated_at);
+      const nextUpdatedAt = Math.max(
+        Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0,
+        Date.now(),
+      );
       Object.assign(row, this.updatePayload, {
-        updated_at: new Date(Date.now()).toISOString(),
+        updated_at: new Date(nextUpdatedAt).toISOString(),
       });
       return { data: [row], error: null };
     }
@@ -406,6 +424,165 @@ const fakeClient = {
   },
   rpc(name, args) {
     operations.push({ type: "rpc", name, args });
+    if (name === "fn_create_whatsapp_agent_draft") {
+      const conflict = categoryDrafts.some(
+        (row) =>
+          row.household_id === args.p_household_id &&
+          row.actor_member_id === args.p_actor_member_id &&
+          row.conversation_key === args.p_conversation_key &&
+          row.source === "WHATSAPP",
+      );
+      if (conflict) {
+        return Promise.resolve({ data: null, error: { code: "23505" } });
+      }
+      const now = new Date().toISOString();
+      const row = {
+        id: args.p_id,
+        household_id: args.p_household_id,
+        actor_member_id: args.p_actor_member_id,
+        conversation_key: args.p_conversation_key,
+        source: "WHATSAPP",
+        operation_type: args.p_operation_type,
+        payload: args.p_payload,
+        status: args.p_status,
+        created_at: now,
+        updated_at: now,
+      };
+      categoryDrafts.push(row);
+      return Promise.resolve({ data: row, error: null });
+    }
+    if (name === "fn_update_whatsapp_agent_draft") {
+      const row = categoryDrafts.find(
+        (candidate) =>
+          candidate.id === args.p_id &&
+          candidate.household_id === args.p_household_id &&
+          candidate.actor_member_id === args.p_actor_member_id &&
+          candidate.conversation_key === args.p_conversation_key &&
+          candidate.source === "WHATSAPP",
+      );
+      if (
+        !row ||
+        (args.p_expected_updated_at !== null &&
+          args.p_expected_updated_at !== row.updated_at)
+      ) {
+        return Promise.resolve({ data: null, error: { code: "40001" } });
+      }
+      Object.assign(row, {
+        operation_type: args.p_operation_type,
+        payload: args.p_payload,
+        status: args.p_status,
+        updated_at: new Date(Date.parse(row.updated_at) + 1).toISOString(),
+      });
+      return Promise.resolve({ data: row, error: null });
+    }
+    if (name === "fn_delete_whatsapp_agent_draft") {
+      const row = categoryDrafts.find(
+        (candidate) =>
+          candidate.id === args.p_id &&
+          candidate.household_id === args.p_household_id &&
+          candidate.actor_member_id === args.p_actor_member_id &&
+          candidate.conversation_key === args.p_conversation_key &&
+          candidate.source === "WHATSAPP" &&
+          candidate.updated_at === args.p_expected_updated_at,
+      );
+      if (!row) return Promise.resolve({ data: false, error: null });
+      categoryDrafts = categoryDrafts.filter((candidate) => candidate !== row);
+      return Promise.resolve({ data: true, error: null });
+    }
+    if (name === "fn_create_whatsapp_pending_proposal") {
+      const conflict = proposals.some(
+        (row) =>
+          row.household_id === args.p_household_id &&
+          row.conversation_key === args.p_conversation_key &&
+          row.actor_member_id === args.p_actor_member_id &&
+          row.source === "WHATSAPP" &&
+          row.status === "AWAITING_CONFIRMATION",
+      );
+      if (conflict) {
+        return Promise.resolve({ data: null, error: { code: "23505" } });
+      }
+      const now = "2026-08-12T12:00:00.000Z";
+      const row = {
+        id: args.p_id,
+        household_id: args.p_household_id,
+        conversation_key: args.p_conversation_key,
+        actor_member_id: args.p_actor_member_id,
+        source: "WHATSAPP",
+        operation_type: args.p_operation_type,
+        payload: args.p_payload,
+        status: "AWAITING_CONFIRMATION",
+        created_at: now,
+        updated_at: now,
+        resolved_at: null,
+        expense_id: null,
+        income_id: null,
+      };
+      proposals.push(row);
+      return Promise.resolve({ data: row, error: null });
+    }
+    if (name === "fn_update_whatsapp_pending_proposal") {
+      const row = proposals.find(
+        (candidate) =>
+          candidate.id === args.p_id &&
+          candidate.household_id === args.p_household_id &&
+          candidate.conversation_key === args.p_conversation_key &&
+          candidate.actor_member_id === args.p_actor_member_id &&
+          candidate.source === "WHATSAPP" &&
+          candidate.operation_type === args.p_operation_type &&
+          candidate.status === "AWAITING_CONFIRMATION" &&
+          candidate.updated_at === args.p_expected_updated_at,
+      );
+      if (!row) return Promise.resolve({ data: null, error: null });
+      Object.assign(row, {
+        payload: args.p_payload,
+        updated_at: new Date(Date.parse(row.updated_at) + 1).toISOString(),
+      });
+      return Promise.resolve({ data: row, error: null });
+    }
+    if (name === "fn_reject_whatsapp_pending_proposal") {
+      const row = proposals.find(
+        (candidate) =>
+          candidate.id === args.p_proposal_id &&
+          candidate.household_id === args.p_household_id &&
+          candidate.conversation_key === args.p_conversation_key &&
+          candidate.actor_member_id === args.p_actor_member_id &&
+          candidate.source === "WHATSAPP" &&
+          candidate.operation_type === args.p_operation_type,
+      );
+      if (!row) {
+        return Promise.resolve({
+          data: { status: "NOT_FOUND", expense_id: null, income_id: null },
+          error: null,
+        });
+      }
+      if (row.status === "COMPLETED") {
+        return Promise.resolve({
+          data: {
+            status: "ALREADY_COMPLETED",
+            expense_id: row.expense_id ?? null,
+            income_id: row.income_id ?? null,
+          },
+          error: null,
+        });
+      }
+      if (row.status === "REJECTED") {
+        return Promise.resolve({
+          data: { status: "REJECTED", expense_id: null, income_id: null },
+          error: null,
+        });
+      }
+      Object.assign(row, {
+        status: "REJECTED",
+        updated_at: "2026-08-12T12:01:00.000Z",
+        resolved_at: "2026-08-12T12:01:00.000Z",
+        expense_id: null,
+        income_id: null,
+      });
+      return Promise.resolve({
+        data: { status: "REJECTED", expense_id: null, income_id: null },
+        error: null,
+      });
+    }
     if (
       name !== "fn_confirm_pending_expense_consistent" &&
       name !== "fn_confirm_pending_income_consistent" &&
@@ -936,6 +1113,43 @@ async function main() {
   const categoryDraftService = load(categoryDraftServiceModule);
   const tool = load(toolModule);
   const conversation = load(conversationModule);
+  const operationsBeforeStaleWhatsAppGuard = operations.length;
+  const interpreterCallsBeforeStaleWhatsAppGuard = interpreterCalls;
+  await expectAgentError(
+    conversation.processAgentMessage(
+      {
+        ...contextA,
+        source: "WHATSAPP",
+        conversationKey: "agent-missing-whatsapp-execution-context",
+      },
+      { message: "Muéstrame las categorías" },
+    ),
+    "PERSISTENCE_ERROR",
+  );
+  assert.equal(operations.length, operationsBeforeStaleWhatsAppGuard);
+  assert.equal(interpreterCalls, interpreterCallsBeforeStaleWhatsAppGuard);
+  await assert.rejects(
+    agentService.createExpenseProposal(
+      {
+        ...contextA,
+        source: "WHATSAPP",
+        conversationKey: "agent-stale-whatsapp-execution-guard",
+        whatsappExecution: {
+          userId: "42000000-0000-4000-8000-000000000099",
+          leaseId: "52000000-0000-4000-8000-000000000099",
+          epoch: 1,
+          assertCurrent: async () => {
+            throw new Error("stale WhatsApp lease");
+          },
+        },
+      },
+      expenseInput,
+    ),
+    /stale WhatsApp lease/,
+  );
+  assert.equal(operations.length, operationsBeforeStaleWhatsAppGuard);
+  assert.equal(interpreterCalls, interpreterCallsBeforeStaleWhatsAppGuard);
+  console.log("PASS stale WhatsApp execution lease blocks Agent work before reads or writes");
   const proposalsBeforeInvalidCategory = proposals.length;
   for (const categoryId of [null, "invented-category", "category-income-salary"]) {
     await expectAgentError(
@@ -3761,11 +3975,11 @@ async function main() {
   includeMarketCategory = false;
   console.log("PASS candidate rejection and stale catalog retain amount for manual selection");
 
-  const flexibleIncomeContext = {
+  const flexibleIncomeContext = withWhatsAppExecution({
     ...contextA,
     source: "WHATSAPP",
     conversationKey: "agent-flexible-income-amount-whatsapp",
-  };
+  });
   mockInterpretation = {
     kind: "CREATE_INCOME",
     amount: "un millón y medio",
@@ -5427,7 +5641,7 @@ async function main() {
     { ...rejectionIsolationContext, householdId: householdB },
     { ...rejectionIsolationContext, conversationKey: "agent-other-conversation" },
     { ...rejectionIsolationContext, actorMemberId: memberB },
-    { ...rejectionIsolationContext, source: "WHATSAPP" },
+    withWhatsAppExecution({ ...rejectionIsolationContext, source: "WHATSAPP" }),
   ]) {
     await expectAgentError(
       tool.rejectCreateExpenseTool(
@@ -8449,11 +8663,11 @@ async function main() {
     "AWAITING_CONFIRMATION",
   );
 
-  const ownershipHardeningForeignSourceContext = {
+  const ownershipHardeningForeignSourceContext = withWhatsAppExecution({
     ...contextA,
     source: "WHATSAPP",
     conversationKey: "agent-2o-foreign-source",
-  };
+  });
   const ownershipHardeningForeignSourceProposal = {
     id: "72000000-0000-4000-8000-000000000005",
     household_id: ownershipHardeningForeignSourceContext.householdId,
@@ -9016,11 +9230,11 @@ async function main() {
     "82000000-0000-4000-8000-000000000013",
     "82000000-0000-4000-8000-000000000014",
   );
-  const foreignGuardCurrentContext = {
+  const foreignGuardCurrentContext = withWhatsAppExecution({
     ...foreignGuardContext,
     actorMemberId: memberB,
     source: "WHATSAPP",
-  };
+  });
   proposals.push(foreignGuardProposal);
   const foreignGuardResult = await conversation.processAgentMessage(
     foreignGuardCurrentContext,
@@ -9103,11 +9317,11 @@ async function main() {
   );
   console.log("PASS terminal proposals do not block new contextual drafts");
 
-  const ownedTerminalSelectionContext = {
+  const ownedTerminalSelectionContext = withWhatsAppExecution({
     ...contextA,
     conversationKey: "agent-2p-terminal-owned-selection",
     source: "WHATSAPP",
-  };
+  });
   const ownedTerminalDraft = makeCausalDraft(
     ownedTerminalSelectionContext,
     "82000000-0000-4000-8000-000000000031",
@@ -9161,11 +9375,11 @@ async function main() {
   );
   console.log("PASS terminal reconciliation filters foreign actor and source before ordering");
 
-  const foreignOnlyTerminalContext = {
+  const foreignOnlyTerminalContext = withWhatsAppExecution({
     ...contextA,
     conversationKey: "agent-2p-terminal-foreign-only",
     source: "WHATSAPP",
-  };
+  });
   const foreignOnlyDraft = makeCausalDraft(
     foreignOnlyTerminalContext,
     "82000000-0000-4000-8000-000000000035",
@@ -9193,11 +9407,11 @@ async function main() {
   assert.equal(foreignOnlyProposal.status, "REJECTED");
   console.log("PASS foreign-only terminal proposal does not reconcile current draft");
 
-  const latestOwnedTerminalContext = {
+  const latestOwnedTerminalContext = withWhatsAppExecution({
     ...contextA,
     conversationKey: "agent-2p-terminal-latest-owned",
     source: "WHATSAPP",
-  };
+  });
   const latestOwnedDraft = makeCausalDraft(
     latestOwnedTerminalContext,
     "82000000-0000-4000-8000-000000000037",
@@ -9231,11 +9445,11 @@ async function main() {
   assert.equal(latestOwnedProposal.status, "REJECTED");
   console.log("PASS latest terminal proposal wins among owned context");
 
-  const sameActorSourceContext = {
+  const sameActorSourceContext = withWhatsAppExecution({
     ...contextA,
     conversationKey: "agent-2p-terminal-source-isolation",
     source: "WHATSAPP",
-  };
+  });
   const sameActorSourceDraft = makeCausalDraft(
     sameActorSourceContext,
     "82000000-0000-4000-8000-000000000040",

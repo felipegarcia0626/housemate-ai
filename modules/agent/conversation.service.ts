@@ -10,7 +10,7 @@ import { normalizeAgentAmount } from "./agent-amount";
 import { getExpensesTool } from "./tools/get-expenses.tool";
 import { getIncomesTool } from "./tools/get-incomes.tool";
 import { getBalanceTool } from "./tools/get-balance.tool";
-import { getCategoriesTool } from "./tools/get-categories.tool";
+import { getCategoriesTool as getCategoriesToolFromTool } from "./tools/get-categories.tool";
 import { getSharingRulesTool } from "./tools/get-sharing-rules.tool";
 import {
   getPeriodFinancialSummaryTool,
@@ -82,6 +82,32 @@ type Interpreter = (
 ) => Promise<
   ExpenseInterpretation | CorrectionInterpretation | PeriodFinancialToolCall | PeriodExpenseCategoryToolCall
 >;
+
+async function assertAgentExecutionCurrent(context: AgentContext): Promise<void> {
+  if (context.source !== "WHATSAPP") return;
+  if (!context.whatsappExecution) {
+    throw new AgentDomainError(
+      "PERSISTENCE_ERROR",
+      "The WhatsApp execution context is unavailable.",
+    );
+  }
+  await context.whatsappExecution.assertCurrent();
+}
+
+async function getCategoriesTool(
+  context: AgentContext,
+  movementType: CategoryMovementType,
+): Promise<HierarchicalCategory[]>;
+async function getCategoriesTool(context: AgentContext): Promise<Category[]>;
+async function getCategoriesTool(
+  context: AgentContext,
+  movementType?: CategoryMovementType,
+): Promise<Category[] | HierarchicalCategory[]> {
+  await assertAgentExecutionCurrent(context);
+  return movementType === undefined
+    ? getCategoriesToolFromTool(context)
+    : getCategoriesToolFromTool(context, movementType);
+}
 
 function isConfirmation(message: string): boolean {
   const normalized = normalizeOperationMessage(message);
@@ -1468,6 +1494,13 @@ async function applyPendingProposalCorrection(
       operationType: proposal.operationType,
       payload,
       expectedUpdatedAt: proposal.updatedAt,
+      whatsappLease: context.whatsappExecution
+        ? {
+            userId: context.whatsappExecution.userId,
+            leaseId: context.whatsappExecution.leaseId,
+            epoch: context.whatsappExecution.epoch,
+          }
+        : undefined,
     });
   } catch (error) {
     if (error instanceof PendingProposalRepositoryError) {
@@ -2359,6 +2392,7 @@ export async function processAgentMessage(
   input: AgentMessageInput,
   interpreter: Interpreter = interpretExpenseMessage,
 ): Promise<AgentMessageResult> {
+  await assertAgentExecutionCurrent(context);
   const message = input.message.trim();
   let activeDraft: AgentDraft | null;
   try {
@@ -3001,6 +3035,7 @@ export async function processAgentMessage(
 
   if (!interpretation) {
     try {
+      await assertAgentExecutionCurrent(context);
       interpretation = await interpreter(message);
     } catch (error) {
       if (error instanceof AgentDomainError) throw error;
@@ -3012,7 +3047,10 @@ export async function processAgentMessage(
     }
   }
 
+  await assertAgentExecutionCurrent(context);
+
   if (interpretation.kind === "GET_PERIOD_FINANCIAL_SUMMARY_TOOL_CALL") {
+    await assertAgentExecutionCurrent(context);
     const summary: PeriodFinancialSummary = await getPeriodFinancialSummaryTool(
       context,
       applyExplicitPeriodCategoryFilter(interpretation.arguments, input.message),
@@ -3049,6 +3087,7 @@ export async function processAgentMessage(
   }
 
   if (interpretation.kind === "GET_PERIOD_EXPENSE_CATEGORY_SUMMARY_TOOL_CALL") {
+    await assertAgentExecutionCurrent(context);
     const summary: PeriodExpenseCategorySummary =
       await getPeriodExpenseCategorySummaryTool(context, interpretation.arguments);
     let message: string;
@@ -3100,6 +3139,7 @@ export async function processAgentMessage(
     return operationClarification();
   }
   if (interpretation.kind === "GET_EXPENSES") {
+    await assertAgentExecutionCurrent(context);
     return {
       type: "READ_RESULT",
       operation: "GET_EXPENSES",
@@ -3107,6 +3147,7 @@ export async function processAgentMessage(
     };
   }
   if (interpretation.kind === "GET_INCOMES") {
+    await assertAgentExecutionCurrent(context);
     return {
       type: "READ_RESULT",
       operation: "GET_INCOMES",
@@ -3114,6 +3155,7 @@ export async function processAgentMessage(
     };
   }
   if (interpretation.kind === "GET_BALANCE") {
+    await assertAgentExecutionCurrent(context);
     return {
       type: "READ_RESULT",
       operation: "GET_BALANCE",
@@ -3128,6 +3170,7 @@ export async function processAgentMessage(
     };
   }
   if (interpretation.kind === "GET_SHARING_RULES") {
+    await assertAgentExecutionCurrent(context);
     return {
       type: "READ_RESULT",
       operation: "GET_SHARING_RULES",

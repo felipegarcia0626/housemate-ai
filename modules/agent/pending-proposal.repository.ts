@@ -147,7 +147,32 @@ export async function createPendingProposal(input: {
   conversationKey: string;
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
+  whatsappLease?: { userId: string; leaseId: string; epoch: number };
 }): Promise<PendingExpenseProposal> {
+  if (input.payload.source === "WHATSAPP") {
+    if (!input.whatsappLease) {
+      throw persistenceError("create WhatsApp proposal", new Error("Missing execution lease"));
+    }
+    const { data, error } = await getSupabaseAdminClient().rpc(
+      "fn_create_whatsapp_pending_proposal",
+      {
+        p_id: input.id,
+        p_household_id: input.householdId,
+        p_conversation_key: input.conversationKey,
+        p_actor_member_id: input.payload.actorMemberId,
+        p_operation_type: input.operationType,
+        p_payload: input.payload,
+        p_user_id: input.whatsappLease.userId,
+        p_lease_id: input.whatsappLease.leaseId,
+        p_lease_epoch: input.whatsappLease.epoch,
+      },
+    );
+    if (error || !data || typeof data !== "object" || Array.isArray(data)) {
+      throw persistenceError("create WhatsApp proposal", error ?? new Error("Invalid RPC result"));
+    }
+    return mapRow(data as PendingProposalRow) as PendingExpenseProposal;
+  }
+
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .insert({
@@ -174,6 +199,7 @@ export async function createPendingIncomeProposal(input: {
   householdId: string;
   conversationKey: string;
   payload: PendingIncomeProposalPayload;
+  whatsappLease?: { userId: string; leaseId: string; epoch: number };
 }): Promise<PendingIncomeProposal> {
   const proposal = await createPendingProposal({
     ...input,
@@ -191,7 +217,35 @@ export async function updatePendingProposalConditionally(input: {
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
   expectedUpdatedAt: string;
+  whatsappLease?: { userId: string; leaseId: string; epoch: number };
 }): Promise<PendingProposal | null> {
+  if (input.source === "WHATSAPP") {
+    if (!input.whatsappLease) {
+      throw persistenceError("update WhatsApp proposal", new Error("Missing execution lease"));
+    }
+    const { data, error } = await getSupabaseAdminClient().rpc(
+      "fn_update_whatsapp_pending_proposal",
+      {
+        p_id: input.id,
+        p_household_id: input.householdId,
+        p_conversation_key: input.conversationKey,
+        p_actor_member_id: input.actorMemberId,
+        p_operation_type: input.operationType,
+        p_payload: input.payload,
+        p_expected_updated_at: input.expectedUpdatedAt,
+        p_user_id: input.whatsappLease.userId,
+        p_lease_id: input.whatsappLease.leaseId,
+        p_lease_epoch: input.whatsappLease.epoch,
+      },
+    );
+    if (error) throw persistenceError("update WhatsApp proposal", error);
+    if (!data) return null;
+    if (typeof data !== "object" || Array.isArray(data)) {
+      throw persistenceError("update WhatsApp proposal", new Error("Invalid RPC result"));
+    }
+    return mapRow(data as PendingProposalRow);
+  }
+
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .update({ payload: input.payload })
@@ -370,6 +424,7 @@ export async function confirmPendingExpense(input: {
   source: "WEB" | "WHATSAPP" | "RECEIPT";
   expectedUpdatedAt: string | null;
   expense: ExpenseCreatePersistenceInput | null;
+  whatsappLease?: { userId: string; leaseId: string; epoch: number };
 }): Promise<PendingExpenseConfirmationResult> {
   const rpcArguments: Record<string, unknown> = {
     p_proposal_id: input.proposalId,
@@ -382,6 +437,14 @@ export async function confirmPendingExpense(input: {
 
   if (input.expense) {
     Object.assign(rpcArguments, toExpenseRpcArguments(input.expense));
+  }
+  if (input.source === "WHATSAPP") {
+    if (!input.whatsappLease) {
+      throw persistenceError("confirm WhatsApp expense", new Error("Missing execution lease"));
+    }
+    rpcArguments.p_whatsapp_user_id = input.whatsappLease.userId;
+    rpcArguments.p_whatsapp_lease_id = input.whatsappLease.leaseId;
+    rpcArguments.p_whatsapp_lease_epoch = input.whatsappLease.epoch;
   }
 
   const { data, error } = await getSupabaseAdminClient().rpc(
@@ -466,6 +529,7 @@ export async function confirmPendingIncome(input: {
   source: "WEB" | "WHATSAPP" | "RECEIPT";
   expectedUpdatedAt: string | null;
   income: IncomeCreatePersistenceInput | null;
+  whatsappLease?: { userId: string; leaseId: string; epoch: number };
 }): Promise<PendingIncomeConfirmationResult> {
   const rpcArguments: Record<string, unknown> = {
     p_proposal_id: input.proposalId,
@@ -478,6 +542,14 @@ export async function confirmPendingIncome(input: {
 
   if (input.income) {
     Object.assign(rpcArguments, toIncomeRpcArguments(input.income));
+  }
+  if (input.source === "WHATSAPP") {
+    if (!input.whatsappLease) {
+      throw persistenceError("confirm WhatsApp income", new Error("Missing execution lease"));
+    }
+    rpcArguments.p_whatsapp_user_id = input.whatsappLease.userId;
+    rpcArguments.p_whatsapp_lease_id = input.whatsappLease.leaseId;
+    rpcArguments.p_whatsapp_lease_epoch = input.whatsappLease.epoch;
   }
 
   const { data, error } = await getSupabaseAdminClient().rpc(
@@ -524,7 +596,32 @@ export async function rejectPendingProposal(input: {
   actorMemberId: string;
   source: "WEB" | "WHATSAPP" | "RECEIPT";
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
+  whatsappLease?: { userId: string; leaseId: string; epoch: number };
 }): Promise<PendingProposalRejectionResult> {
+  if (input.source === "WHATSAPP") {
+    const lease = input.whatsappLease;
+    if (!lease) {
+      throw persistenceError("reject WhatsApp proposal", new Error("Missing execution lease"));
+    }
+    const { data, error } = await getSupabaseAdminClient().rpc(
+      "fn_reject_whatsapp_pending_proposal",
+      {
+        p_proposal_id: input.proposalId,
+        p_household_id: input.householdId,
+        p_conversation_key: input.conversationKey,
+        p_actor_member_id: input.actorMemberId,
+        p_operation_type: input.operationType,
+        p_user_id: lease.userId,
+        p_lease_id: lease.leaseId,
+        p_lease_epoch: lease.epoch,
+      },
+    );
+    if (error) throw persistenceError("reject WhatsApp proposal", error);
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw persistenceError("reject WhatsApp proposal", new Error("Invalid RPC result"));
+    }
+    return mapRejectionResult(data as Record<string, unknown>);
+  }
   const { data, error } = await getSupabaseAdminClient().rpc(
     "fn_reject_pending_proposal",
     {
@@ -566,6 +663,33 @@ export async function rejectPendingProposal(input: {
     throw persistenceError("reject proposal", new Error("Invalid proposal reference"));
   }
 
+  return {
+    status,
+    expenseId: typeof expenseId === "string" ? expenseId : null,
+    incomeId: typeof incomeId === "string" ? incomeId : null,
+  };
+}
+
+function mapRejectionResult(
+  data: Record<string, unknown>,
+): PendingProposalRejectionResult {
+  const status = data.status;
+  if (
+    status !== "REJECTED" &&
+    status !== "ALREADY_COMPLETED" &&
+    status !== "NOT_FOUND" &&
+    status !== "INVALID_OPERATION"
+  ) {
+    throw persistenceError("reject proposal", new Error("Unknown RPC status"));
+  }
+  const expenseId = data.expense_id;
+  const incomeId = data.income_id;
+  if (
+    (expenseId !== undefined && expenseId !== null && typeof expenseId !== "string") ||
+    (incomeId !== undefined && incomeId !== null && typeof incomeId !== "string")
+  ) {
+    throw persistenceError("reject proposal", new Error("Invalid proposal reference"));
+  }
   return {
     status,
     expenseId: typeof expenseId === "string" ? expenseId : null,

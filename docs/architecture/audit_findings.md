@@ -139,3 +139,14 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 - **Origen/detección:** Resultado manual reportado por el usuario el 2026-10-18. Los argumentos originales enviados por el proveedor no están disponibles, por lo que la omisión del filtro por el modelo es la causa probable, no confirmada.
 - **Corrección:** Cuando el mensaje expresa un gasto por categoría macro/micro con un nombre entre comillas, Conversation Service conserva el nivel y nombre explícitos antes de invocar la tool financiera; el calculador existente resuelve la categoría y mantiene el fallo cerrado ante nombres ambiguos o no resueltos.
 - **Evidencia de resolución:** El usuario reportó PASS con código `0` para `phase-4-agent-period-expense-category-summary-functional.cjs` y `npm run typecheck`, y una nueva prueba manual devolvió “No encontré esa categoría en el nivel solicitado” sin incluir cifras financieras parciales. La respuesta demuestra fallo cerrado para el nombre usado; no demuestra que la taxonomía real tenga una categoría `Cafe` duplicada ni que no exista una variante activa bajo otro nivel. No se inspeccionaron datos remotos.
+
+### FINDING-012
+
+- **Fecha:** 2026-10-25
+- **Área:** WhatsApp / idempotencia de respuesta outbound
+- **Descripción:** El webhook reserva persistentemente el ID del evento antes de resolver el hogar y procesar el mensaje. Si el procesamiento o el envío outbound falla después de esa reserva, una redelivery del mismo evento se clasifica como duplicada y no vuelve a procesar ni enviar la respuesta.
+- **Impacto:** Un fallo transitorio posterior a la reserva puede dejar al usuario sin respuesta aunque Meta reintente la entrega. La reserva sigue evitando que una redelivery repita mutaciones financieras.
+- **Prioridad:** MEDIUM
+- **Estado:** OPEN
+- **Origen/detección:** Revisión del orden `reserveWhatsAppEvent()` → resolución/Agent → `sendWhatsAppReply()` en `modules/whatsapp/whatsapp.service.ts`; el incidente de producción reportado anteriormente mostró una redelivery clasificada como duplicada tras fallar el envío outbound.
+- **Criterio de resolución:** Diseñar un incremento independiente de recuperación de entregas que permita reintentar respuestas sin volver a aplicar operaciones financieras, con pruebas de fallos antes y después de cualquier mutación.

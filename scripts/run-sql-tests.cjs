@@ -76,7 +76,14 @@ async function runSqlFile(client, filePath, label) {
   try {
     await client.query(sql);
   } catch (error) {
-    throw new Error(`${label}: ${error.message}`, { cause: error });
+    const position = Number(error.position ?? error.internalPosition);
+    const source = error.internalPosition ? error.internalQuery : sql;
+    const line =
+      Number.isInteger(position) && position > 0 && source
+        ? source.slice(0, position - 1).split("\n").length
+        : null;
+    const location = line ? ` (line ${line})` : "";
+    throw new Error(`${label}${location}: ${error.message}`, { cause: error });
   }
 
   console.log(`PASS ${label}`);
@@ -124,6 +131,7 @@ async function main() {
       user: "postgres",
       password: "housemate-sql-test",
       authMethod: "password",
+      postgresFlags: ["-c", "wal_level=logical"],
       persistent: false,
       onLog: () => {},
       onError: (error) => {
@@ -138,6 +146,8 @@ async function main() {
     const bootstrapClient = postgres.getPgClient("housemate_test");
     await bootstrapClient.connect();
     await bootstrapClient.query("CREATE ROLE service_role NOLOGIN");
+    // Supabase supplies this publication before migration 0037 in production.
+    await bootstrapClient.query("CREATE PUBLICATION supabase_realtime");
     await bootstrapClient.end();
 
     for (const migrationPath of await sqlFiles(migrationDirectory)) {

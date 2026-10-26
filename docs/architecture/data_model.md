@@ -169,9 +169,9 @@ Notas
 external_identifier permite asociar al usuario con un identificador externo sin acoplar el modelo directamente a WhatsApp.
 No se almacenarán contraseñas durante el MVP.
 `auth_user_id` permite vincular opcionalmente la identidad de Supabase Auth con
-este usuario sin reemplazar `external_identifier`. La infraestructura de
-contexto autenticado puede resolver esa relación, pero las APIs del MVP siguen
-utilizando explícitamente el contexto configurado hasta una migración posterior.
+este usuario sin reemplazar `external_identifier`. Web resuelve su contexto por
+la sesión autenticada; WhatsApp relaciona el remitente con `external_identifier`
+y resuelve sus memberships activas antes de invocar el agente.
 
 # 5. Household
 
@@ -179,17 +179,16 @@ Representa el contexto financiero compartido por un grupo de usuarios.
 
 MVP
 
-El sistema trabajará inicialmente con un único hogar.
+Un usuario puede tener memberships en varios hogares. Web mantiene su mecanismo
+actual de selección. WhatsApp guarda una selección independiente por usuario y
+canal; no reutiliza cookies de Web ni usa `HOUSEMATE_MVP_HOUSEHOLD_ID` como
+fuente del hogar activo.
 
-No se implementarán durante el MVP:
-
-creación de hogares;
-invitaciones;
-selección de hogar;
-administración de miembros;
-permisos avanzados.
-
-La entidad se mantiene conceptualmente porque los gastos compartidos necesitan un contexto común.
+WhatsApp selecciona automáticamente el único hogar con membership `ACTIVE`. Si
+hay varios hogares y no existe una selección vigente, solicita una elección
+antes de ejecutar herramientas. La selección se valida en cada mensaje y la
+elección numérica solo se acepta desde un menú vigente asociado al número emisor
+de WhatsApp. El menú vence a los 30 minutos.
 
 Atributos conceptuales
 Household
@@ -736,6 +735,23 @@ ProcessedWhatsAppEvent
 
 El webhook intentará reservar el identificador mediante una inserción atómica. Un conflicto de unicidad identificará el evento como duplicado. Si un procesamiento posterior falla, se registrará el error y el usuario podrá reenviar la operación como un nuevo mensaje; no se agregará un workflow de reintentos al MVP.
 
+## 15.4 WhatsAppUserContext
+
+`tb_whatsapp_user_contexts` conserva el hogar seleccionado y el estado temporal
+del menú por `user_id`. La selección guarda tanto `selected_household_id` como
+`selected_member_id`, vinculados por una FK compuesta a la membership. El menú
+guarda los hogares ofrecidos, el `phone_number_id` al que pertenece y su
+expiración. La tabla tiene RLS habilitado sin políticas para clientes; el
+acceso se limita al backend mediante repositorios y RPCs otorgados a
+`service_role`.
+
+El contexto guarda además un lease con vencimiento y época. El backend lo usa
+para serializar mensajes simultáneos del mismo usuario y rechazar escrituras,
+confirmaciones o respuestas que procedan de una ejecución que perdió el lease.
+Las RPC de creación, actualización, rechazo y confirmación vuelven a comprobar
+la selección y la membership `ACTIVE`; confirmación lo hace dentro de la misma
+transacción que crea el movimiento.
+
 # 16. Relaciones principales
 
 User
@@ -1125,7 +1141,11 @@ Security
 
 ### Una precisión importante
 
-Dejé `User`, `Household` y `HouseholdMember` en el **modelo conceptual**, pero no como funcionalidades que tengamos que construir ahora. Esto nos da una estructura coherente para el caso de uso de gastos compartidos sin obligarnos a desarrollar autenticación, invitaciones, permisos, selección de hogares, etc.
+`User`, `Household` y `HouseholdMember` son entidades persistidas del modelo.
+Web resuelve el contexto mediante su sesión autenticada y WhatsApp tiene una
+selección persistente por usuario, limitada a memberships activas. La selección
+de WhatsApp no reemplaza el contexto de Web ni habilita acceso fuera de los
+hogares asociados al usuario.
 
 Los ingresos forman parte del MVP mediante la entidad independiente `Income`,
 sin modificar `Expense`. El catálogo canónico ahora contiene una taxonomía
@@ -1522,6 +1542,7 @@ Clasificación:
 | Income se elimina físicamente | B | Income service de Fase 2 |
 | Confirmar/rechazar consume la propuesta correcta de forma atómica | B | Agent/service y transacción de Fase 2; el índice evita propuestas simultáneas |
 | Reserva atómica de eventos antes de ejecutar el agente | B | WhatsApp repository/service de fase posterior; UNIQUE resuelve la carrera |
+| Selección de hogar WhatsApp por usuario y membership activa | B | `tb_whatsapp_user_contexts`, lease serializado y RPCs de transición; Web conserva su selección actual |
 | Los ingresos no afectan el balance entre integrantes | B | `balance.service.ts` consulta exclusivamente Expense y ExpenseDistribution |
 | Solo Expense `CONFIRMED` participa en balances y dashboard | B | consultas de services de Fase 2 y dashboard |
 | Agregación por categoría no supera `Expense.total_amount` | B | service aplica items primero y limita la parte restante al total del Expense |

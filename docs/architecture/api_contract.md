@@ -104,15 +104,17 @@ determinado por la configuración de la aplicación. Los endpoints migrados
 `GET /api/dashboard/summary` requieren una sesión autenticada de Supabase y
 derivan el hogar exclusivamente mediante `AuthenticatedContext`.
 
-Para WhatsApp, el identificador del remitente permitirá asociar la interacción con el usuario correspondiente.
+Para WhatsApp, el backend asocia el identificador externo del remitente con el
+usuario, obtiene sus memberships activas y carga la selección persistente de
+hogar del canal antes de invocar el agente.
 
 Conceptualmente:
 
 WhatsApp sender
 ↓
-Usuario configurado
+Usuario vinculado por `external_identifier`
 ↓
-Hogar configurado
+Memberships `ACTIVE` y selección de WhatsApp
 ↓
 Operación
 
@@ -133,6 +135,11 @@ Los endpoints Web todavía no migrados utilizan el único hogar configurado del
 MVP. Los endpoints migrados `GET /api/balance`, `GET /api/household-members`,
 `GET /api/sharing-rules` y `GET /api/dashboard/summary` derivan el hogar desde
 `AuthenticatedContext` y no utilizan ese valor configurado.
+
+WhatsApp mantiene una selección persistente separada por usuario. Antes de
+ejecutar el agente, el backend valida la membership `ACTIVE`; con varios hogares
+activos y sin una selección vigente solicita una elección mediante un menú de
+30 minutos. Web mantiene su mecanismo de contexto actual.
 
 El backend deberá validar que:
 
@@ -1055,9 +1062,10 @@ incorrecto se rechaza con `403 VALIDATION_ERROR`; un body no parseable con firma
 válida conserva `400 VALIDATION_ERROR`. `external_event_id` se reserva de forma
 atómica en `tb_processed_whatsapp_events`; un reintento duplicado se confirma
 sin volver a ejecutar el agente. Las respuestas se envían mediante el adaptador
-server-only de WhatsApp Cloud API. La identidad del remitente se resuelve
-mediante `tb_users.external_identifier` dentro del hogar configurado; la
-configuración de esa relación es necesaria por entorno.
+server-only de WhatsApp Cloud API. La identidad se resuelve mediante
+`tb_users.external_identifier`, y el hogar mediante memberships `ACTIVE` y la
+selección persistente del usuario para WhatsApp. `HOUSEMATE_MVP_HOUSEHOLD_ID`
+continúa aplicando a los contextos Web que aún dependen de la configuración.
 
 El webhook no deberá contener lógica financiera.
 
@@ -1286,7 +1294,10 @@ La futura autenticación deberá encargarse de establecer de forma segura el con
 
 La lógica de gastos, balances, reglas de reparto y demás operaciones financieras deberá permanecer independiente del mecanismo concreto de autenticación.
 
-Las funcionalidades futuras como múltiples hogares, presupuestos o integraciones bancarias deberán introducirse mediante nuevos contratos únicamente cuando formen parte del alcance del producto.
+La gestión directa de hogares, presupuestos e integraciones bancarias deberá
+introducirse mediante nuevos contratos únicamente cuando forme parte del
+alcance del producto. WhatsApp ya mantiene su selección de hogar activa por
+usuario, sin cambiar el contexto de Web.
 
 ### Qué cambiamos realmente
 
@@ -1325,11 +1336,11 @@ Y para WhatsApp:
 
 WhatsApp sender
        ↓
-Usuario
+Usuario vinculado
        ↓
-Hogar
+Memberships activas y selección persistente
        ↓
-Agente / API
+Agente
        ↓
 Backend
 ```

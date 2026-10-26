@@ -31,7 +31,9 @@ No se implementarán sistemas empresariales de autenticación, autorización o i
 
 # 3. Modelo de usuario del MVP
 
-Durante el MVP se trabajará inicialmente con un único usuario y un único hogar.
+El MVP conserva identidades de usuario y memberships por hogar. WhatsApp admite
+usuarios con cero, uno o varios hogares activos; Web mantiene su contexto
+autenticado y su mecanismo actual de selección.
 
 Conceptualmente:
 
@@ -81,14 +83,29 @@ WhatsApp
 Número del remitente
 │
 ▼
-HouseMate AI
+`tb_users.external_identifier`
+│
+├── `tb_household_members` con status `ACTIVE`
 │
 ▼
-Usuario/Hogar configurado
+Selección persistente de WhatsApp (`tb_whatsapp_user_contexts`)
 
-Esto permite evitar la creación de un sistema de cuentas adicional para la demostración.
+Con una membership activa, el backend selecciona y persiste ese hogar. Con
+varias, requiere una elección vigente del usuario antes de invocar el agente.
+La selección es exclusiva de WhatsApp y no reutiliza la cookie de Web.
 
 El número deberá utilizarse únicamente como identificador del usuario dentro del contexto de la aplicación y no deberá exponerse innecesariamente.
+
+La selección persistente se resuelve y valida antes de cada mensaje. Un lease
+por usuario serializa los eventos simultáneos; cada herramienta y escritura
+WhatsApp recibe un guard interno del backend, que no forma parte del prompt ni
+del esquema de herramientas. El modelo no puede elegir `householdId` o
+`actorMemberId`. Las RPC de cambios financieros vuelven a comprobar la
+membership `ACTIVE` y la selección guardada dentro de la transacción.
+
+La tabla de contexto tiene RLS habilitado y no tiene políticas para clientes.
+Solo el repositorio backend y las RPC correspondientes usan `service_role`;
+los roles de aplicación no reciben grants directos sobre la tabla.
 
 # 6. Autorización
 
@@ -100,7 +117,8 @@ datos del sistema;
 datos del usuario;
 operaciones permitidas al agente.
 
-El agente no podrá utilizar identificadores arbitrarios para acceder a información que no corresponda al contexto configurado.
+El agente no podrá utilizar identificadores arbitrarios para acceder a
+información que no corresponda al contexto confiable resuelto por el backend.
 
 Toda operación deberá resolver primero el hogar actual y validar las relaciones sensibles contra ese contexto:
 
@@ -210,6 +228,13 @@ Cuando el evento proporcione un identificador único, se deberá utilizar para e
 El backend persistirá ese valor en `ProcessedWhatsAppEvent.external_event_id`, que tendrá una restricción de unicidad en PostgreSQL. La deduplicación no dependerá de memoria del proceso.
 
 La inserción del identificador será atómica. Un conflicto de unicidad indicará un reintento y se responderá sin ejecutar nuevamente el agente o las operaciones financieras.
+
+WhatsApp adquiere primero el lease de contexto por usuario y luego reserva el
+evento. Si un envío outbound falla después de reservar el evento, una redelivery
+con el mismo identificador seguirá siendo duplicada y no reintentará la
+respuesta; el usuario deberá enviar un nuevo mensaje. El lease evita procesar
+en paralelo eventos distintos del mismo usuario, pero no sustituye una cola de
+reintentos.
 
 Conceptualmente:
 

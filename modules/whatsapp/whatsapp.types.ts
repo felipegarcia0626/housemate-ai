@@ -1,8 +1,8 @@
-export interface WhatsAppContext {
-  householdId: string;
-  actorMemberId: string;
-  conversationKey: string;
+import type { AgentContext } from "@/modules/agent/agent.types";
+
+export interface WhatsAppContext extends AgentContext {
   source: "WHATSAPP";
+  whatsappExecution: NonNullable<AgentContext["whatsappExecution"]>;
 }
 
 export interface WhatsAppProcessResult {
@@ -13,6 +13,7 @@ export type WhatsAppDomainErrorCode =
   | "VALIDATION_ERROR"
   | "CONTEXT_UNAVAILABLE"
   | "PERSISTENCE_ERROR"
+  | "PROCESSING_BUSY"
   | "AGENT_ERROR"
   | "PROVIDER_ERROR";
 

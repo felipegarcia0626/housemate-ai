@@ -76,13 +76,16 @@ Comprobar únicamente presencia, nunca imprimir valores:
 | `WHATSAPP_PHONE_NUMBER_ID` | Número usado para enviar respuestas |
 | `SUPABASE_URL` | Cliente server-side de Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | Persistencia server-side; nunca cliente/logs |
-| `HOUSEMATE_MVP_HOUSEHOLD_ID` | Household controlado del MVP |
 | `OPENAI_API_KEY` | Interpretación del Agent |
 
 El `WHATSAPP_ACCESS_TOKEN` no controla la entrega entrante por sí solo; se
 utiliza para llamadas Graph API, especialmente outbound y administración de
 activos. La entrega entrante depende de la configuración de Meta y de la
 suscripción del WABA.
+
+El webhook ya no utiliza `HOUSEMATE_MVP_HOUSEHOLD_ID` para resolver el hogar
+WhatsApp. La variable puede seguir siendo usada por otros contextos del MVP,
+pero no es fuente de la selección persistente de este canal.
 
 ## 5. Interpretar los logs del webhook
 
@@ -147,29 +150,31 @@ El servicio resuelve el contexto con:
 ```text
 message.from
   → tb_users.external_identifier
-  → tb_household_members.user_id
-  → HOUSEMATE_MVP_HOUSEHOLD_ID
+  → tb_users.id
+  → tb_household_members con status ACTIVE
+  → tb_whatsapp_user_contexts (user_id)
 ```
 
-Solo deben ejecutarse consultas `SELECT` para comprobar la asociación. El
-`service_role` necesita `SELECT` sobre `tb_users` y `tb_household_members`; la
-migración de permisos correspondiente debe estar aplicada en la base remota.
+Si hay un único hogar con membership `ACTIVE`, queda seleccionado y persistido.
+Si hay más de uno, el usuario debe elegir en un menú válido de 30 minutos antes
+de que se ejecute el agente. `Ver hogares` lista opciones y `Cambiar hogar`
+abre el menú; una respuesta numérica fuera de un menú vigente no ejecuta el
+agente. La membresía y la selección se revalidan en cada mensaje y en las RPC
+que crean o confirman movimientos. No se debe confiar en un `householdId`
+recibido del modelo o del texto del usuario.
 
-La consulta conceptual es:
+Para un diagnóstico aprobado, consultar únicamente la existencia de la
+asociación usuario-membership y el estado de `tb_whatsapp_user_contexts`; no
+mostrar números completos, nombres de hogares ni UUIDs. La tabla de contexto
+tiene RLS sin políticas para clientes y el backend la accede mediante el
+repositorio/RPC con `service_role`.
 
-```sql
-SELECT EXISTS (
-  SELECT 1
-  FROM public.tb_users AS u
-  JOIN public.tb_household_members AS hm ON hm.user_id = u.id
-  WHERE u.external_identifier = '<message.from>'
-    AND hm.household_id = '<HOUSEMATE_MVP_HOUSEHOLD_ID>'
-) AS whatsapp_context_exists;
-```
-
-No mostrar nombres, teléfonos completos, credenciales ni UUIDs en logs o
-reportes públicos. No crear asociaciones automáticamente durante un
-diagnóstico.
+Una membership que deja de estar `ACTIVE` no autoriza operaciones. Con cero
+hogares activos el webhook responde que no hay hogares disponibles; con uno
+selecciona el único hogar; con varios vuelve a solicitar elección. Los borradores
+activos (`AWAITING_OPERATION`, `AWAITING_DETAILS`, `AWAITING_CATEGORY`) y las
+propuestas `AWAITING_CONFIRMATION` impiden cambiar de hogar hasta que se
+continúen, confirmen, rechacen o cancelen mediante el flujo existente.
 
 ## 7. Diagnóstico de `INTERPRETATION_ERROR`
 

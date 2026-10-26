@@ -167,7 +167,11 @@ propuestas pendientes de confirmación e identificadores de eventos procesados.
 
 `Income` y `Expense` se almacenarán como entidades independientes. Los ingresos participarán en los resúmenes financieros, pero no en el balance de compensación entre integrantes.
 
-El modelo de datos podrá contemplar entidades como usuarios, hogares y miembros para permitir una evolución futura, pero el MVP trabajará con un único contexto de hogar configurado.
+Web/PWA mantiene el contexto configurado para los endpoints legacy y usa
+`AuthenticatedContext` en los endpoints migrados. WhatsApp resuelve las
+memberships activas del usuario y conserva una selección de hogar independiente
+por usuario. El MVP aún no ofrece una interfaz general de administración de
+hogares.
 
 Tecnología
 PostgreSQL
@@ -372,6 +376,9 @@ El objetivo es evitar duplicar decisiones entre documentos y mantener cada docum
 
 ### Una última decisión que sí dejaría cerrada
 
-He cambiado **"gestionar usuarios y hogares"** por el contexto configurado del MVP. Esto es importante: **no estamos renunciando a que el modelo de datos soporte esa evolución; simplemente no vamos a construir ese producto alrededor de ella ahora.**
+El alcance mantiene la administración general de hogares fuera del MVP. La
+selección conversacional de WhatsApp por usuario ya está implementada; no
+reemplaza el contexto Web ni concede acceso fuera de memberships activas.
 
-Así, `c4_container.md` queda coherente con `c4_context.md`, `security.md` y el alcance limitado del MVP personal.
+Así, `c4_container.md` refleja el contexto de cada canal y el alcance limitado
+del MVP.

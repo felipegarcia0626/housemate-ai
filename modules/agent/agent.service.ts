@@ -75,6 +75,30 @@ function validateContext(context: AgentContext): void {
   }
 }
 
+async function assertWhatsAppExecutionCurrent(
+  context: AgentContext,
+): Promise<void> {
+  if (context.source !== "WHATSAPP") return;
+  if (!context.whatsappExecution) {
+    throw new AgentDomainError(
+      "PERSISTENCE_ERROR",
+      "The WhatsApp execution context is unavailable.",
+    );
+  }
+  await context.whatsappExecution.assertCurrent();
+}
+
+function whatsappLease(context: AgentContext) {
+  const execution = context.whatsappExecution;
+  return execution
+    ? {
+        userId: execution.userId,
+        leaseId: execution.leaseId,
+        epoch: execution.epoch,
+      }
+    : undefined;
+}
+
 function validateProposalShape(input: ExpenseProposalInput): void {
   if (!input || typeof input !== "object") {
     throw new AgentDomainError(
@@ -165,6 +189,7 @@ export async function createExpenseProposal(
   input: ExpenseProposalInput,
   draftId?: string,
 ): Promise<ExpenseProposalResult> {
+  await assertWhatsAppExecutionCurrent(context);
   validateContext(context);
   validateProposalShape(input);
   await requireActiveMicroCategory(input.categoryId, "EXPENSE");
@@ -183,6 +208,7 @@ export async function createExpenseProposal(
       conversationKey: context.conversationKey,
       operationType: "CREATE_EXPENSE",
       payload,
+      whatsappLease: whatsappLease(context),
     });
     return { proposalId: proposal.id, status: "AWAITING_CONFIRMATION" };
   } catch (error) {
@@ -196,6 +222,7 @@ export async function createIncomeProposal(
   input: IncomeCreateInput,
   draftId?: string,
 ): Promise<IncomeProposalResult> {
+  await assertWhatsAppExecutionCurrent(context);
   validateContext(context);
   await requireActiveMicroCategory(input.categoryId, "INCOME");
   const payload: PendingIncomeProposalPayload = {
@@ -210,6 +237,7 @@ export async function createIncomeProposal(
       householdId: context.householdId,
       conversationKey: context.conversationKey,
       payload,
+      whatsappLease: whatsappLease(context),
     });
     return { proposalId: proposal.id, status: "AWAITING_CONFIRMATION" };
   } catch (error) {
@@ -241,6 +269,7 @@ export async function confirmIncomeProposal(
   context: AgentContext,
   proposalId: string,
 ): Promise<IncomeConfirmationResult | IncomeRejectionResult> {
+  await assertWhatsAppExecutionCurrent(context);
   let proposal: PendingIncomeProposal | null = null;
   try {
     proposal = await getOwnedIncomeProposal(context, proposalId);
@@ -282,6 +311,7 @@ export async function confirmIncomeProposal(
       source: context.source,
       expectedUpdatedAt: proposal?.updatedAt ?? null,
       income: persistenceInput,
+      whatsappLease: whatsappLease(context),
     });
     if (result.status === "NOT_FOUND" || result.status === "INVALID_OPERATION") {
       throw proposalUnavailable();
@@ -485,6 +515,7 @@ export async function confirmExpenseProposal(
   context: AgentContext,
   proposalId: string,
 ): Promise<ExpenseConfirmationResult | ExpenseRejectionResult> {
+  await assertWhatsAppExecutionCurrent(context);
   let proposal: PendingExpenseProposal | null = null;
   try {
     proposal = await getOwnedProposal(context, proposalId);
@@ -525,6 +556,7 @@ export async function confirmExpenseProposal(
       source: context.source,
       expectedUpdatedAt: proposal?.updatedAt ?? null,
       expense: persistenceInput,
+      whatsappLease: whatsappLease(context),
     });
     if (result.status === "NOT_FOUND" || result.status === "INVALID_OPERATION") {
       throw proposalUnavailable();
@@ -572,6 +604,7 @@ async function rejectProposal(
       actorMemberId: context.actorMemberId,
       source: context.source,
       operationType,
+      whatsappLease: whatsappLease(context),
     });
     if (result.status === "REJECTED") {
       return { proposalId, status: "REJECTED" };

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   extractWhatsAppTextMessage,
   sendWhatsAppText,
@@ -12,6 +12,9 @@ import {
   proposalCategoryLine,
 } from "@/modules/agent/agent-presentation";
 import { findActiveProposalId } from "@/modules/agent/agent.service";
+import { getActiveAgentDraft } from "@/modules/agent/category-draft.service";
+import { findPendingProposalForConversation } from "@/modules/agent/pending-proposal.repository";
+import { findSelectableHouseholdsByUserId } from "@/modules/context/authenticated-context.repository";
 import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 import { getCategoriesTool } from "@/modules/agent/tools/get-categories.tool";
 import { listHouseholdMembers } from "@/modules/household-members/household-member.service";
@@ -22,10 +25,22 @@ import type { IncomeListResult } from "@/modules/incomes/income.types";
 import type { SharingRule } from "@/modules/sharing-rules/sharing-rule.types";
 import type { ExpenseListItem } from "@/modules/expenses/expense.types";
 import {
-  findWhatsAppMember,
+  findWhatsAppUserId,
   reserveWhatsAppEvent,
   WhatsAppRepositoryError,
 } from "./whatsapp.repository";
+import {
+  acquireWhatsAppLease,
+  assertWhatsAppActiveContext,
+  assertWhatsAppLeaseCurrent,
+  readWhatsAppHouseholdContext,
+  releaseWhatsAppLease,
+  renewWhatsAppLease,
+  transitionWhatsAppHouseholdContext,
+  WhatsAppHouseholdRepositoryError,
+  type WhatsAppHouseholdContextRecord,
+  type WhatsAppLease,
+} from "./whatsapp-household.repository";
 import {
   WhatsAppDomainError,
   type WhatsAppContext,
@@ -498,46 +513,369 @@ function renderAgentResult(
   }
 }
 
-async function resolveWhatsAppContext(
+type SelectableWhatsAppHousehold = Awaited<
+  ReturnType<typeof findSelectableHouseholdsByUserId>
+>[number];
+
+function normalizedWhatsAppCommand(text: string): string {
+  return text
+    .trim()
+    .toLocaleLowerCase("es-CO")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.!¡?¿]+$/g, "")
+    .trim();
+}
+
+function isShowHouseholdsCommand(text: string): boolean {
+  return new Set(["ver hogares", "ver mis hogares", "mis hogares"]).has(
+    normalizedWhatsAppCommand(text),
+  );
+}
+
+function isChangeHouseholdCommand(text: string): boolean {
+  return new Set(["cambiar hogar", "cambiar de hogar", "cambiar el hogar"]).has(
+    normalizedWhatsAppCommand(text),
+  );
+}
+
+function isCancelCommand(text: string): boolean {
+  return new Set(["cancelar", "cancela", "cancelar seleccion"]).has(
+    normalizedWhatsAppCommand(text),
+  );
+}
+
+function numericOption(text: string): number | null {
+  const normalized = normalizedWhatsAppCommand(text);
+  return /^\d{1,2}$/.test(normalized) ? Number(normalized) : null;
+}
+
+function renderHouseholdOptions(
+  households: SelectableWhatsAppHousehold[],
+  selectedHouseholdId: string | null,
+): string {
+  return [
+    "Selecciona un hogar activo:",
+    ...households.map(
+      (household, index) =>
+        `${index + 1}. ${household.householdName}${household.householdId === selectedHouseholdId ? " (actual)" : ""}`,
+    ),
+    "La selección vence en 30 minutos. Responde con el número o escribe “Cancelar”.",
+  ].join("\n");
+}
+
+function renderHouseholdList(
+  households: SelectableWhatsAppHousehold[],
+  selectedHouseholdId: string | null,
+): string {
+  if (households.length === 0) return "No tienes hogares activos disponibles.";
+  return [
+    "Tus hogares activos:",
+    ...households.map(
+      (household, index) =>
+        `${index + 1}. ${household.householdName}${household.householdId === selectedHouseholdId ? " (actual)" : ""}`,
+    ),
+    "Para cambiar, escribe “Cambiar hogar”.",
+  ].join("\n");
+}
+
+function findActiveHousehold(
+  households: SelectableWhatsAppHousehold[],
+  householdId: string | null,
+  memberId: string | null,
+): SelectableWhatsAppHousehold | null {
+  if (!householdId || !memberId) return null;
+  return (
+    households.find(
+      (household) =>
+        household.householdId === householdId && household.memberId === memberId,
+    ) ?? null
+  );
+}
+
+function isCurrentMenu(
+  state: WhatsAppHouseholdContextRecord,
+  phoneNumberId: string,
+): boolean {
+  return Boolean(
+    state.menuHouseholdIds &&
+      state.menuPhoneNumberId === phoneNumberId &&
+      state.menuExpiresAt &&
+      Date.parse(state.menuExpiresAt) > Date.now(),
+  );
+}
+
+function createAgentContext(
   message: WhatsAppTextMessage,
-): Promise<WhatsAppContext> {
-  const householdId = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
-  if (!householdId || !UUID_PATTERN.test(householdId)) {
-    throw contextUnavailable();
-  }
-
-  let memberId: string | null;
-  try {
-    memberId = await findWhatsAppMember(householdId, message.sender);
-  } catch {
-    throw contextUnavailable();
-  }
-  if (!memberId) {
-    throw contextUnavailable();
-  }
-
+  household: SelectableWhatsAppHousehold,
+  lease: WhatsAppLease,
+): WhatsAppContext {
   return {
-    householdId,
-    actorMemberId: memberId,
+    householdId: household.householdId,
+    actorMemberId: household.memberId,
     conversationKey: `whatsapp:${message.phoneNumberId}:${message.sender}`,
     source: "WHATSAPP",
+    whatsappExecution: {
+      userId: lease.userId,
+      leaseId: lease.leaseId,
+      epoch: lease.epoch,
+      assertCurrent: () =>
+        assertWhatsAppActiveContext(lease, household.householdId, household.memberId),
+    },
   };
 }
 
-export async function processWhatsAppTextMessage(
-  message: WhatsAppTextMessage,
-): Promise<WhatsAppProcessResult> {
-  const context = await resolveWhatsAppContext(message);
-
-  let reserved: boolean;
+async function sendWhatsAppReply(message: WhatsAppTextMessage, text: string) {
   try {
-    reserved = await reserveWhatsAppEvent(message.eventId);
-  } catch (error) {
-    if (error instanceof WhatsAppRepositoryError) throw persistenceError();
+    await sendWhatsAppText(message.sender, text);
+  } catch {
+    throw new WhatsAppDomainError(
+      "PROVIDER_ERROR",
+      "WhatsApp response could not be sent.",
+    );
+  }
+}
+
+async function createHouseholdMenu(
+  lease: WhatsAppLease,
+  message: WhatsAppTextMessage,
+  households: SelectableWhatsAppHousehold[],
+  selectedHouseholdId: string | null,
+): Promise<void> {
+  const status = await transitionWhatsAppHouseholdContext(
+    lease,
+    message.phoneNumberId,
+    {
+      action: "OPEN_MENU",
+      phoneNumberId: message.phoneNumberId,
+      householdIds: households.map((household) => household.householdId),
+    },
+  );
+  if (status.status !== "MENU_OPENED") throw persistenceError();
+  await sendWhatsAppReply(
+    message,
+    renderHouseholdOptions(households, selectedHouseholdId),
+  );
+}
+
+async function hasBlockingAgentWork(context: WhatsAppContext): Promise<boolean> {
+  try {
+    const [draft, proposal] = await Promise.all([
+      getActiveAgentDraft(context),
+      findPendingProposalForConversation(
+        context.householdId,
+        context.conversationKey,
+        context.actorMemberId,
+        "WHATSAPP",
+      ),
+    ]);
+    return Boolean(draft || proposal);
+  } catch {
     throw persistenceError();
   }
-  if (!reserved) return { status: "DUPLICATE" };
+}
 
+async function answerSelectionMessage(
+  message: WhatsAppTextMessage,
+  lease: WhatsAppLease,
+  households: SelectableWhatsAppHousehold[],
+  state: WhatsAppHouseholdContextRecord,
+): Promise<boolean> {
+  const text = message.text;
+  const activeSelected = findActiveHousehold(
+    households,
+    state.selectedHouseholdId,
+    state.selectedMemberId,
+  );
+
+  if (isShowHouseholdsCommand(text)) {
+    await sendWhatsAppReply(
+      message,
+      renderHouseholdList(households, activeSelected?.householdId ?? null),
+    );
+    return true;
+  }
+
+  const option = numericOption(text);
+  if (option !== null) {
+    const transition = await transitionWhatsAppHouseholdContext(
+      lease,
+      message.phoneNumberId,
+      { action: "CHOOSE_OPTION", phoneNumberId: message.phoneNumberId, optionNumber: option },
+    );
+    if (transition.status === "SELECTED") {
+      const chosen = findActiveHousehold(
+        households,
+        transition.householdId ?? null,
+        transition.memberId ?? null,
+      );
+      if (!chosen) throw persistenceError();
+      await sendWhatsAppReply(
+        message,
+        `Hogar activo: ${chosen.householdName}. Envíame tu consulta o solicitud.`,
+      );
+      return true;
+    }
+    if (transition.status === "MENU_EXPIRED") {
+      if (households.length > 1) {
+        await createHouseholdMenu(
+          lease,
+          message,
+          households,
+          activeSelected?.householdId ?? null,
+        );
+      } else if (households.length === 1) {
+        const only = households[0];
+        const saved = await transitionWhatsAppHouseholdContext(
+          lease,
+          message.phoneNumberId,
+          { action: "SET_SELECTION", householdId: only.householdId, memberId: only.memberId },
+        );
+        if (saved.status !== "SELECTED") throw persistenceError();
+        await sendWhatsAppReply(
+          message,
+          `La selección anterior venció. Tu único hogar activo, ${only.householdName}, quedó seleccionado.`,
+        );
+      } else {
+        await sendWhatsAppReply(message, "No tienes hogares activos disponibles.");
+      }
+      return true;
+    }
+    if (transition.status === "MEMBERSHIP_UNAVAILABLE") {
+      await transitionWhatsAppHouseholdContext(lease, message.phoneNumberId, {
+        action: "CLEAR_SELECTION",
+      });
+      if (households.length > 1) {
+        await createHouseholdMenu(lease, message, households, null);
+      } else if (households.length === 1) {
+        const only = households[0];
+        const saved = await transitionWhatsAppHouseholdContext(
+          lease,
+          message.phoneNumberId,
+          { action: "SET_SELECTION", householdId: only.householdId, memberId: only.memberId },
+        );
+        if (saved.status !== "SELECTED") throw persistenceError();
+        await sendWhatsAppReply(message, `Hogar activo: ${only.householdName}.`);
+      } else {
+        await sendWhatsAppReply(message, "No tienes hogares activos disponibles.");
+      }
+      return true;
+    }
+    await sendWhatsAppReply(
+      message,
+      transition.status === "NO_CURRENT_MENU"
+        ? 'No hay una selección pendiente. Escribe “Cambiar hogar” para abrir el menú.'
+        : 'Esa opción no está disponible. Escribe “Cambiar hogar” para ver las opciones actuales.',
+    );
+    return true;
+  }
+
+  if (isCancelCommand(text) && state.menuHouseholdIds) {
+    if (state.menuPhoneNumberId !== message.phoneNumberId) {
+      await sendWhatsAppReply(message, "No hay una selección pendiente en este chat.");
+      return true;
+    }
+    await transitionWhatsAppHouseholdContext(lease, message.phoneNumberId, {
+      action: "CANCEL_MENU",
+    });
+    await sendWhatsAppReply(message, "Selección cancelada. El hogar activo no cambió.");
+    return true;
+  }
+
+  if (isChangeHouseholdCommand(text)) {
+    if (households.length === 0) {
+      await sendWhatsAppReply(message, "No tienes hogares activos disponibles.");
+      return true;
+    }
+    if (households.length === 1) {
+      const only = households[0];
+      if (!activeSelected) {
+        const saved = await transitionWhatsAppHouseholdContext(
+          lease,
+          message.phoneNumberId,
+          { action: "SET_SELECTION", householdId: only.householdId, memberId: only.memberId },
+        );
+        if (saved.status !== "SELECTED") throw persistenceError();
+      }
+      await sendWhatsAppReply(message, `Solo tienes un hogar activo: ${only.householdName}.`);
+      return true;
+    }
+    if (activeSelected) {
+      const context = createAgentContext(message, activeSelected, lease);
+      if (await hasBlockingAgentWork(context)) {
+        await sendWhatsAppReply(
+          message,
+          "Hay un borrador o propuesta pendiente en el hogar actual. Continúala, confírmala, recházala o cancélala antes de cambiar de hogar.",
+        );
+        return true;
+      }
+    }
+    await createHouseholdMenu(
+      lease,
+      message,
+      households,
+      activeSelected?.householdId ?? null,
+    );
+    return true;
+  }
+
+  if (isCancelCommand(text) && state.menuPhoneNumberId === message.phoneNumberId) {
+    await transitionWhatsAppHouseholdContext(lease, message.phoneNumberId, {
+      action: "CANCEL_MENU",
+    });
+    await sendWhatsAppReply(message, "Selección cancelada. El hogar activo no cambió.");
+    return true;
+  }
+
+  if (isCurrentMenu(state, message.phoneNumberId)) {
+    await sendWhatsAppReply(
+      message,
+      'Hay una selección de hogar en curso. Responde con una opción numérica o escribe “Cancelar”.',
+    );
+    return true;
+  }
+  if (state.menuHouseholdIds && state.menuExpiresAt && Date.parse(state.menuExpiresAt) <= Date.now()) {
+    await transitionWhatsAppHouseholdContext(lease, message.phoneNumberId, {
+      action: "CANCEL_MENU",
+    });
+  }
+
+  if (households.length === 0) {
+    await transitionWhatsAppHouseholdContext(lease, message.phoneNumberId, {
+      action: "CLEAR_SELECTION",
+    });
+    await sendWhatsAppReply(message, "No tienes hogares activos disponibles. Solicita acceso a un hogar para continuar.");
+    return true;
+  }
+
+  if (activeSelected) return false;
+  if (households.length === 1) {
+    const only = households[0];
+    const saved = await transitionWhatsAppHouseholdContext(
+      lease,
+      message.phoneNumberId,
+      { action: "SET_SELECTION", householdId: only.householdId, memberId: only.memberId },
+    );
+    if (saved.status !== "SELECTED") throw persistenceError();
+    state.selectedHouseholdId = only.householdId;
+    state.selectedMemberId = only.memberId;
+    return false;
+  }
+
+  await transitionWhatsAppHouseholdContext(lease, message.phoneNumberId, {
+    action: "CLEAR_SELECTION",
+  });
+  await createHouseholdMenu(lease, message, households, null);
+  return true;
+}
+
+async function processWithSelectedHousehold(
+  message: WhatsAppTextMessage,
+  household: SelectableWhatsAppHousehold,
+  lease: WhatsAppLease,
+): Promise<void> {
+  const context = createAgentContext(message, household, lease);
+  await context.whatsappExecution.assertCurrent();
   let proposalId = extractProposalId(message.text);
   if (!proposalId && isConfirmationOrRejection(message.text)) {
     try {
@@ -565,6 +903,7 @@ export async function processWhatsAppTextMessage(
     );
   }
 
+  await context.whatsappExecution.assertCurrent();
   let labels = emptyProposalPresentationLabels();
   if (result.type === "PROPOSAL_UPDATED" || result.type === "PROPOSAL_CREATED") {
     try {
@@ -573,17 +912,103 @@ export async function processWhatsAppTextMessage(
       labels = emptyProposalPresentationLabels();
     }
   }
+  await context.whatsappExecution.assertCurrent();
+  await sendWhatsAppReply(message, renderAgentResult(result, labels));
+}
 
+export async function processWhatsAppTextMessage(
+  message: WhatsAppTextMessage,
+): Promise<WhatsAppProcessResult> {
+  let userId: string | null;
   try {
-    await sendWhatsAppText(message.sender, renderAgentResult(result, labels));
+    userId = await findWhatsAppUserId(message.sender);
   } catch {
+    throw contextUnavailable();
+  }
+  if (!userId) throw contextUnavailable();
+
+  const leaseId = randomUUID();
+  let lease: WhatsAppLease | null;
+  try {
+    lease = await acquireWhatsAppLease(userId, leaseId);
+  } catch {
+    throw persistenceError();
+  }
+  if (!lease) {
     throw new WhatsAppDomainError(
-      "PROVIDER_ERROR",
-      "WhatsApp response could not be sent.",
+      "PROCESSING_BUSY",
+      "Another WhatsApp message is still being processed.",
     );
   }
 
-  return { status: "PROCESSED" };
+  let leaseLost = false;
+  const heartbeat = setInterval(() => {
+    void renewWhatsAppLease(lease as WhatsAppLease).then((renewed) => {
+      if (!renewed) leaseLost = true;
+    }).catch(() => {
+      leaseLost = true;
+    });
+  }, 30_000);
+  heartbeat.unref?.();
+  const assertCurrent = async () => {
+    if (leaseLost) throw new WhatsAppHouseholdRepositoryError(new Error("Lease renewal failed"));
+    await assertWhatsAppLeaseCurrent(lease as WhatsAppLease);
+  };
+
+  try {
+    await assertCurrent();
+    let reserved: boolean;
+    try {
+      reserved = await reserveWhatsAppEvent(message.eventId);
+    } catch (error) {
+      if (error instanceof WhatsAppRepositoryError) throw persistenceError();
+      throw persistenceError();
+    }
+    if (!reserved) return { status: "DUPLICATE" };
+
+    let households: SelectableWhatsAppHousehold[];
+    let state: WhatsAppHouseholdContextRecord;
+    try {
+      [households, state] = await Promise.all([
+        findSelectableHouseholdsByUserId(userId),
+        readWhatsAppHouseholdContext(userId),
+      ]);
+    } catch {
+      throw persistenceError();
+    }
+
+    const intercepted = await answerSelectionMessage(
+      message,
+      lease,
+      households,
+      state,
+    );
+    if (intercepted) return { status: "PROCESSED" };
+
+    const activeSelected = findActiveHousehold(
+      households,
+      state.selectedHouseholdId,
+      state.selectedMemberId,
+    );
+    if (!activeSelected) {
+      throw new WhatsAppDomainError(
+        "CONTEXT_UNAVAILABLE",
+        "The active WhatsApp household is unavailable.",
+      );
+    }
+
+    await processWithSelectedHousehold(message, activeSelected, {
+      ...lease,
+    });
+    return { status: "PROCESSED" };
+  } finally {
+    clearInterval(heartbeat);
+    try {
+      await releaseWhatsAppLease(lease);
+    } catch {
+      // The lease expires automatically if a best-effort release fails.
+    }
+  }
 }
 
 export function parseWhatsAppPayload(
