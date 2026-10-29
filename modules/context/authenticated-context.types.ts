@@ -8,6 +8,7 @@ export interface AuthenticatedContext {
 
 export type AuthenticatedContextErrorCode =
   | "UNAUTHENTICATED"
+  | "ACCOUNT_NOT_ELIGIBLE"
   | "AUTH_PROVIDER_ERROR"
   | "APPLICATION_USER_NOT_FOUND"
   | "NO_ACTIVE_MEMBERSHIP"

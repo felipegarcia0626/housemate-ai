@@ -16,6 +16,8 @@ import type { PeriodFinancialSummary } from "./tools/get-period-financial-summar
 import type { PeriodExpenseCategorySummary } from "@/modules/dashboard/dashboard.types";
 
 export interface AgentContext {
+  /** Auth identity supplied only by the controlled Web channel. */
+  authUserId?: string;
   householdId: string;
   actorMemberId: string;
   conversationKey: string;
@@ -148,6 +150,7 @@ export interface IncomeRejectionResult {
 }
 
 export type AgentDomainErrorCode =
+  | "ACCOUNT_NOT_ELIGIBLE"
   | "VALIDATION_ERROR"
   | "NOT_FOUND"
   | "HOUSEHOLD_MISMATCH"

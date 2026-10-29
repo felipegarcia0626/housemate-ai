@@ -59,7 +59,7 @@ export async function createSupabaseAuthServerClient() {
   );
 }
 
-export async function getAuthenticatedAuthUser(): Promise<{ id: string; email?: string | null }> {
+export async function getAuthenticatedAuthUser(): Promise<{ id: string; email?: string | null; emailConfirmedAt?: string | null }> {
   const supabase = await createSupabaseAuthServerClient();
   const { data, error } = await supabase.auth.getUser();
 
@@ -81,5 +81,5 @@ export async function getAuthenticatedAuthUser(): Promise<{ id: string; email?: 
     throw new SupabaseAuthError("UNAUTHENTICATED");
   }
 
-  return { id: data.user.id, email: data.user.email ?? null };
+  return { id: data.user.id, email: data.user.email ?? null, emailConfirmedAt: data.user.email_confirmed_at ?? null };
 }

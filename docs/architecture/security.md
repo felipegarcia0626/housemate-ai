@@ -1,5 +1,54 @@
 # Security
 
+## Elegibilidad financiera transaccional — transición 0042
+
+Las rutas financieras Web exigen correo presente y confirmado obtenido mediante
+`auth.getUser()`. `ACCOUNT_NOT_ELIGIBLE` se proyecta como HTTP 403. Recuperación,
+autenticación y gestión de cuenta mantienen su primitiva de sesión independiente.
+
+Las entradas `*_eligible` reciben la identidad Auth únicamente del contexto backend,
+nunca del modelo ni del body. El helper privado adquiere `FOR SHARE` en este orden:
+`auth.users` → hogar → `tb_users` → membership ACTIVE. Verifica correo/confirmación
+y relación Auth, y mantiene el bloqueo de la membership
+antes de adquirir el recurso financiero. No se conceden permisos generales
+de Auth a clientes ni al service role. Las funciones tienen propietario postgres,
+SECURITY DEFINER, search_path pg_catalog y objetos calificados. Solo las entradas
+pueden ejecutarse como service_role; el helper no es ejecutable por ese rol.
+
+WhatsApp conserva temporalmente su identificación heredada: la confirmación
+protegida deriva Auth del usuario del lease y comprueba la relación con el actor
+antes de la RPC existente, que sigue validando lease/selección dentro de la misma
+transacción. Un usuario demo sin Auth no puede confirmar mediante esta entrada.
+Esto NO constituye vinculación verificada de WhatsApp.
+
+0042 es aditiva: no retira los grants históricos. Por tanto, todavía existen vías
+SQL antiguas y DML de service_role que omiten la elegibilidad. El corte requiere:
+
+1. Aplicar 0042; verificar firmas, propietario, ACL y esquema Auth remoto.
+2. Desplegar todos los repositorios y rutas adaptados y comprobar la versión efectiva.
+3. Drenar solicitudes antiguas o programar un corte breve.
+4. En una migración posterior autorizada, retirar EXECUTE de las entradas antiguas
+   de gastos/confirmación y DML de ingresos/gastos/dependencias que pueda omitir
+   los wrappers. Verificar privilegios efectivos, incluidos grants por columna,
+   PUBLIC y roles heredados. Los cuerpos antiguos solo serán invocables internamente
+   por las entradas SECURITY DEFINER protegidas.
+
+No aplicar el corte antes de actualizar la versión desplegada. Una reversión a
+código antiguo después del corte fallará cerrada y requiere un plan específico.
+No se declara protección obligatoria de toda la base hasta completar ese corte.
+
+Mapa de sustitución para el corte (solo después de verificar el despliegue):
+
+| Repositorio | Entradas nuevas | Vías históricas que deben quedar privadas |
+| --- | --- | --- |
+| `expense.repository.ts` | `fn_create_expense_eligible`, `fn_update_expense_eligible`, `fn_delete_expense_eligible` | `fn_create_expense`, `fn_update_expense`, `fn_delete_expense`; DML directo de gastos, ítems y distribuciones |
+| `income.repository.ts` | `fn_create_income_eligible`, `fn_update_income_eligible`, `fn_delete_income_eligible` | INSERT/UPDATE/DELETE de `tb_incomes`, incluidos grants por columna |
+| `pending-proposal.repository.ts` | `fn_confirm_pending_expense_eligible`, `fn_confirm_pending_income_eligible` | Las dos RPC `*_consistent` y las dos `fn_confirm_pending_*` base |
+
+La asociación de recibos con gastos se mantiene dentro de la creación protegida;
+en el corte también debe retirarse el UPDATE directo de `tb_receipts.expense_id`
+sin eliminar los permisos de análisis de recibos que el repositorio aún necesita.
+
 ## 1. Propósito
 
 Este documento define las medidas de seguridad necesarias para el MVP de HouseMate AI.

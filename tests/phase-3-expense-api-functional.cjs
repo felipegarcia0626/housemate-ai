@@ -517,8 +517,10 @@ const fakeClient = {
   },
   rpc(name) {
     const args = arguments[1];
+    assert.equal(args.p_auth_user_id, "auth-user");
+    assert.equal(args.p_actor_member_id, memberA);
     observedOperations.push({ type: "rpc", name, args });
-    if (name === "fn_delete_expense") {
+    if (name === "fn_delete_expense_eligible") {
       if (rpcError) return Promise.resolve({ data: null, error: rpcError });
       const index = expenses.findIndex(
         (row) =>
@@ -538,7 +540,7 @@ const fakeClient = {
       }
       return Promise.resolve({ data: "ALREADY_CANCELLED", error: null });
     }
-    if (name === "fn_update_expense") {
+    if (name === "fn_update_expense_eligible") {
       if (rpcError) return Promise.resolve({ data: null, error: rpcError });
       const expense = expenses.find(
         (row) =>
@@ -557,7 +559,7 @@ const fakeClient = {
       if (args.p_set_category_id) expense.category_id = args.p_category_id;
       return Promise.resolve({ data: expense.id, error: null });
     }
-    if (name !== "fn_create_expense") {
+    if (name !== "fn_create_expense_eligible") {
       throw new Error("Unexpected RPC");
     }
     if (rpcError) {
@@ -1708,7 +1710,7 @@ async function main() {
     assert.equal(updatedBody.data.id, expenseNewer);
     assert.equal(
       observedOperations.filter(
-        ({ type, name }) => type === "rpc" && name === "fn_update_expense",
+        ({ type, name }) => type === "rpc" && name === "fn_update_expense_eligible",
       ).length,
       1,
     );
@@ -1842,9 +1844,10 @@ async function main() {
       [
         {
           type: "rpc",
-          name: "fn_delete_expense",
+          name: "fn_delete_expense_eligible",
           args: {
-            p_household_id: householdB,
+            p_auth_user_id: "auth-user", p_actor_member_id: memberA,
+        p_household_id: householdB,
             p_expense_id: expenseOtherHousehold,
           },
         },
@@ -1862,7 +1865,8 @@ async function main() {
       error: { code: "NOT_FOUND", message: "Recurso no encontrado." },
     });
     assert.deepEqual(observedOperations, [
-      { type: "rpc", name: "fn_delete_expense", args: {
+      { type: "rpc", name: "fn_delete_expense_eligible", args: {
+        p_auth_user_id: "auth-user", p_actor_member_id: memberA,
         p_household_id: householdB,
         p_expense_id: expenseOlder,
       } },
@@ -1902,9 +1906,10 @@ async function main() {
       [
         {
           type: "rpc",
-          name: "fn_delete_expense",
+          name: "fn_delete_expense_eligible",
           args: {
-            p_household_id: householdA,
+            p_auth_user_id: "auth-user", p_actor_member_id: memberA,
+        p_household_id: householdA,
             p_expense_id: expensePending,
           },
         },
@@ -1924,7 +1929,7 @@ async function main() {
     );
     assert.equal(
       observedOperations.filter(
-        ({ type, name }) => type === "rpc" && name === "fn_delete_expense",
+        ({ type, name }) => type === "rpc" && name === "fn_delete_expense_eligible",
       ).length,
       1,
     );
@@ -2035,10 +2040,10 @@ async function main() {
     assert.deepEqual(createdBody.data.splits, [
       { memberId: memberA, percentage: 100, amount: 100.5 },
     ]);
-    assert.ok(hasOperation({ type: "rpc", name: "fn_create_expense" }));
+    assert.ok(hasOperation({ type: "rpc", name: "fn_create_expense_eligible" }));
     assert.equal(
       observedOperations.filter(
-        ({ type, name }) => type === "rpc" && name === "fn_create_expense",
+        ({ type, name }) => type === "rpc" && name === "fn_create_expense_eligible",
       ).length,
       1,
     );
@@ -2049,7 +2054,7 @@ async function main() {
       ),
     );
     const createRpc = observedOperations.find(
-      ({ type, name }) => type === "rpc" && name === "fn_create_expense",
+      ({ type, name }) => type === "rpc" && name === "fn_create_expense_eligible",
     );
     assert.equal(createRpc.args.p_household_id, householdA);
     assert.equal(createRpc.args.p_created_by, memberA);
@@ -2081,7 +2086,7 @@ async function main() {
     );
     assert.equal(crossHouseholdPayer.status, 404);
     assert.equal((await readJson(crossHouseholdPayer)).error.code, "NOT_FOUND");
-    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense" }));
+    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense_eligible" }));
 
     observedOperations.length = 0;
     const crossHouseholdSplit = await route.POST(
@@ -2092,7 +2097,7 @@ async function main() {
     );
     assert.equal(crossHouseholdSplit.status, 404);
     assert.equal((await readJson(crossHouseholdSplit)).error.code, "NOT_FOUND");
-    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense" }));
+    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense_eligible" }));
 
     for (const [authError, status] of [
       ["UNAUTHENTICATED", 401],
@@ -2105,7 +2110,7 @@ async function main() {
       const response = await route.POST(postRequest(createBody));
       assert.equal(response.status, status);
       assert.equal((await readJson(response)).error.code, authError);
-      assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense" }));
+      assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense_eligible" }));
     }
     authContextState = { kind: "valid", householdId: householdA };
     assert.equal(
@@ -2197,6 +2202,40 @@ async function main() {
     process.env.HOUSEMATE_MVP_MEMBER_ID = memberA;
 
     rpcError = { code: "42501", message: "private persistence detail" };
+    for (const [error,status] of [
+      [{code:"42501",details:"HOUSEMATE_FINANCIAL_ELIGIBILITY_V1",message:"Financial access is unavailable"},403],
+      [{code:"42501",message:"private permission failure"},500],
+      [{code:"42501",details:"OTHER",message:"Financial access is unavailable"},500]
+    ]) {
+      rpcError=error;
+      const before=expenses.length;
+      const response=await route.POST(postRequest(createBody));
+      assert.equal(response.status,status);
+      const body=await readJson(response);
+      assert.equal(body.error.code,status===403?"ACCOUNT_NOT_ELIGIBLE":"INTERNAL_ERROR");
+      assert.equal(expenses.length,before);
+      assert.ok(!JSON.stringify(body).includes("HOUSEMATE_FINANCIAL_ELIGIBILITY_V1"));
+    }
+    rpcError={code:"42501",message:"private persistence detail"};
+    console.log("PASS Expense SQL eligibility maps 403; generic permission failures remain 500");
+    for(const error of [
+      {code:"42501",details:"HOUSEMATE_FINANCIAL_ELIGIBILITY_V1"},
+      {code:"42501",message:"permission denied"}
+    ]) {
+      rpcError=error;
+      const id=createdBody.data.id;
+      const before=JSON.stringify(expenses);
+      for(const response of [
+        await detailRoute.PATCH(patchRequest({merchant:"No mutation"},"",id),{params:Promise.resolve({id})}),
+        await detailRoute.DELETE(deleteRequest(id),{params:Promise.resolve({id})})
+      ]) {
+        assert.equal(response.status,error.details?403:500);
+        assert.equal((await readJson(response)).error.code,error.details?"ACCOUNT_NOT_ELIGIBLE":"INTERNAL_ERROR");
+      }
+      assert.equal(JSON.stringify(expenses),before);
+    }
+    rpcError={code:"42501",message:"private persistence detail"};
+    console.log("PASS Expense PATCH/DELETE distinguish eligibility from permissions without mutation");
     const persistenceResponse = await route.POST(postRequest(createBody));
     assert.equal(persistenceResponse.status, 500);
     assert.equal(

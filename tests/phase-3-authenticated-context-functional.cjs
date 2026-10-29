@@ -216,7 +216,7 @@ async function main() {
     authUser: null,
     memberships: oneMembership,
     realAuthResponse: {
-      data: { user: { id: authUserId } },
+      data: { user: { id: authUserId, email: "verified@example.test", email_confirmed_at: "2026-01-01T00:00:00Z" } },
       error: null,
     },
     useRealAuth: true,
@@ -251,7 +251,7 @@ async function main() {
   await expectError(
     () =>
       resolveWithRealRepository({
-        getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+        getAuthenticatedAuthUser: async () => ({ id: authUserId, email: "verified@example.test", emailConfirmedAt: "2026-01-01T00:00:00Z" }),
         findApplicationUserByAuthUserId:
           persistenceRepository.findApplicationUserByAuthUserId,
         findActiveMembershipsByUserId:
@@ -287,7 +287,7 @@ async function main() {
   await expectError(
     () =>
       resolveWithMembershipRepository({
-        getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+        getAuthenticatedAuthUser: async () => ({ id: authUserId, email: "verified@example.test", emailConfirmedAt: "2026-01-01T00:00:00Z" }),
         findApplicationUserByAuthUserId:
           membershipPersistenceRepository.findApplicationUserByAuthUserId,
         findActiveMembershipsByUserId:
@@ -308,10 +308,23 @@ async function main() {
   );
   console.log("PASS unauthenticated users are rejected");
 
+  for (const account of [
+    { id: authUserId },
+    { id: authUserId, email: "verified@example.test", emailConfirmedAt: null },
+    { id: authUserId, email: " ", emailConfirmedAt: "2026-01-01T00:00:00Z" },
+  ]) {
+    await expectError(() => resolveAuthenticatedContext({
+      getAuthenticatedAuthUser: async () => account,
+      findApplicationUserByAuthUserId: async () => { throw new Error("Must not read household identity"); },
+      findActiveMembershipsByUserId: async () => { throw new Error("Must not read memberships"); },
+    }), "ACCOUNT_NOT_ELIGIBLE");
+  }
+  console.log("PASS absent/unconfirmed email blocks financial context before household reads");
+
   await expectError(
     () =>
       resolveAuthenticatedContext({
-        getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+        getAuthenticatedAuthUser: async () => ({ id: authUserId, email: "verified@example.test", emailConfirmedAt: "2026-01-01T00:00:00Z" }),
         findApplicationUserByAuthUserId: async (receivedAuthUserId) => {
           assert.equal(receivedAuthUserId, authUserId);
           return null;
@@ -323,7 +336,7 @@ async function main() {
   console.log("PASS Auth user without tb_users linkage is rejected");
 
   const resolved = await resolveAuthenticatedContext({
-    getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+    getAuthenticatedAuthUser: async () => ({ id: authUserId, email: "verified@example.test", emailConfirmedAt: "2026-01-01T00:00:00Z" }),
     findApplicationUserByAuthUserId: async () => applicationUser,
     findActiveMembershipsByUserId: async (receivedUserId) => {
       assert.equal(receivedUserId, userId);
@@ -347,7 +360,7 @@ async function main() {
   await expectError(
     () =>
       resolveAuthenticatedContext({
-        getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+        getAuthenticatedAuthUser: async () => ({ id: authUserId, email: "verified@example.test", emailConfirmedAt: "2026-01-01T00:00:00Z" }),
         findApplicationUserByAuthUserId: async () => applicationUser,
         findActiveMembershipsByUserId: async () => [],
       }),
@@ -356,7 +369,7 @@ async function main() {
   console.log("PASS users without memberships are rejected");
 
   const selected = await resolveAuthenticatedContext({
-    getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+    getAuthenticatedAuthUser: async () => ({ id: authUserId, email: "verified@example.test", emailConfirmedAt: "2026-01-01T00:00:00Z" }),
     findApplicationUserByAuthUserId: async () => applicationUser,
     findActiveMembershipsByUserId: async () => [
       ...oneMembership,
@@ -371,7 +384,7 @@ async function main() {
   await assert.rejects(
     () =>
       resolveAuthenticatedContext({
-        getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+        getAuthenticatedAuthUser: async () => ({ id: authUserId, email: "verified@example.test", emailConfirmedAt: "2026-01-01T00:00:00Z" }),
         findApplicationUserByAuthUserId: async () => applicationUser,
         findActiveMembershipsByUserId: async () => [
           ...oneMembership,
@@ -390,7 +403,7 @@ async function main() {
   const externalHouseholdId = "50000000-0000-4000-8000-000000000099";
   const externalAttempt = await resolveAuthenticatedContext({
     householdId: externalHouseholdId,
-    getAuthenticatedAuthUser: async () => ({ id: authUserId }),
+    getAuthenticatedAuthUser: async () => ({ id: authUserId, email: "verified@example.test", emailConfirmedAt: "2026-01-01T00:00:00Z" }),
     findApplicationUserByAuthUserId: async (received) => {
       receivedAuthUserId = received;
       return applicationUser;

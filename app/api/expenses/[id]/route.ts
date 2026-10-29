@@ -37,6 +37,7 @@ function invalidRequest(status = 422): Response {
 }
 
 function contextErrorResponse(error: AuthenticatedContextError): Response {
+  if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
   switch (error.code) {
     case "UNAUTHENTICATED":
       return errorResponse(401, "UNAUTHENTICATED", "Se requiere una sesión autenticada.");
@@ -96,13 +97,14 @@ export async function GET(
 
   try {
     const context = await resolveAuthenticatedContext();
-    const expense = await getExpense({ householdId: context.householdId }, id);
+    const expense = await getExpense({ ...context, actorMemberId: context.memberId }, id);
     return Response.json({ data: publicExpense(expense) });
   } catch (error) {
     if (error instanceof AuthenticatedContextError) {
       return contextErrorResponse(error);
     }
     if (error instanceof ExpenseDomainError) {
+      if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
       if (error.code === "VALIDATION_ERROR") return invalidRequest();
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {
         return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");
@@ -234,7 +236,7 @@ export async function PATCH(
   try {
     const context = await resolveAuthenticatedContext();
     const expense = await updateExpense(
-      { householdId: context.householdId },
+      { ...context, actorMemberId: context.memberId },
       id,
       input,
     );
@@ -264,6 +266,7 @@ export async function PATCH(
       );
     }
     if (error instanceof ExpenseDomainError) {
+      if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
       if (error.code === "VALIDATION_ERROR") return invalidRequest();
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {
         return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");
@@ -288,13 +291,14 @@ export async function DELETE(
 
   try {
     const context = await resolveAuthenticatedContext();
-    await deleteExpense({ householdId: context.householdId }, id);
+    await deleteExpense({ ...context, actorMemberId: context.memberId }, id);
     return new Response(null, { status: 204 });
   } catch (error) {
     if (error instanceof AuthenticatedContextError) {
       return contextErrorResponse(error);
     }
     if (error instanceof ExpenseDomainError) {
+      if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
       if (error.code === "VALIDATION_ERROR") return invalidRequest();
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {
         return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");

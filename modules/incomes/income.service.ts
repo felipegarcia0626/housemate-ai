@@ -79,6 +79,9 @@ export async function createIncome(
       await prepareIncomeCreation(context, input),
     );
   } catch (error) {
+    if (error instanceof IncomeRepositoryError && error.kind === "ACCOUNT_NOT_ELIGIBLE") {
+      throw new IncomeDomainError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.");
+    }
     if (error instanceof IncomeDomainError) {
       throw error;
     }
@@ -126,6 +129,8 @@ export async function prepareIncomeCreation(
   return {
     ...input,
     householdId: context.householdId,
+    authUserId: context.authUserId,
+    actorMemberId: context.actorMemberId,
     createdBy: context.memberId,
     categoryId,
   };
@@ -192,6 +197,8 @@ export async function updateIncome(
 
     const persistenceInput: IncomeUpdatePersistenceInput = {
       householdId: context.householdId,
+      authUserId: context.authUserId,
+      actorMemberId: context.actorMemberId,
       incomeId,
     };
 
@@ -213,6 +220,9 @@ export async function updateIncome(
 
     return await updateIncomeInRepository(persistenceInput);
   } catch (error) {
+    if (error instanceof IncomeRepositoryError && error.kind === "ACCOUNT_NOT_ELIGIBLE") {
+      throw new IncomeDomainError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.");
+    }
     if (error instanceof IncomeDomainError) {
       throw error;
     }
@@ -247,11 +257,16 @@ export async function deleteIncome(
 
     const deletedId = await deleteIncomeInRepository({
       householdId: context.householdId,
+      authUserId: context.authUserId,
+      actorMemberId: context.actorMemberId,
       incomeId,
     });
 
     return { id: deletedId, result: "DELETED" };
   } catch (error) {
+    if (error instanceof IncomeRepositoryError && error.kind === "ACCOUNT_NOT_ELIGIBLE") {
+      throw new IncomeDomainError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.");
+    }
     if (error instanceof IncomeDomainError) {
       throw error;
     }

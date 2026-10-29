@@ -149,6 +149,8 @@ export async function prepareExpenseCreation(
   );
   return {
     householdId: context.householdId,
+    authUserId: context.authUserId,
+    actorMemberId: context.actorMemberId,
     createdBy: input.createdBy,
     paidByMemberId: input.paidByMemberId,
     categoryId: input.categoryId ?? null,
@@ -210,6 +212,9 @@ export async function createExpense(
   try {
     return await createValidatedExpense(context, input);
   } catch (error) {
+    if (error instanceof ExpenseRepositoryError && error.kind === "ACCOUNT_NOT_ELIGIBLE") {
+      throw new ExpenseDomainError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.");
+    }
     if (error instanceof ExpenseDomainError) {
       throw error;
     }
@@ -330,6 +335,8 @@ async function updateValidatedExpense(
         );
   const updatedExpenseId = await updateExpenseInRepository({
     householdId: context.householdId,
+    authUserId: context.authUserId,
+    actorMemberId: context.actorMemberId,
     expenseId,
     merchantIsSet: validated.merchantIsSet,
     merchant: validated.merchantIsSet ? (input.merchant ?? null) : null,
@@ -374,6 +381,9 @@ export async function updateExpense(
   try {
     return await updateValidatedExpense(context, expenseId, input);
   } catch (error) {
+    if (error instanceof ExpenseRepositoryError && error.kind === "ACCOUNT_NOT_ELIGIBLE") {
+      throw new ExpenseDomainError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.");
+    }
     if (error instanceof ExpenseDomainError) {
       throw error;
     }
@@ -408,11 +418,16 @@ export async function deleteExpense(
 
     const result = await deleteExpenseInRepository({
       householdId: context.householdId,
+      authUserId: context.authUserId,
+      actorMemberId: context.actorMemberId,
       expenseId,
     });
 
     return { id: expenseId, result };
   } catch (error) {
+    if (error instanceof ExpenseRepositoryError && error.kind === "ACCOUNT_NOT_ELIGIBLE") {
+      throw new ExpenseDomainError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.");
+    }
     if (error instanceof ExpenseDomainError) {
       throw error;
     }

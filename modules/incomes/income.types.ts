@@ -49,6 +49,8 @@ export interface IncomeUpdateInput {
 }
 
 export interface IncomeServiceContext {
+  authUserId?: string;
+  actorMemberId?: string;
   householdId: string;
 }
 
@@ -77,6 +79,7 @@ export interface IncomeDeleteResult {
 }
 
 export type IncomeDomainErrorCode =
+  | "ACCOUNT_NOT_ELIGIBLE"
   | "VALIDATION_ERROR"
   | "NOT_FOUND"
   | "HOUSEHOLD_MISMATCH"

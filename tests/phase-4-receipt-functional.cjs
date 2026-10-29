@@ -25,7 +25,7 @@ const repositoryModule = path.join(
   "receipts",
   "receipt.repository.ts",
 );
-const contextModule = path.join(root, "app", "api", "_lib", "http-context.ts");
+const contextModule = path.join(root, "modules", "context", "authenticated-context.service.ts");
 const ocrModule = path.join(
   root,
   "infrastructure",
@@ -40,7 +40,7 @@ const storageModule = path.join(
 );
 
 const householdId = "42000000-0000-4000-8000-000000000001";
-const conversationKey = "receipt-test-conversation";
+const conversationKey = `web:${householdId}:member-receipt`;
 const receiptId = "52000000-0000-4000-8000-000000000001";
 
 function deterministicReceipt(status = "PROCESSED") {
@@ -135,18 +135,33 @@ async function routeChecks() {
       return deterministicReceipt(mode === "pending" ? "PENDING" : "PROCESSED");
     },
   };
+  let accountError = null;
+  class FakeAuthenticatedContextError extends Error { constructor(code) { super(code); this.code = code; } }
   const fakeContext = {
-    getConfiguredHttpHouseholdContext: async () => ({ householdId }),
-    getConfiguredHttpConversationKey: () => conversationKey,
+    resolveAuthenticatedContext: async () => {
+      if (accountError) throw new FakeAuthenticatedContextError(accountError);
+      return { householdId, memberId: "member-receipt", authUserId: "auth-receipt" };
+    },
   };
   const load = createLoader(
     new Map([
       [contextModule, fakeContext],
+      [path.join(root, "modules", "context", "authenticated-context.types.ts"), { AuthenticatedContextError: FakeAuthenticatedContextError }],
       [serviceModule, fakeReceiptService],
       [typesModule, { ReceiptDomainError: FakeReceiptDomainError }],
     ]),
   );
   const route = load(routeModule);
+  for (const code of ["UNAUTHENTICATED", "ACCOUNT_NOT_ELIGIBLE"]) {
+    accountError = code;
+    const response = await route.POST(new Request("https://example.test/api/receipts/analyze", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ receiptId }),
+    }));
+    assert.equal(response.status, code === "UNAUTHENTICATED" ? 401 : 403);
+    assert.equal(calls.length, 0);
+  }
+  accountError = null;
+  console.log("PASS receipts reject absent session and ineligible account before analysis");
 
   const image = new File([new Uint8Array([1, 2, 3])], "ticket.jpg", {
     type: "image/jpeg",

@@ -1,5 +1,40 @@
 # Audit Findings
 
+### FINDING-013
+
+- **Área:** Elegibilidad financiera / transición de permisos 0042.
+- **Estado:** OPEN.
+- **Prioridad:** HIGH.
+- **Descripción:** 0042 añade entradas financieras protegidas y el código migra a
+  ellas, pero conserva por compatibilidad los grants históricos de service_role
+  para DML y las RPC antiguas. Esas vías SQL todavía pueden omitir la elegibilidad.
+- **Evidencia:** migraciones 0003–0009, 0018–0021 y 0042; la prueba SQL de
+  elegibilidad comprueba explícitamente que el grant histórico sigue presente.
+- **Cierre:** verificar el despliegue de todos los repositorios nuevos y retirar
+  las vías anteriores mediante un corte autorizado y pruebas de privilegios
+  efectivos. No restaurar grants amplios para recuperar una versión antigua.
+
+### FINDING-014
+
+- **Área:** Elegibilidad 0042 / orden de bloqueos.
+- **Estado:** RESOLVED (local; pendiente de despliegue).
+- **Descripción:** El guard bloqueaba membership antes del hogar requerido por FK;
+  salida/remoción bloqueaban hogar antes de membership, permitiendo deadlock.
+- **Corrección:** 0042 adquiere SHARE de hogar antes de usuario interno/membership.
+- **Evidencia:** financial-eligibility-races.cjs reinstala el helper anterior solo
+  en PostgreSQL descartable y reproduce 40P01 con fn_leave_household; el helper
+  corregido valida salida/remoción en ambos órdenes y el estado final.
+
+### FINDING-015
+
+- **Área:** Contrato HTTP de elegibilidad transaccional.
+- **Estado:** RESOLVED (local; pendiente de despliegue).
+- **Descripción:** La denegación del guard llegaba como error técnico 500.
+- **Corrección:** Marker SQL específico, mapping de repositorio/dominio y 403
+  ACCOUNT_NOT_ELIGIBLE en gastos, ingresos y Agent Web; 42501 genérico sigue 500.
+- **Evidencia:** harnesses HTTP y Agent con señal válida y errores genéricos,
+  comprobando que no se escriben movimientos ni se exponen detalles SQL.
+
 ## Purpose
 
 Este documento registra hallazgos reales detectados durante auditorías que no necesariamente bloquean el MVP. No sustituye la documentación de arquitectura, contratos, planificación ni estructura del proyecto.

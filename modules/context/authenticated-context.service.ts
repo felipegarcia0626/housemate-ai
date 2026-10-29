@@ -19,7 +19,7 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface AuthenticatedContextDependencies {
-  getAuthenticatedAuthUser: () => Promise<{ id: string } | null>;
+  getAuthenticatedAuthUser: () => Promise<{ id: string; email?: string | null; emailConfirmedAt?: string | null } | null>;
   findApplicationUserByAuthUserId: (
     authUserId: string,
   ) => Promise<ApplicationUserRecord | null>;
@@ -41,6 +41,7 @@ function contextError(
 ): AuthenticatedContextError {
   const messages: Record<AuthenticatedContextError["code"], string> = {
     UNAUTHENTICATED: "An authenticated user is required.",
+    ACCOUNT_NOT_ELIGIBLE: "A confirmed email is required for financial access.",
     AUTH_PROVIDER_ERROR: "Authentication could not be verified.",
     APPLICATION_USER_NOT_FOUND:
       "The authenticated user is not linked to an application user.",
@@ -57,7 +58,7 @@ function contextError(
 export async function resolveAuthenticatedContext(
   dependencies: AuthenticatedContextDependencies = defaultDependencies,
 ): Promise<Readonly<AuthenticatedContext>> {
-  let authUser: { id: string } | null;
+  let authUser: { id: string; email?: string | null; emailConfirmedAt?: string | null } | null;
 
   try {
     authUser = await dependencies.getAuthenticatedAuthUser();
@@ -70,6 +71,10 @@ export async function resolveAuthenticatedContext(
 
   if (!authUser || !UUID_PATTERN.test(authUser.id)) {
     throw contextError("UNAUTHENTICATED");
+  }
+
+  if (!authUser.email?.trim() || !authUser.emailConfirmedAt) {
+    throw contextError("ACCOUNT_NOT_ELIGIBLE");
   }
 
   let applicationUser: ApplicationUserRecord | null;

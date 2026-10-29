@@ -35,7 +35,7 @@ interface IncomeCategorySearchRow {
   is_active: boolean;
 }
 
-export type IncomeRepositoryErrorKind = "INTEGRITY" | "NOT_FOUND" | "TECHNICAL";
+export type IncomeRepositoryErrorKind = "ACCOUNT_NOT_ELIGIBLE" | "INTEGRITY" | "NOT_FOUND" | "TECHNICAL";
 
 export class IncomeRepositoryError extends Error {
   readonly kind: IncomeRepositoryErrorKind;
@@ -48,17 +48,23 @@ export class IncomeRepositoryError extends Error {
 }
 
 export interface IncomeCreatePersistenceInput extends IncomeCreateInput {
+  authUserId?: string;
+  actorMemberId?: string;
   householdId: string;
   createdBy: string;
   categoryId: string | null;
 }
 
 export interface IncomeUpdatePersistenceInput extends IncomeUpdateInput {
+  authUserId?: string;
+  actorMemberId?: string;
   householdId: string;
   incomeId: string;
 }
 
 export interface IncomeDeletePersistenceInput {
+  authUserId?: string;
+  actorMemberId?: string;
   householdId: string;
   incomeId: string;
 }
@@ -72,6 +78,11 @@ export interface IncomeListRepositoryResult {
 function getIncomePersistenceErrorKind(
   error: unknown,
 ): IncomeRepositoryErrorKind {
+  if (typeof error === "object" && error !== null && "code" in error && "details" in error
+      && error.code === "42501" && error.details === "HOUSEMATE_FINANCIAL_ELIGIBILITY_V1") {
+    return "ACCOUNT_NOT_ELIGIBLE";
+  }
+
   if (
     typeof error === "object" &&
     error !== null &&
@@ -137,21 +148,11 @@ export async function isIncomeCategoryAvailable(
 export async function createIncome(
   input: IncomeCreatePersistenceInput,
 ): Promise<Income> {
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_incomes")
-    .insert({
-      household_id: input.householdId,
-      created_by: input.createdBy,
-      member_id: input.memberId,
-      amount: input.amount,
-      income_date: input.incomeDate,
-      description: input.description,
-      category_id: input.categoryId,
-    })
-    .select(
-      "id,household_id,created_by,member_id,amount,income_date,description,category_id,created_at,updated_at",
-    )
-    .single();
+  const { data, error } = await getSupabaseAdminClient().rpc("fn_create_income_eligible", {
+    p_auth_user_id: input.authUserId ?? null, p_actor_member_id: input.actorMemberId ?? null,
+    p_household_id: input.householdId, p_member_id: input.memberId, p_amount: input.amount,
+    p_income_date: input.incomeDate, p_description: input.description, p_category_id: input.categoryId,
+  });
 
   if (error) {
     throw new IncomeRepositoryError(
@@ -160,7 +161,7 @@ export async function createIncome(
     );
   }
 
-  if (data === null) {
+  if (data === null || !data.id) {
     throw new IncomeRepositoryError(
       "TECHNICAL",
       new Error("Income insert returned no representation."),
@@ -214,15 +215,10 @@ export async function updateIncome(
     payload.category_id = input.categoryId;
   }
 
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_incomes")
-    .update(payload)
-    .eq("id", input.incomeId)
-    .eq("household_id", input.householdId)
-    .select(
-      "id,household_id,created_by,member_id,amount,income_date,description,category_id,created_at,updated_at",
-    )
-    .maybeSingle();
+  const { data, error } = await getSupabaseAdminClient().rpc("fn_update_income_eligible", {
+    p_auth_user_id: input.authUserId ?? null, p_actor_member_id: input.actorMemberId ?? null,
+    p_household_id: input.householdId, p_income_id: input.incomeId, p_changes: payload,
+  });
 
   if (error) {
     throw new IncomeRepositoryError(
@@ -231,7 +227,7 @@ export async function updateIncome(
     );
   }
 
-  if (data === null) {
+  if (data === null || !data.id) {
     throw new IncomeRepositoryError(
       "NOT_FOUND",
       new Error("Income was not found in the current household."),
@@ -244,13 +240,10 @@ export async function updateIncome(
 export async function deleteIncome(
   input: IncomeDeletePersistenceInput,
 ): Promise<string> {
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_incomes")
-    .delete()
-    .eq("id", input.incomeId)
-    .eq("household_id", input.householdId)
-    .select("id")
-    .maybeSingle();
+  const { data, error } = await getSupabaseAdminClient().rpc("fn_delete_income_eligible", {
+    p_auth_user_id: input.authUserId ?? null, p_actor_member_id: input.actorMemberId ?? null,
+    p_household_id: input.householdId, p_income_id: input.incomeId,
+  });
 
   if (error) {
     throw new IncomeRepositoryError(
@@ -259,14 +252,14 @@ export async function deleteIncome(
     );
   }
 
-  if (data === null || data.id !== input.incomeId) {
+  if (data !== input.incomeId) {
     throw new IncomeRepositoryError(
       "NOT_FOUND",
       new Error("Income was not found in the current household."),
     );
   }
 
-  return data.id;
+  return data;
 }
 
 function escapeIlikePattern(value: string): string {

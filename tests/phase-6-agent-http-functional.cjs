@@ -24,6 +24,7 @@ const conversationModule = path.join(
   "conversation.service.ts",
 );
 const context = {
+  authUserId: "67000000-0000-4000-8000-000000000001",
   householdId: "57000000-0000-4000-8000-000000000001",
   actorMemberId: "57000000-0000-4000-8000-000000000011",
   conversationKey: "web:57000000-0000-4000-8000-000000000001:57000000-0000-4000-8000-000000000011",
@@ -154,6 +155,7 @@ async function main() {
   assert.deepEqual(await json(valid), { data: conversationResult });
   assert.deepEqual(calls[0], {
     context: {
+      authUserId: authenticated.authUserId,
       householdId: context.householdId,
       actorMemberId: context.actorMemberId,
       conversationKey: context.conversationKey,
@@ -270,6 +272,15 @@ async function main() {
     "PASS textual confirmation is delegated without direct proposal access",
   );
 
+  const {AgentDomainError}=loader(overrides)(path.join(root,"modules/agent/agent.types.ts"));
+  // Use the same module identity as the route loader through an explicit override.
+  const eligibilityLoader=loader(new Map([...overrides,[path.join(root,"modules/agent/agent.types.ts"),{AgentDomainError}]]));
+  const eligibilityRoute=eligibilityLoader(routeModule);
+  conversationError=new AgentDomainError("ACCOUNT_NOT_ELIGIBLE","Financial access is unavailable.");
+  const denied=await eligibilityRoute.POST(jsonRequest(JSON.stringify({message:"si"})));
+  assert.equal(denied.status,403);
+  assert.equal((await json(denied)).error.code,"ACCOUNT_NOT_ELIGIBLE");
+  console.log("PASS Agent HTTP maps transactional eligibility to sanitized 403");
   conversationError = new Error("internal OpenAI or SQL detail");
   const failed = await route.POST(
     jsonRequest(JSON.stringify({ message: "test" })),

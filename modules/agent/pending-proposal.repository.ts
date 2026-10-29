@@ -11,7 +11,7 @@ import type {
 } from "./agent.types";
 import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 
-type RepositoryErrorKind = "CONFLICT" | "PERSISTENCE";
+type RepositoryErrorKind = "ACCOUNT_NOT_ELIGIBLE" | "CONFLICT" | "PERSISTENCE";
 
 export class PendingProposalRepositoryError extends Error {
   readonly kind: RepositoryErrorKind;
@@ -110,6 +110,10 @@ function persistenceError(
     typeof error === "object" && error !== null && "code" in error
       ? String((error as { code?: unknown }).code)
       : "";
+  if (code === "42501" && typeof error === "object" && error !== null
+      && "details" in error && error.details === "HOUSEMATE_FINANCIAL_ELIGIBILITY_V1") {
+    return new PendingProposalRepositoryError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.", error, operation, pendingProposalTableOrRpc(operation));
+  }
   if (code === "23505") {
     return new PendingProposalRepositoryError(
       "CONFLICT",
@@ -130,10 +134,10 @@ function persistenceError(
 
 function pendingProposalTableOrRpc(operation: string): string {
   if (operation === "confirm expense") {
-    return "fn_confirm_pending_expense_consistent";
+    return "fn_confirm_pending_expense_eligible";
   }
   if (operation === "confirm income") {
-    return "fn_confirm_pending_income_consistent";
+    return "fn_confirm_pending_income_eligible";
   }
   if (operation === "reject proposal") {
     return "fn_reject_pending_proposal";
@@ -417,6 +421,7 @@ function toExpenseRpcArguments(
 }
 
 export async function confirmPendingExpense(input: {
+  authUserId?: string;
   proposalId: string;
   householdId: string;
   conversationKey: string;
@@ -433,6 +438,7 @@ export async function confirmPendingExpense(input: {
     p_actor_member_id: input.actorMemberId,
     p_context_source: input.source,
     p_expected_updated_at: input.expectedUpdatedAt,
+    p_auth_user_id: input.authUserId ?? null,
   };
 
   if (input.expense) {
@@ -448,7 +454,7 @@ export async function confirmPendingExpense(input: {
   }
 
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_confirm_pending_expense_consistent",
+    "fn_confirm_pending_expense_eligible",
     rpcArguments,
   );
 
@@ -522,6 +528,7 @@ function toIncomeRpcArguments(
 }
 
 export async function confirmPendingIncome(input: {
+  authUserId?: string;
   proposalId: string;
   householdId: string;
   conversationKey: string;
@@ -538,6 +545,7 @@ export async function confirmPendingIncome(input: {
     p_actor_member_id: input.actorMemberId,
     p_context_source: input.source,
     p_expected_updated_at: input.expectedUpdatedAt,
+    p_auth_user_id: input.authUserId ?? null,
   };
 
   if (input.income) {
@@ -553,7 +561,7 @@ export async function confirmPendingIncome(input: {
   }
 
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_confirm_pending_income_consistent",
+    "fn_confirm_pending_income_eligible",
     rpcArguments,
   );
 

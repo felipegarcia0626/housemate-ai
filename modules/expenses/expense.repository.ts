@@ -21,7 +21,7 @@ import type {
 } from "./expense.types";
 
 export type ExpenseRepositoryErrorKind =
-  "INTEGRITY" | "NOT_FOUND" | "TECHNICAL";
+  "ACCOUNT_NOT_ELIGIBLE" | "INTEGRITY" | "NOT_FOUND" | "TECHNICAL";
 
 export class ExpenseRepositoryError extends Error {
   readonly kind: ExpenseRepositoryErrorKind;
@@ -34,6 +34,8 @@ export class ExpenseRepositoryError extends Error {
 }
 
 export interface ExpenseCreatePersistenceInput {
+  authUserId?: string;
+  actorMemberId?: string;
   householdId: string;
   createdBy: string;
   paidByMemberId: string;
@@ -49,6 +51,8 @@ export interface ExpenseCreatePersistenceInput {
 }
 
 export interface ExpenseUpdatePersistenceInput {
+  authUserId?: string;
+  actorMemberId?: string;
   householdId: string;
   expenseId: string;
   merchantIsSet: boolean;
@@ -65,6 +69,8 @@ export interface ExpenseUpdatePersistenceInput {
 }
 
 export interface ExpenseDeletePersistenceInput {
+  authUserId?: string;
+  actorMemberId?: string;
   householdId: string;
   expenseId: string;
 }
@@ -157,6 +163,11 @@ function dataAccessError(operation: string, cause: unknown): Error {
 }
 
 function getPersistenceErrorKind(error: unknown): ExpenseRepositoryErrorKind {
+  if (typeof error === "object" && error !== null && "code" in error && "details" in error
+      && error.code === "42501" && error.details === "HOUSEMATE_FINANCIAL_ELIGIBILITY_V1") {
+    return "ACCOUNT_NOT_ELIGIBLE";
+  }
+
   if (
     typeof error === "object" &&
     error !== null &&
@@ -497,9 +508,11 @@ export async function createExpense(
   input: ExpenseCreatePersistenceInput,
 ): Promise<string> {
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_create_expense",
+    "fn_create_expense_eligible",
     {
       p_household_id: input.householdId,
+      p_auth_user_id: input.authUserId ?? null,
+      p_actor_member_id: input.actorMemberId ?? null,
       p_created_by: input.createdBy,
       p_paid_by: input.paidByMemberId,
       p_category_id: input.categoryId,
@@ -538,9 +551,11 @@ export async function updateExpense(
   input: ExpenseUpdatePersistenceInput,
 ): Promise<string> {
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_update_expense",
+    "fn_update_expense_eligible",
     {
       p_household_id: input.householdId,
+      p_auth_user_id: input.authUserId ?? null,
+      p_actor_member_id: input.actorMemberId ?? null,
       p_expense_id: input.expenseId,
       p_set_merchant: input.merchantIsSet,
       p_merchant: input.merchant,
@@ -583,9 +598,11 @@ export async function deleteExpense(
   input: ExpenseDeletePersistenceInput,
 ): Promise<ExpenseDeleteOutcome> {
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_delete_expense",
+    "fn_delete_expense_eligible",
     {
       p_household_id: input.householdId,
+      p_auth_user_id: input.authUserId ?? null,
+      p_actor_member_id: input.actorMemberId ?? null,
       p_expense_id: input.expenseId,
     },
   );

@@ -16,6 +16,7 @@ function errorResponse(
 }
 
 function contextErrorResponse(error: AuthenticatedContextError): Response {
+  if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
   switch (error.code) {
     case "UNAUTHENTICATED":
       return errorResponse(

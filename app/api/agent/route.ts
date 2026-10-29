@@ -45,6 +45,7 @@ function internalError(): Response {
 }
 
 function contextErrorResponse(error: AuthenticatedContextError): Response {
+  if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
   switch (error.code) {
     case "UNAUTHENTICATED":
       return Response.json(
@@ -94,6 +95,7 @@ export async function POST(request: Request): Promise<Response> {
     console.info("[agent]", JSON.stringify({ requestId, stage: "context_start" }));
     const authenticated = await resolveAuthenticatedContext();
     const context = {
+      authUserId: authenticated.authUserId,
       householdId: authenticated.householdId,
       actorMemberId: authenticated.memberId,
       conversationKey: `web:${authenticated.householdId}:${authenticated.memberId}`,
@@ -113,6 +115,7 @@ export async function POST(request: Request): Promise<Response> {
     if (error instanceof AuthenticatedContextError) {
       return contextErrorResponse(error);
     }
+    if (error instanceof AgentDomainError && error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
     if (error instanceof AgentDomainError) return internalError();
     return internalError();
   }

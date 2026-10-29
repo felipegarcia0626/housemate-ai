@@ -47,6 +47,7 @@ function invalidRequest(status: 400 | 422): Response {
 }
 
 function contextErrorResponse(error: AuthenticatedContextError): Response {
+  if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
   switch (error.code) {
     case "UNAUTHENTICATED":
       return errorResponse(401, "UNAUTHENTICATED", "Se requiere una sesión autenticada.");
@@ -144,7 +145,7 @@ export async function GET(request: Request): Promise<Response> {
 
   try {
     const context = await resolveAuthenticatedContext();
-    const result = await listIncomes({ householdId: context.householdId }, filters);
+    const result = await listIncomes({ ...context, actorMemberId: context.memberId }, filters);
     const data = result.incomes.map((income) => ({
       id: income.id,
       createdBy: income.createdBy,
@@ -165,6 +166,7 @@ export async function GET(request: Request): Promise<Response> {
       return contextErrorResponse(error);
     }
     if (error instanceof IncomeDomainError) {
+      if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
       if (error.code === "VALIDATION_ERROR") {
         return invalidRequest(422);
       }
@@ -223,7 +225,7 @@ export async function POST(request: Request): Promise<Response> {
     const context = await resolveAuthenticatedContext();
 
     const income = await createIncome(
-      { householdId: context.householdId, memberId: context.memberId },
+      { ...context, actorMemberId: context.memberId },
       input,
     );
     return Response.json({ data: publicIncome(income) }, { status: 201 });
@@ -232,6 +234,7 @@ export async function POST(request: Request): Promise<Response> {
       return contextErrorResponse(error);
     }
     if (error instanceof IncomeDomainError) {
+      if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
       if (error.code === "VALIDATION_ERROR") return invalidRequest(422);
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {
         return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");

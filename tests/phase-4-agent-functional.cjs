@@ -178,6 +178,7 @@ const missingIncomeIds = new Set();
 let nextProposal = 1;
 let hydrationFailure = false;
 let confirmationFailure = false;
+let confirmationRpcError = null;
 let confirmationPayloadMutation = null;
 let rejectionFailure = false;
 let categoryDraftDeletionFailure = false;
@@ -584,11 +585,14 @@ const fakeClient = {
       });
     }
     if (
-      name !== "fn_confirm_pending_expense_consistent" &&
-      name !== "fn_confirm_pending_income_consistent" &&
+      name !== "fn_confirm_pending_expense_eligible" &&
+      name !== "fn_confirm_pending_income_eligible" &&
       name !== "fn_reject_pending_proposal"
     ) {
       throw new Error(`Unexpected RPC: ${name}`);
+    }
+    if (name !== "fn_reject_pending_proposal" && confirmationRpcError) {
+      return Promise.resolve({data:null,error:confirmationRpcError});
     }
     if (name !== "fn_reject_pending_proposal" && confirmationFailure) {
       return Promise.resolve({ data: null, error: { code: "40001" } });
@@ -630,8 +634,8 @@ const fakeClient = {
       proposal.updated_at = "2026-08-12T12:02:00.000Z";
     }
     if (
-      (name === "fn_confirm_pending_expense_consistent" ||
-        name === "fn_confirm_pending_income_consistent") &&
+      (name === "fn_confirm_pending_expense_eligible" ||
+        name === "fn_confirm_pending_income_eligible") &&
       proposal.status === "AWAITING_CONFIRMATION" &&
       args.p_expected_updated_at !== null &&
       args.p_expected_updated_at !== proposal.updated_at
@@ -690,7 +694,7 @@ const fakeClient = {
         error: null,
       });
     }
-    if (name === "fn_confirm_pending_income_consistent") {
+    if (name === "fn_confirm_pending_income_eligible") {
       if (proposal.operation_type !== "CREATE_INCOME") {
         return Promise.resolve({
           data: { status: "INVALID_OPERATION", income_id: null },
@@ -1809,7 +1813,7 @@ async function main() {
         tool.confirmCreateExpenseTool(context, proposalId),
       financialWrites: () => createdExpenses.length,
       financialReference: "expense_id",
-      confirmRpc: "fn_confirm_pending_expense_consistent",
+      confirmRpc: "fn_confirm_pending_expense_eligible",
     },
     {
       operation: "income",
@@ -1830,7 +1834,7 @@ async function main() {
         createIncome.confirmCreateIncomeTool(context, proposalId),
       financialWrites: () => createdIncomes.length,
       financialReference: "income_id",
-      confirmRpc: "fn_confirm_pending_income_consistent",
+      confirmRpc: "fn_confirm_pending_income_eligible",
     },
   ];
   for (const categoryCase of categoryDeactivationCases) {
@@ -2325,7 +2329,7 @@ async function main() {
   assert.ok(
     operations.some(
       ({ type, name }) =>
-        type === "rpc" && name === "fn_confirm_pending_expense_consistent",
+        type === "rpc" && name === "fn_confirm_pending_expense_eligible",
     ),
   );
   console.log("PASS Agent persistence is isolated to PendingProposal");
@@ -5199,6 +5203,18 @@ async function main() {
     2,
   );
   const createdExpensesBeforeConfirmationFailure = createdExpenses.length;
+  for(const error of [
+    {code:"42501",details:"HOUSEMATE_FINANCIAL_ELIGIBILITY_V1"},
+    {code:"42501",message:"permission denied"}
+  ]) {
+    confirmationRpcError=error;
+    try {
+      await expectAgentError(conversation.processAgentMessage(confirmationFailureContext,{message:"si"}),error.details?"ACCOUNT_NOT_ELIGIBLE":"PERSISTENCE_ERROR");
+      assert.equal(createdExpenses.length,createdExpensesBeforeConfirmationFailure);
+      assert.equal(proposals.find(row=>row.id===confirmationFailureFixture.proposal.id)?.status,"AWAITING_CONFIRMATION");
+    } finally { confirmationRpcError=null; }
+  }
+  console.log("PASS Agent SQL eligibility signal propagates without writing; generic permissions stay technical");
   confirmationFailure = true;
   try {
     await expectAgentError(
@@ -5519,6 +5535,18 @@ async function main() {
     },
   );
   const beforeFailedIncomeCount = createdIncomes.length;
+  for(const error of [
+    {code:"42501",details:"HOUSEMATE_FINANCIAL_ELIGIBILITY_V1"},
+    {code:"42501",message:"permission denied"}
+  ]) {
+    confirmationRpcError=error;
+    try {
+      await expectAgentError(conversation.processAgentMessage(failedIncomeContext,{message:"si",proposalId:failedIncomeProposal.proposalId}),error.details?"ACCOUNT_NOT_ELIGIBLE":"PERSISTENCE_ERROR");
+      assert.equal(createdIncomes.length,beforeFailedIncomeCount);
+      assert.equal(proposals.find(row=>row.id===failedIncomeProposal.proposalId)?.status,"AWAITING_CONFIRMATION");
+    } finally { confirmationRpcError=null; }
+  }
+  console.log("PASS Income Agent confirmation distinguishes eligibility and infrastructure without writing");
   confirmationFailure = true;
   try {
     await expectAgentError(

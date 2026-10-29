@@ -204,6 +204,8 @@ async function main() {
         await client.end();
       }
     }
+    await require("../tests/financial-eligibility-concurrency.cjs")(postgres);
+    await require("../tests/financial-eligibility-races.cjs")(postgres);
   } catch (error) {
     failure = error;
   } finally {

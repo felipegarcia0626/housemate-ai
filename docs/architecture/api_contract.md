@@ -2,6 +2,23 @@
 
 Version: 1.0
 
+### Elegibilidad financiera (0042, transición aditiva)
+
+Las rutas que resuelven contexto financiero autenticado requieren correo actual
+presente y confirmado. Devuelven `403 ACCOUNT_NOT_ELIGIBLE` con mensaje sanitizado
+cuando la cuenta no es elegible; la identidad y los flags no se aceptan del cliente.
+Las escrituras vuelven a validar Auth, usuario interno y membership ACTIVE en SQL.
+El rechazo transaccional identificado por SQLSTATE 42501 y DETAIL
+HOUSEMATE_FINANCIAL_ELIGIBILITY_V1 se traduce también a 403 ACCOUNT_NOT_ELIGIBLE
+para gastos, ingresos y confirmación Agent Web. Un error de permisos sin esa
+señal sigue siendo técnico (500); el DETAIL nunca se proyecta al cliente.
+`POST /api/receipts/analyze` usa el hogar/actor autenticados y conversación
+`web:<householdId>:<memberId>`, sin fallback a variables MVP. Los recibos previos
+de la conversación configurada no se reasignan automáticamente.
+El análisis de recibos no crea movimientos: la creación o confirmación posterior
+usa las entradas financieras protegidas. La retirada de permisos históricos se
+documenta en security.md y requiere un corte posterior.
+
 ---
 
 # 1. Propósito

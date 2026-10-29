@@ -48,6 +48,7 @@ function invalidRequest(status: 400 | 422): Response {
 }
 
 function contextErrorResponse(error: AuthenticatedContextError): Response {
+  if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
   switch (error.code) {
     case "UNAUTHENTICATED":
       return errorResponse(401, "UNAUTHENTICATED", "Se requiere una sesión autenticada.");
@@ -286,7 +287,7 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const context = await resolveAuthenticatedContext();
     const result = await listExpensesCollection(
-      { householdId: context.householdId },
+      { ...context, actorMemberId: context.memberId },
       filters,
     );
 
@@ -296,6 +297,7 @@ export async function GET(request: Request): Promise<Response> {
       return contextErrorResponse(error);
     }
     if (error instanceof ExpenseDomainError) {
+      if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
       if (error.code === "VALIDATION_ERROR") {
         return invalidRequest(422);
       }
@@ -329,7 +331,7 @@ export async function POST(request: Request): Promise<Response> {
     const context = await resolveAuthenticatedContext();
     const input = parseCreateInput(body, context.memberId);
     const expense = await createExpense(
-      { householdId: context.householdId },
+      { ...context, actorMemberId: context.memberId },
       input,
     );
 
@@ -361,6 +363,7 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     if (error instanceof ExpenseDomainError) {
+      if (error.code === "ACCOUNT_NOT_ELIGIBLE") return Response.json({ error: { code: error.code, message: "Confirma tu correo para acceder a las finanzas." } }, { status: 403 });
       if (error.code === "VALIDATION_ERROR") return invalidRequest(422);
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {
         return errorResponse(404, "NOT_FOUND", "Recurso no encontrado.");

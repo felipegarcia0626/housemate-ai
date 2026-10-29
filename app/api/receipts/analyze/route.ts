@@ -1,7 +1,5 @@
-import {
-  getConfiguredHttpConversationKey,
-  getConfiguredHttpHouseholdContext,
-} from "@/app/api/_lib/http-context";
+import { resolveAuthenticatedContext } from "@/modules/context/authenticated-context.service";
+import { AuthenticatedContextError } from "@/modules/context/authenticated-context.types";
 import { analyzeReceipt } from "@/modules/receipts/receipt.service";
 import {
   ReceiptDomainError,
@@ -123,14 +121,21 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    const { householdId } = await getConfiguredHttpHouseholdContext();
-    const conversationKey = getConfiguredHttpConversationKey();
+    const context = await resolveAuthenticatedContext();
+    const { householdId } = context;
+    const conversationKey = `web:${householdId}:${context.memberId}`;
     const receipt = await analyzeReceipt(
       { householdId, conversationKey },
       parsed,
     );
     return Response.json({ data: publicReceipt(receipt) });
   } catch (error) {
+    if (error instanceof AuthenticatedContextError) {
+      const status = error.code === "UNAUTHENTICATED" ? 401
+        : error.code === "HOUSEHOLD_SELECTION_REQUIRED" ? 409
+        : ["ACCOUNT_NOT_ELIGIBLE", "APPLICATION_USER_NOT_FOUND", "NO_ACTIVE_MEMBERSHIP"].includes(error.code) ? 403 : 500;
+      return Response.json({ error: { code: status === 500 ? "INTERNAL_ERROR" : error.code, message: "Acceso no disponible." } }, { status });
+    }
     if (error instanceof ReceiptDomainError) {
       if (error.code === "VALIDATION_ERROR") return invalidRequest();
       if (error.code === "NOT_FOUND" || error.code === "HOUSEHOLD_MISMATCH") {

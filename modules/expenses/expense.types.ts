@@ -170,10 +170,13 @@ export interface ExpenseCalculatedDistribution {
 }
 
 export interface ExpenseServiceContext {
+  authUserId?: string;
+  actorMemberId?: string;
   householdId: string;
 }
 
 export type ExpenseDomainErrorCode =
+  | "ACCOUNT_NOT_ELIGIBLE"
   | "VALIDATION_ERROR"
   | "NOT_FOUND"
   | "HOUSEHOLD_MISMATCH"

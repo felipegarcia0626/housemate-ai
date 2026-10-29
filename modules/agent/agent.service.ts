@@ -304,6 +304,7 @@ export async function confirmIncomeProposal(
 
   try {
     const result = await confirmPendingIncome({
+      authUserId: context.authUserId,
       proposalId,
       householdId: context.householdId,
       conversationKey: context.conversationKey,
@@ -338,6 +339,9 @@ export async function confirmIncomeProposal(
       income,
     };
   } catch (error) {
+    if (error instanceof PendingProposalRepositoryError && error.kind === "ACCOUNT_NOT_ELIGIBLE") {
+      throw new AgentDomainError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.");
+    }
     if (error instanceof AgentDomainError) throw error;
     if (error instanceof IncomeDomainError) throw error;
     throw persistenceError();
@@ -549,6 +553,7 @@ export async function confirmExpenseProposal(
 
   try {
     const result = await confirmPendingExpense({
+      authUserId: context.authUserId,
       proposalId,
       householdId: context.householdId,
       conversationKey: context.conversationKey,
@@ -576,6 +581,9 @@ export async function confirmExpenseProposal(
       expense,
     };
   } catch (error) {
+    if (error instanceof PendingProposalRepositoryError && error.kind === "ACCOUNT_NOT_ELIGIBLE") {
+      throw new AgentDomainError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.");
+    }
     if (error instanceof AgentDomainError) throw error;
     if (error instanceof ExpenseDomainError) throw error;
     throw persistenceError();

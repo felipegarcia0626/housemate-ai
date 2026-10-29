@@ -509,13 +509,27 @@ class FakeQuery {
   }
 }
 
+let rpcError;
 const fakeClient = {
   from(table) {
     observedOperations.push({ type: "from", table });
     return new FakeQuery(table);
   },
-  rpc(name) {
-    observedOperations.push({ type: "rpc", name });
+  async rpc(name, args) {
+    if (rpcError) return {data:null,error:rpcError};
+    observedOperations.push({ type: "rpc", name, args });
+    assert.equal(args.p_auth_user_id, "auth-user");
+    assert.equal(args.p_actor_member_id, memberA);
+    const query = new FakeQuery("tb_incomes");
+    if (name === "fn_create_income_eligible") return query.insert({
+      household_id: args.p_household_id, created_by: args.p_actor_member_id, member_id: args.p_member_id,
+      amount: args.p_amount, income_date: args.p_income_date, description: args.p_description, category_id: args.p_category_id,
+    }).single();
+    if (name === "fn_update_income_eligible") return query.update(args.p_changes).eq("id",args.p_income_id).eq("household_id",args.p_household_id).maybeSingle();
+    if (name === "fn_delete_income_eligible") {
+      const result=await query.delete().eq("id",args.p_income_id).eq("household_id",args.p_household_id).maybeSingle();
+      return {data:result.data?.id ?? null,error:result.error};
+    }
     throw new Error("Unexpected RPC");
   },
 };
@@ -825,6 +839,22 @@ async function main() {
     );
     authContextState = { kind: "valid", householdId: householdA };
 
+    for (const [error,status] of [
+      [{code:"42501",details:"HOUSEMATE_FINANCIAL_ELIGIBILITY_V1",message:"Financial access is unavailable"},403],
+      [{code:"42501",message:"private permission failure"},500],
+      [{code:"42501",details:"OTHER",message:"Financial access is unavailable"},500]
+    ]) {
+      rpcError=error;
+      const before=incomes.length;
+      const response=await route.POST(postRequest(createBody));
+      assert.equal(response.status,status);
+      const body=await readJson(response);
+      assert.equal(body.error.code,status===403?"ACCOUNT_NOT_ELIGIBLE":"INTERNAL_ERROR");
+      assert.equal(incomes.length,before);
+      assert.ok(!JSON.stringify(body).includes("HOUSEMATE_FINANCIAL_ELIGIBILITY_V1"));
+    }
+    rpcError=undefined;
+    console.log("PASS Income SQL eligibility maps 403; generic permission failures remain 500");
     failedTable = "tb_incomes";
     const persistenceCreate = await route.POST(postRequest(createBody));
     assert.equal(persistenceCreate.status, 500);
@@ -842,6 +872,23 @@ async function main() {
       ]),
     )(updateRouteModule);
     assert.deepEqual(Object.keys(updateRoute).sort(), ["DELETE", "PATCH"]);
+    for(const error of [
+      {code:"42501",details:"HOUSEMATE_FINANCIAL_ELIGIBILITY_V1"},
+      {code:"42501",message:"permission denied"}
+    ]) {
+      rpcError=error;
+      const before=JSON.stringify(incomes);
+      for(const response of [
+        await updateRoute.PATCH(patchRequest(incomeFirst,{description:"No mutation"}),{params:Promise.resolve({id:incomeFirst})}),
+        await updateRoute.DELETE(new Request(`http://localhost/api/incomes/${incomeFirst}`,{method:"DELETE"}),{params:Promise.resolve({id:incomeFirst})})
+      ]) {
+        assert.equal(response.status,error.details?403:500);
+        assert.equal((await readJson(response)).error.code,error.details?"ACCOUNT_NOT_ELIGIBLE":"INTERNAL_ERROR");
+      }
+      assert.equal(JSON.stringify(incomes),before);
+    }
+    rpcError=undefined;
+    console.log("PASS Income PATCH/DELETE preserve rows and distinguish eligibility from permissions");
     const updateRouteSource = fs.readFileSync(updateRouteModule, "utf8");
     for (const forbidden of [
       "income.repository",
@@ -1300,8 +1347,8 @@ async function main() {
       1,
     );
     assert.equal(
-      observedOperations.filter(({ type }) => type === "rpc").length,
-      0,
+      observedOperations.filter(({ type, name }) => type === "rpc" && name === "fn_update_income_eligible").length,
+      1,
     );
     console.log(
       "PASS PATCH query householdId cannot override context and performs one update",
