@@ -1,5 +1,14 @@
 # Audit Findings
 
+### FINDING-018
+
+- **Área:** PostgreSQL / privilegios predeterminados del esquema `public`.
+- **Estado:** OPEN (evidencia local; remoto no verificado).
+- **Prioridad:** HIGH.
+- **Descripción:** La consulta local de `pg_default_acl` mostró privilegios amplios de tabla para `anon`, `authenticated` y `service_role` en objetos futuros creados por `postgres` en `public`. La migración 0049 corrige únicamente los grants efectivos de `tb_agent_category_drafts` y no cambia estos valores predeterminados.
+- **Impacto:** Una tabla nueva creada bajo ese propietario/esquema podría recibir acceso de cliente por defecto si su migración no lo revoca explícitamente. No se afirma que la configuración remota coincida.
+- **Criterio de resolución:** Verificar las ACL predeterminadas en cada entorno autorizado, inventariar consumidores legítimos y definir una corrección acotada por propietario/esquema junto con migraciones de tabla que preserven los accesos requeridos.
+
 ### FINDING-013
 
 - **Área:** Elegibilidad financiera / transición de permisos 0042.
