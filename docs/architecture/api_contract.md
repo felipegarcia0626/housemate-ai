@@ -2,6 +2,53 @@
 
 Version: 1.0
 
+### Vinculación WhatsApp — backend 2B.1
+
+`/api/auth/whatsapp/link` requiere sesión Supabase validada con `getUser()`, correo
+presente/confirmado y usuario interno comprobados de nuevo por las RPC de 0043.
+No requiere hogar seleccionado. No acepta identidad, hogar ni flags de Auth del
+cliente. Esta ruta inicia, consulta y cancela el desafío autenticado; no finaliza
+desafíos desde el webhook ni activa por sí sola un vínculo. Esa operación pertenece
+a la unidad separada 2B.2. Todas sus respuestas, incluidos errores, llevan
+`Cache-Control: private, no-store`.
+
+| Método | Entrada JSON | Respuesta |
+| --- | --- | --- |
+| GET | Sin body | 200 `{data:{link,challenge}}`, proyección de 0043 sin número ni digest |
+| POST | `{phoneNumber,idempotencyKey}` | 201 `{data:{status:"PENDING",challengeId,expiresAt,verificationMessage}}` solo al crear; mensaje `VINCULAR <challengeId> <secreto>` |
+| DELETE | `{challengeId}` | 200 `{data:{status,challengeId}}` terminal/idempotente; 404 `{data:{status:"NOT_FOUND"}}` también para desafío ajeno |
+
+POST/DELETE exigen `application/json`, máximo 4096 caracteres y rechazan campos
+extra. El número debe incluir `+` internacional; se eliminan espacios ASCII,
+paréntesis y guiones. Se valida estructura de 8–15 dígitos, primero no cero; no se
+valida el plan nacional ni posesión del número. No se admite un número nacional
+sin prefijo, extensiones, puntos ni letras.
+
+`idempotencyKey` es UUID obligatorio, normalizado a minúsculas y usado también como
+`challengeId`. El backend genera 32 bytes CSPRNG (base64url) y persiste únicamente
+SHA-256. El secreto aparece únicamente en `verificationMessage` de la respuesta
+inicial 201. GET, DELETE, errores y reintentos nunca lo devuelven ni lo recuperan.
+
+POST devuelve 409 con `{data:{status:"RESTART_REQUIRED",challengeId}}` para un
+identificador ya usado o una carrera de creación. No devuelve un secreto diferente
+para un desafío persistido. Tras perder la respuesta inicial: consultar GET,
+cancelar el pendiente propio si existe e iniciar con un UUID nuevo respetando
+cooldown/límites; cancelar no los reinicia. Un identificador antiguo que ya no es
+el último también falla cerrado por conflicto SQL. No hay reintentos automáticos.
+
+Otros resultados POST: 429 `RATE_LIMITED`; 409 `UNAVAILABLE` o `ALREADY_LINKED`,
+siempre bajo `{data:{status}}`. Errores usan `{error:{code,message}}`: 400
+`VALIDATION_ERROR`, 401 `UNAUTHENTICATED`, 403 `ACCOUNT_NOT_ELIGIBLE`, 500
+`INTERNAL_ERROR`. Un fallo de creación con resultado incierto devuelve 503
+`CHALLENGE_OUTCOME_UNKNOWN`: consultar estado y reiniciar como arriba; nunca se
+asume que la escritura no ocurrió. Un 42501 técnico distinto del rechazo fijo de
+elegibilidad no se presenta como denegación de cuenta. No se exponen errores SQL.
+
+Los límites y TTL son los de 0043: diez minutos, tres creaciones/quince minutos,
+sesenta segundos entre creaciones y cinco intentos por desafío. El backend no
+envía mensajes, no modifica `external_identifier`, no expone revocación y no activa
+el procesamiento de `VINCULAR` en WhatsApp durante este incremento.
+
 ### Elegibilidad financiera (0042, transición aditiva)
 
 Las rutas que resuelven contexto financiero autenticado requieren correo actual
