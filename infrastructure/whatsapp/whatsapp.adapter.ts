@@ -1,7 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export class WhatsAppAdapterError extends Error {
-  constructor() {
+  constructor(
+    readonly deliveryOutcome: "RETRYABLE" | "UNKNOWN" = "UNKNOWN",
+    readonly httpStatus?: number,
+    readonly providerCode?: number,
+  ) {
     super("WhatsApp provider operation failed.");
     this.name = "WhatsAppAdapterError";
   }
@@ -153,7 +157,7 @@ export async function sendWhatsAppText(
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   if (!accessToken || !phoneNumberId) {
     logWhatsAppOutboundFailure("missing_configuration");
-    throw new WhatsAppAdapterError();
+    throw new WhatsAppAdapterError("RETRYABLE");
   }
 
   let response: Response;
@@ -162,6 +166,7 @@ export async function sendWhatsAppText(
       `https://graph.facebook.com/v20.0/${encodeURIComponent(phoneNumberId)}/messages`,
       {
         method: "POST",
+        signal: AbortSignal.timeout(20_000),
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
@@ -176,7 +181,7 @@ export async function sendWhatsAppText(
     );
   } catch {
     logWhatsAppOutboundFailure("network");
-    throw new WhatsAppAdapterError();
+    throw new WhatsAppAdapterError("UNKNOWN");
   }
 
   if (!response.ok) {
@@ -185,6 +190,6 @@ export async function sendWhatsAppText(
       httpStatus: response.status,
       ...(providerCode === undefined ? {} : { providerCode }),
     });
-    throw new WhatsAppAdapterError();
+    throw new WhatsAppAdapterError("UNKNOWN", response.status, providerCode);
   }
 }

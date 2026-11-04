@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   extractWhatsAppTextMessage,
   sendWhatsAppText,
+  WhatsAppAdapterError,
   type WhatsAppTextMessage,
 } from "@/infrastructure/whatsapp/whatsapp.adapter";
 import { processAgentMessage } from "@/modules/agent/conversation.service";
@@ -25,19 +26,17 @@ import type { IncomeListResult } from "@/modules/incomes/income.types";
 import type { SharingRule } from "@/modules/sharing-rules/sharing-rule.types";
 import type { ExpenseListItem } from "@/modules/expenses/expense.types";
 import {
-  findWhatsAppUserId,
-  reserveWhatsAppEvent,
-  WhatsAppRepositoryError,
-} from "./whatsapp.repository";
+  assertWhatsAppEvent,
+  eventArguments,
+  renewWhatsAppEvent,
+  whatsappEventRpc,
+  type WhatsAppEventFence,
+} from "./whatsapp-event.repository";
 import {
-  acquireWhatsAppLease,
   assertWhatsAppActiveContext,
-  assertWhatsAppLeaseCurrent,
   readWhatsAppHouseholdContext,
   releaseWhatsAppLease,
-  renewWhatsAppLease,
   transitionWhatsAppHouseholdContext,
-  WhatsAppHouseholdRepositoryError,
   type WhatsAppHouseholdContextRecord,
   type WhatsAppLease,
 } from "./whatsapp-household.repository";
@@ -49,6 +48,11 @@ import {
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type ProcessingMessage = WhatsAppTextMessage & {
+  event: WhatsAppEventFence;
+  userId: string;
+};
 
 function contextUnavailable(): WhatsAppDomainError {
   return new WhatsAppDomainError(
@@ -606,7 +610,7 @@ function isCurrentMenu(
 }
 
 function createAgentContext(
-  message: WhatsAppTextMessage,
+  message: ProcessingMessage,
   household: SelectableWhatsAppHousehold,
   lease: WhatsAppLease,
 ): WhatsAppContext {
@@ -616,29 +620,43 @@ function createAgentContext(
     conversationKey: `whatsapp:${message.phoneNumberId}:${message.sender}`,
     source: "WHATSAPP",
     whatsappExecution: {
+      event: message.event,
       userId: lease.userId,
       leaseId: lease.leaseId,
       epoch: lease.epoch,
-      assertCurrent: () =>
-        assertWhatsAppActiveContext(lease, household.householdId, household.memberId),
+      assertCurrent: async () => {
+        await assertWhatsAppEvent(message.event);
+        await assertWhatsAppActiveContext(
+          lease,
+          household.householdId,
+          household.memberId,
+        );
+      },
     },
   };
 }
 
-async function sendWhatsAppReply(message: WhatsAppTextMessage, text: string) {
-  try {
-    await sendWhatsAppText(message.sender, text);
-  } catch {
-    throw new WhatsAppDomainError(
-      "PROVIDER_ERROR",
-      "WhatsApp response could not be sent.",
-    );
-  }
+async function sendWhatsAppReply(
+  message: ProcessingMessage,
+  text: string,
+  financial = false,
+) {
+  await whatsappEventRpc("fn_finish_whatsapp_event", {
+    ...eventArguments(message.event),
+    p_reply_template: "TEXT_V1",
+    p_reply_text: text,
+    p_reply_guard: {
+      financial,
+      conversationDigest: createHash("sha256")
+        .update(`whatsapp:${message.phoneNumberId}:${message.sender}`, "utf8")
+        .digest("hex"),
+    },
+  });
 }
 
 async function createHouseholdMenu(
   lease: WhatsAppLease,
-  message: WhatsAppTextMessage,
+  message: ProcessingMessage,
   households: SelectableWhatsAppHousehold[],
   selectedHouseholdId: string | null,
 ): Promise<void> {
@@ -676,7 +694,7 @@ async function hasBlockingAgentWork(context: WhatsAppContext): Promise<boolean> 
 }
 
 async function answerSelectionMessage(
-  message: WhatsAppTextMessage,
+  message: ProcessingMessage,
   lease: WhatsAppLease,
   households: SelectableWhatsAppHousehold[],
   state: WhatsAppHouseholdContextRecord,
@@ -870,7 +888,7 @@ async function answerSelectionMessage(
 }
 
 async function processWithSelectedHousehold(
-  message: WhatsAppTextMessage,
+  message: ProcessingMessage,
   household: SelectableWhatsAppHousehold,
   lease: WhatsAppLease,
 ): Promise<void> {
@@ -913,102 +931,191 @@ async function processWithSelectedHousehold(
     }
   }
   await context.whatsappExecution.assertCurrent();
-  await sendWhatsAppReply(message, renderAgentResult(result, labels));
+  await sendWhatsAppReply(message, renderAgentResult(result, labels), true);
+}
+
+function eventFingerprintInput(message: WhatsAppTextMessage) {
+  return {
+    p_event_id: message.eventId,
+    p_sender: message.sender,
+    p_phone_number_id: message.phoneNumberId,
+    p_message_digest: createHash("sha256")
+      .update(message.text, "utf8")
+      .digest("hex"),
+  };
+}
+
+async function deliverStoredReply(message: WhatsAppTextMessage): Promise<void> {
+  const token = randomUUID();
+  const permit = await whatsappEventRpc("fn_prepare_whatsapp_delivery", {
+    ...eventFingerprintInput(message),
+    p_new_token: token,
+  });
+  if (permit.status !== "SEND") return;
+  if (
+    typeof permit.text !== "string" ||
+    typeof permit.epoch !== "number" ||
+    !Number.isSafeInteger(permit.epoch)
+  )
+    throw persistenceError();
+  let outcome: "ACCEPTED" | "RETRYABLE" | "UNKNOWN" = "ACCEPTED";
+  let httpStatus: number | null = null,
+    providerCode: number | null = null;
+  try {
+    await sendWhatsAppText(message.sender, permit.text);
+  } catch (error) {
+    outcome =
+      error instanceof WhatsAppAdapterError ? error.deliveryOutcome : "UNKNOWN";
+    httpStatus =
+      error instanceof WhatsAppAdapterError ? (error.httpStatus ?? null) : null;
+    providerCode =
+      error instanceof WhatsAppAdapterError
+        ? (error.providerCode ?? null)
+        : null;
+  }
+  await whatsappEventRpc("fn_finish_whatsapp_delivery", {
+    p_event_id: message.eventId,
+    p_token: token,
+    p_epoch: permit.epoch,
+    p_outcome: outcome,
+    p_http_status: httpStatus,
+    p_provider_code: providerCode,
+  });
+  if (outcome !== "ACCEPTED")
+    throw new WhatsAppDomainError(
+      "PROVIDER_ERROR",
+      "WhatsApp response could not be sent.",
+    );
 }
 
 export async function processWhatsAppTextMessage(
   message: WhatsAppTextMessage,
 ): Promise<WhatsAppProcessResult> {
-  let userId: string | null;
-  try {
-    userId = await findWhatsAppUserId(message.sender);
-  } catch {
-    throw contextUnavailable();
+  // Reserved commands, including malformed ones, never enter ordinary identity
+  // resolution or the agent. Identity is always the HMAC-validated Meta sender.
+  if (/^VINCULAR\b/i.test(message.text)) {
+    const match = /^VINCULAR\s+([0-9a-f-]{36})\s+([A-Za-z0-9_-]{43})$/i.exec(
+      message.text,
+    );
+    const valid = match && UUID_PATTERN.test(match[1]);
+    const linking = await whatsappEventRpc("fn_complete_whatsapp_link_event", {
+      ...eventFingerprintInput(message),
+      p_challenge_id: valid ? match[1] : null,
+      p_code_digest: valid
+        ? createHash("sha256").update(match[2], "utf8").digest("hex")
+        : null,
+    });
+    if (linking.status === "READY") await deliverStoredReply(message);
+    return { status: linking.status === "READY" ? "PROCESSED" : "DUPLICATE" };
   }
-  if (!userId) throw contextUnavailable();
 
-  const leaseId = randomUUID();
-  let lease: WhatsAppLease | null;
-  try {
-    lease = await acquireWhatsAppLease(userId, leaseId);
-  } catch {
-    throw persistenceError();
+  const token = randomUUID();
+  const claimed = await whatsappEventRpc("fn_claim_whatsapp_event", {
+    ...eventFingerprintInput(message),
+    p_new_token: token,
+  });
+  if (claimed.status === "READY") {
+    await deliverStoredReply(message);
+    return { status: "PROCESSED" };
   }
-  if (!lease) {
+  if (claimed.status === "UNAVAILABLE") throw contextUnavailable();
+  if (claimed.status === "BUSY")
     throw new WhatsAppDomainError(
       "PROCESSING_BUSY",
       "Another WhatsApp message is still being processed.",
     );
-  }
-
+  if (claimed.status !== "CLAIMED") return { status: "DUPLICATE" };
+  if (
+    typeof claimed.userId !== "string" ||
+    typeof claimed.leaseId !== "string" ||
+    typeof claimed.contextEpoch !== "number" ||
+    typeof claimed.epoch !== "number"
+  )
+    throw persistenceError();
+  const event: WhatsAppEventFence = {
+    eventId: message.eventId,
+    token,
+    epoch: claimed.epoch,
+  };
+  const lease: WhatsAppLease = {
+    userId: claimed.userId,
+    leaseId: claimed.leaseId,
+    epoch: claimed.contextEpoch,
+    event,
+  };
+  const processing: ProcessingMessage = {
+    ...message,
+    userId: lease.userId,
+    event,
+  };
   let leaseLost = false;
   const heartbeat = setInterval(() => {
-    void renewWhatsAppLease(lease as WhatsAppLease).then((renewed) => {
-      if (!renewed) leaseLost = true;
-    }).catch(() => {
-      leaseLost = true;
-    });
+    void renewWhatsAppEvent(event)
+      .then((renewed) => {
+        if (!renewed) leaseLost = true;
+      })
+      .catch(() => {
+        leaseLost = true;
+      });
   }, 30_000);
   heartbeat.unref?.();
-  const assertCurrent = async () => {
-    if (leaseLost) throw new WhatsAppHouseholdRepositoryError(new Error("Lease renewal failed"));
-    await assertWhatsAppLeaseCurrent(lease as WhatsAppLease);
-  };
-
+  let processingError: unknown;
   try {
-    await assertCurrent();
-    let reserved: boolean;
-    try {
-      reserved = await reserveWhatsAppEvent(message.eventId);
-    } catch (error) {
-      if (error instanceof WhatsAppRepositoryError) throw persistenceError();
-      throw persistenceError();
-    }
-    if (!reserved) return { status: "DUPLICATE" };
-
-    let households: SelectableWhatsAppHousehold[];
-    let state: WhatsAppHouseholdContextRecord;
-    try {
-      [households, state] = await Promise.all([
-        findSelectableHouseholdsByUserId(userId),
-        readWhatsAppHouseholdContext(userId),
-      ]);
-    } catch {
-      throw persistenceError();
-    }
-
+    const begun = await whatsappEventRpc(
+      "fn_begin_whatsapp_event",
+      eventArguments(event),
+    );
+    // A lost SQL response never grants another STARTED on retry.
+    if (begun.status !== "STARTED") return { status: "DUPLICATE" };
+    const [households, state] = await Promise.all([
+      findSelectableHouseholdsByUserId(lease.userId),
+      readWhatsAppHouseholdContext(lease.userId),
+    ]);
+    if (leaseLost) throw persistenceError();
+    await assertWhatsAppEvent(event);
     const intercepted = await answerSelectionMessage(
-      message,
+      processing,
       lease,
       households,
       state,
     );
-    if (intercepted) return { status: "PROCESSED" };
-
-    const activeSelected = findActiveHousehold(
-      households,
-      state.selectedHouseholdId,
-      state.selectedMemberId,
-    );
-    if (!activeSelected) {
-      throw new WhatsAppDomainError(
-        "CONTEXT_UNAVAILABLE",
-        "The active WhatsApp household is unavailable.",
+    if (!intercepted) {
+      const household = findActiveHousehold(
+        households,
+        state.selectedHouseholdId,
+        state.selectedMemberId,
       );
+      if (!household) throw contextUnavailable();
+      await whatsappEventRpc(
+        "fn_bind_whatsapp_event_context",
+        eventArguments(event),
+      );
+      await processWithSelectedHousehold(processing, household, lease);
     }
-
-    await processWithSelectedHousehold(message, activeSelected, {
-      ...lease,
-    });
-    return { status: "PROCESSED" };
+  } catch (error) {
+    processingError = error;
+    // The SQL checkpoint wins even when hydration/cleanup or its HTTP reply was
+    // lost. An uncheckpointed RUNNING is closed, never re-executed.
+    try {
+      const failed = await whatsappEventRpc(
+        "fn_fail_whatsapp_event",
+        eventArguments(event),
+      );
+      if (failed.status === "COMPLETED") processingError = undefined;
+    } catch {
+      /* Redelivery can inspect the durable checkpoint after expiry. */
+    }
   } finally {
     clearInterval(heartbeat);
     try {
       await releaseWhatsAppLease(lease);
     } catch {
-      // The lease expires automatically if a best-effort release fails.
+      /* The lease expires; no forced unlock. */
     }
   }
+  if (processingError) throw processingError;
+  await deliverStoredReply(message);
+  return { status: "PROCESSED" };
 }
 
 export function parseWhatsAppPayload(

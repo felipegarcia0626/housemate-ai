@@ -95,6 +95,7 @@ function whatsappLease(context: AgentContext) {
         userId: execution.userId,
         leaseId: execution.leaseId,
         epoch: execution.epoch,
+        event: execution.event,
       }
     : undefined;
 }

@@ -148,13 +148,21 @@ const contextA = {
   source: "WEB",
 };
 
+const eventContexts = new Map();
 function withWhatsAppExecution(context, assertCurrent = async () => {}) {
+  const eventId = `agent:${context.householdId}:${context.actorMemberId}:${context.conversationKey}`;
+  eventContexts.set(eventId, context);
   return {
     ...context,
     whatsappExecution: {
       userId: "42000000-0000-4000-8000-000000000099",
       leaseId: "52000000-0000-4000-8000-000000000099",
       epoch: 1,
+      event: {
+        eventId,
+        token: "52000000-0000-4000-8000-000000000098",
+        epoch: 1,
+      },
       assertCurrent,
     },
   };
@@ -425,6 +433,52 @@ const fakeClient = {
   },
   rpc(name, args) {
     operations.push({ type: "rpc", name, args });
+    if (args.p_event_id) {
+      const context = eventContexts.get(args.p_event_id);
+      assert.ok(context, "Controlled event scope must exist in the fake");
+      assert.equal(args.p_epoch, 1);
+      assert.equal(args.p_token, "52000000-0000-4000-8000-000000000098");
+      args = {
+        ...args,
+        p_household_id: context.householdId,
+        p_actor_member_id: context.actorMemberId,
+        p_context_source: "WHATSAPP",
+        p_source: "WHATSAPP",
+        p_created_by: context.actorMemberId,
+      };
+      const aliases = {
+        fn_create_whatsapp_draft_event: "fn_create_whatsapp_agent_draft",
+        fn_update_whatsapp_draft_event: "fn_update_whatsapp_agent_draft",
+        fn_delete_whatsapp_draft_event: "fn_delete_whatsapp_agent_draft",
+        fn_create_whatsapp_proposal_event:
+          "fn_create_whatsapp_pending_proposal",
+        fn_update_whatsapp_proposal_event:
+          "fn_update_whatsapp_pending_proposal",
+        fn_reject_whatsapp_proposal_event:
+          "fn_reject_whatsapp_pending_proposal",
+        fn_confirm_whatsapp_expense_event:
+          "fn_confirm_pending_expense_eligible",
+        fn_confirm_whatsapp_income_event: "fn_confirm_pending_income_eligible",
+      };
+      if (name === "fn_compensate_whatsapp_proposal_event") {
+        const deletion = new FakeQuery("tb_pending_proposals")
+          .delete()
+          .eq("id", args.p_proposal_id)
+          .eq("household_id", context.householdId)
+          .eq("conversation_key", args.p_conversation_key)
+          .eq("actor_member_id", context.actorMemberId)
+          .eq("source", "WHATSAPP")
+          .eq("operation_type", args.p_operation_type)
+          .eq("status", "AWAITING_CONFIRMATION")
+          .execute();
+        return Promise.resolve({
+          data: deletion.error ? null : { status: "REMOVED" },
+          error: deletion.error,
+        });
+      }
+      assert.ok(aliases[name], "Event RPC must have a controlled fake");
+      name = aliases[name];
+    }
     if (name === "fn_create_whatsapp_agent_draft") {
       const conflict = categoryDrafts.some(
         (row) =>
@@ -10101,7 +10155,7 @@ async function main() {
   assert.ok(!createExpenseTypeSource.includes("householdId"));
   assert.ok(!createExpenseTypeSource.includes("memberId"));
   assert.ok(
-    openaiSource.includes(
+    openaiSource.replace(/\r\n/g, "\n").includes(
       "Never return household, actor,\ncreatedBy, source, member ids",
     ),
   );

@@ -1,3 +1,7 @@
+import {
+  eventArguments,
+  type WhatsAppEventFence,
+} from "@/modules/whatsapp/whatsapp-event.repository";
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
 import type { ExpenseCreatePersistenceInput } from "@/modules/expenses/expense.repository";
 import type { ExpenseSource } from "@/modules/expenses/expense.types";
@@ -151,24 +155,25 @@ export async function createPendingProposal(input: {
   conversationKey: string;
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
-  whatsappLease?: { userId: string; leaseId: string; epoch: number };
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  };
 }): Promise<PendingExpenseProposal> {
   if (input.payload.source === "WHATSAPP") {
     if (!input.whatsappLease) {
       throw persistenceError("create WhatsApp proposal", new Error("Missing execution lease"));
     }
     const { data, error } = await getSupabaseAdminClient().rpc(
-      "fn_create_whatsapp_pending_proposal",
+      "fn_create_whatsapp_proposal_event",
       {
         p_id: input.id,
-        p_household_id: input.householdId,
         p_conversation_key: input.conversationKey,
-        p_actor_member_id: input.payload.actorMemberId,
         p_operation_type: input.operationType,
         p_payload: input.payload,
-        p_user_id: input.whatsappLease.userId,
-        p_lease_id: input.whatsappLease.leaseId,
-        p_lease_epoch: input.whatsappLease.epoch,
+        ...eventArguments(input.whatsappLease.event as WhatsAppEventFence),
       },
     );
     if (error || !data || typeof data !== "object" || Array.isArray(data)) {
@@ -203,7 +208,12 @@ export async function createPendingIncomeProposal(input: {
   householdId: string;
   conversationKey: string;
   payload: PendingIncomeProposalPayload;
-  whatsappLease?: { userId: string; leaseId: string; epoch: number };
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  };
 }): Promise<PendingIncomeProposal> {
   const proposal = await createPendingProposal({
     ...input,
@@ -221,25 +231,26 @@ export async function updatePendingProposalConditionally(input: {
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
   expectedUpdatedAt: string;
-  whatsappLease?: { userId: string; leaseId: string; epoch: number };
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  };
 }): Promise<PendingProposal | null> {
   if (input.source === "WHATSAPP") {
     if (!input.whatsappLease) {
       throw persistenceError("update WhatsApp proposal", new Error("Missing execution lease"));
     }
     const { data, error } = await getSupabaseAdminClient().rpc(
-      "fn_update_whatsapp_pending_proposal",
+      "fn_update_whatsapp_proposal_event",
       {
         p_id: input.id,
-        p_household_id: input.householdId,
         p_conversation_key: input.conversationKey,
-        p_actor_member_id: input.actorMemberId,
         p_operation_type: input.operationType,
         p_payload: input.payload,
         p_expected_updated_at: input.expectedUpdatedAt,
-        p_user_id: input.whatsappLease.userId,
-        p_lease_id: input.whatsappLease.leaseId,
-        p_lease_epoch: input.whatsappLease.epoch,
+        ...eventArguments(input.whatsappLease.event as WhatsAppEventFence),
       },
     );
     if (error) throw persistenceError("update WhatsApp proposal", error);
@@ -420,6 +431,40 @@ function toExpenseRpcArguments(
   };
 }
 
+function whatsappConfirmationArguments(
+  input: Record<string, unknown>,
+  event: WhatsAppEventFence | undefined,
+  kind: "EXPENSE" | "INCOME",
+) {
+  const fields =
+    kind === "EXPENSE"
+      ? [
+          "p_paid_by",
+          "p_category_id",
+          "p_receipt_id",
+          "p_merchant",
+          "p_total_amount",
+          "p_expense_date",
+          "p_description",
+          "p_items",
+          "p_distributions",
+        ]
+      : [
+          "p_member_id",
+          "p_amount",
+          "p_income_date",
+          "p_description",
+          "p_category_id",
+        ];
+  return {
+    ...eventArguments(event as WhatsAppEventFence),
+    p_proposal_id: input.p_proposal_id,
+    p_conversation_key: input.p_conversation_key,
+    p_expected_updated_at: input.p_expected_updated_at,
+    ...Object.fromEntries(fields.map((field) => [field, input[field] ?? null])),
+  };
+}
+
 export async function confirmPendingExpense(input: {
   authUserId?: string;
   proposalId: string;
@@ -429,7 +474,12 @@ export async function confirmPendingExpense(input: {
   source: "WEB" | "WHATSAPP" | "RECEIPT";
   expectedUpdatedAt: string | null;
   expense: ExpenseCreatePersistenceInput | null;
-  whatsappLease?: { userId: string; leaseId: string; epoch: number };
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  };
 }): Promise<PendingExpenseConfirmationResult> {
   const rpcArguments: Record<string, unknown> = {
     p_proposal_id: input.proposalId,
@@ -448,13 +498,19 @@ export async function confirmPendingExpense(input: {
     if (!input.whatsappLease) {
       throw persistenceError("confirm WhatsApp expense", new Error("Missing execution lease"));
     }
-    rpcArguments.p_whatsapp_user_id = input.whatsappLease.userId;
-    rpcArguments.p_whatsapp_lease_id = input.whatsappLease.leaseId;
-    rpcArguments.p_whatsapp_lease_epoch = input.whatsappLease.epoch;
+    const eventInput = whatsappConfirmationArguments(
+      rpcArguments,
+      input.whatsappLease.event,
+      "EXPENSE",
+    );
+    for (const key of Object.keys(rpcArguments)) delete rpcArguments[key];
+    Object.assign(rpcArguments, eventInput);
   }
 
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_confirm_pending_expense_eligible",
+    input.source === "WHATSAPP"
+      ? "fn_confirm_whatsapp_expense_event"
+      : "fn_confirm_pending_expense_eligible",
     rpcArguments,
   );
 
@@ -536,7 +592,12 @@ export async function confirmPendingIncome(input: {
   source: "WEB" | "WHATSAPP" | "RECEIPT";
   expectedUpdatedAt: string | null;
   income: IncomeCreatePersistenceInput | null;
-  whatsappLease?: { userId: string; leaseId: string; epoch: number };
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  };
 }): Promise<PendingIncomeConfirmationResult> {
   const rpcArguments: Record<string, unknown> = {
     p_proposal_id: input.proposalId,
@@ -555,13 +616,19 @@ export async function confirmPendingIncome(input: {
     if (!input.whatsappLease) {
       throw persistenceError("confirm WhatsApp income", new Error("Missing execution lease"));
     }
-    rpcArguments.p_whatsapp_user_id = input.whatsappLease.userId;
-    rpcArguments.p_whatsapp_lease_id = input.whatsappLease.leaseId;
-    rpcArguments.p_whatsapp_lease_epoch = input.whatsappLease.epoch;
+    const eventInput = whatsappConfirmationArguments(
+      rpcArguments,
+      input.whatsappLease.event,
+      "INCOME",
+    );
+    for (const key of Object.keys(rpcArguments)) delete rpcArguments[key];
+    Object.assign(rpcArguments, eventInput);
   }
 
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_confirm_pending_income_eligible",
+    input.source === "WHATSAPP"
+      ? "fn_confirm_whatsapp_income_event"
+      : "fn_confirm_pending_income_eligible",
     rpcArguments,
   );
 
@@ -604,7 +671,12 @@ export async function rejectPendingProposal(input: {
   actorMemberId: string;
   source: "WEB" | "WHATSAPP" | "RECEIPT";
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
-  whatsappLease?: { userId: string; leaseId: string; epoch: number };
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  };
 }): Promise<PendingProposalRejectionResult> {
   if (input.source === "WHATSAPP") {
     const lease = input.whatsappLease;
@@ -612,16 +684,12 @@ export async function rejectPendingProposal(input: {
       throw persistenceError("reject WhatsApp proposal", new Error("Missing execution lease"));
     }
     const { data, error } = await getSupabaseAdminClient().rpc(
-      "fn_reject_whatsapp_pending_proposal",
+      "fn_reject_whatsapp_proposal_event",
       {
         p_proposal_id: input.proposalId,
-        p_household_id: input.householdId,
         p_conversation_key: input.conversationKey,
-        p_actor_member_id: input.actorMemberId,
         p_operation_type: input.operationType,
-        p_user_id: lease.userId,
-        p_lease_id: lease.leaseId,
-        p_lease_epoch: lease.epoch,
+        ...eventArguments(lease.event as WhatsAppEventFence),
       },
     );
     if (error) throw persistenceError("reject WhatsApp proposal", error);
@@ -705,6 +773,30 @@ function mapRejectionResult(
   };
 }
 
+async function compensateWhatsAppProposal(
+  id: string,
+  conversationKey: string,
+  operation: "CREATE_EXPENSE" | "CREATE_INCOME",
+  event?: WhatsAppEventFence,
+): Promise<void> {
+  if (!event)
+    throw persistenceError("compensate", new Error("Missing event fence"));
+  const { data, error } = await getSupabaseAdminClient().rpc(
+    "fn_compensate_whatsapp_proposal_event",
+    {
+      ...eventArguments(event),
+      p_proposal_id: id,
+      p_conversation_key: conversationKey,
+      p_operation_type: operation,
+    },
+  );
+  if (error || !data || !["REMOVED", "NOT_FOUND"].includes(data.status))
+    throw persistenceError(
+      "compensate",
+      error ?? new Error("Proposal version conflict"),
+    );
+}
+
 /**
  * Consumes a proposal atomically. The partial unique index prevents a second
  * active proposal for the same conversation, and this conditional delete
@@ -716,7 +808,17 @@ export async function consumePendingProposal(
   conversationKey: string,
   actorMemberId: string,
   source: ExpenseSource,
+  event?: WhatsAppEventFence,
 ): Promise<PendingExpenseProposal | null> {
+  if (source === "WHATSAPP") {
+    await compensateWhatsAppProposal(
+      id,
+      conversationKey,
+      "CREATE_EXPENSE",
+      event,
+    );
+    return null;
+  }
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .delete()
@@ -744,7 +846,17 @@ export async function consumePendingIncomeProposal(
   conversationKey: string,
   actorMemberId: string,
   source: ExpenseSource,
+  event?: WhatsAppEventFence,
 ): Promise<PendingIncomeProposal | null> {
+  if (source === "WHATSAPP") {
+    await compensateWhatsAppProposal(
+      id,
+      conversationKey,
+      "CREATE_INCOME",
+      event,
+    );
+    return null;
+  }
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .delete()
@@ -769,6 +881,11 @@ export async function consumePendingIncomeProposal(
 export async function restorePendingProposal(
   proposal: PendingExpenseProposal,
 ): Promise<void> {
+  if (proposal.payload.source === "WHATSAPP")
+    throw persistenceError(
+      "restore",
+      new Error("WhatsApp restoration is not permitted"),
+    );
   const { error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .insert({
@@ -790,6 +907,11 @@ export async function restorePendingProposal(
 export async function restorePendingIncomeProposal(
   proposal: PendingIncomeProposal,
 ): Promise<void> {
+  if (proposal.payload.source === "WHATSAPP")
+    throw persistenceError(
+      "restore income",
+      new Error("WhatsApp restoration is not permitted"),
+    );
   const { error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .insert({

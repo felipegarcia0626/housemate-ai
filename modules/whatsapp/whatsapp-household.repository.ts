@@ -1,4 +1,8 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import {
+  eventArguments,
+  type WhatsAppEventFence,
+} from "./whatsapp-event.repository";
 
 export interface WhatsAppHouseholdContextRecord {
   selectedHouseholdId: string | null;
@@ -9,6 +13,7 @@ export interface WhatsAppHouseholdContextRecord {
 }
 
 export interface WhatsAppLease {
+  event?: WhatsAppEventFence;
   userId: string;
   leaseId: string;
   epoch: number;
@@ -157,12 +162,10 @@ export async function transitionWhatsAppHouseholdContext(
   transition: WhatsAppHouseholdTransition,
 ): Promise<WhatsAppHouseholdTransitionResult> {
   const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_transition_whatsapp_household_context",
+    "fn_transition_whatsapp_event_context",
     {
-      p_user_id: lease.userId,
+      ...eventArguments(lease.event as WhatsAppEventFence),
       p_phone_number_id: phoneNumberId,
-      p_lease_id: lease.leaseId,
-      p_lease_epoch: lease.epoch,
       p_action: transition.action,
       p_household_id:
         transition.action === "SET_SELECTION" ? transition.householdId : null,

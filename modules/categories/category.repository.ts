@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import {
+  eventArguments,
+  type WhatsAppEventFence,
+} from "@/modules/whatsapp/whatsapp-event.repository";
 import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 
 import { normalizeCategoryName } from "./category.types";
@@ -334,6 +338,7 @@ export async function createOrReuseMicroCategory(input: {
   name: string;
   movementType: CategoryMovementType;
   parentMacroId: string;
+  whatsappEvent?: WhatsAppEventFence;
 }): Promise<HierarchicalCategory> {
   const name = input.name.trim();
   const normalizedName = normalizeCategoryName(name);
@@ -385,19 +390,27 @@ export async function createOrReuseMicroCategory(input: {
     input.parentMacroId,
     normalizedName,
   );
-  const { data, error } = await client
-    .from("tb_categories")
-    .insert({
-      id,
-      movement_type: input.movementType,
-      level: "MICRO",
-      parent_id: input.parentMacroId,
-      name,
-      description: null,
-      is_active: true,
-    })
-    .select("id,name,movement_type,level,parent_id,is_active")
-    .single();
+  const { data, error } = input.whatsappEvent
+    ? await client.rpc("fn_insert_whatsapp_category_event", {
+        ...eventArguments(input.whatsappEvent),
+        p_id: id,
+        p_name: name,
+        p_movement_type: input.movementType,
+        p_parent_id: input.parentMacroId,
+      })
+    : await client
+        .from("tb_categories")
+        .insert({
+          id,
+          movement_type: input.movementType,
+          level: "MICRO",
+          parent_id: input.parentMacroId,
+          name,
+          description: null,
+          is_active: true,
+        })
+        .select("id,name,movement_type,level,parent_id,is_active")
+        .single();
 
   if (!error && data) {
     return toHierarchicalCategory(data as CategoryCreationRow, parentData.name);

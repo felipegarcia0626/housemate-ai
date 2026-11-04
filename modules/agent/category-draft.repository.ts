@@ -1,3 +1,7 @@
+import {
+  eventArguments,
+  type WhatsAppEventFence,
+} from "@/modules/whatsapp/whatsapp-event.repository";
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
 import type {
   AgentDraft,
@@ -313,7 +317,12 @@ export async function createCategoryDraft(input: {
   source: ExpenseSource;
   operationType: AgentCategoryDraftOperation;
   payload: AgentCategoryDraftPayload;
-  whatsappLease?: { userId: string; leaseId: string; epoch: number };
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  };
 }): Promise<AgentCategoryDraft> {
   const draft = await createAgentDraft({
     ...input,
@@ -332,23 +341,24 @@ export async function createAgentDraft(input: {
   operationType: AgentCategoryDraftOperation | null;
   status: AgentCategoryDraftStatus;
   payload: AgentCategoryDraftPayload;
-  whatsappLease?: { userId: string; leaseId: string; epoch: number };
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  };
 }): Promise<AgentDraft> {
   if (input.source === "WHATSAPP") {
     if (!input.whatsappLease) handleError(new Error("Missing WhatsApp execution lease"), "create_agent_draft");
     const { data, error } = await getSupabaseAdminClient().rpc(
-      "fn_create_whatsapp_agent_draft",
+      "fn_create_whatsapp_draft_event",
       {
         p_id: input.id,
-        p_household_id: input.householdId,
-        p_actor_member_id: input.actorMemberId,
         p_conversation_key: input.conversationKey,
         p_operation_type: input.operationType,
         p_payload: input.payload,
         p_status: input.status,
-        p_user_id: input.whatsappLease.userId,
-        p_lease_id: input.whatsappLease.leaseId,
-        p_lease_epoch: input.whatsappLease.epoch,
+        ...eventArguments(input.whatsappLease.event as WhatsAppEventFence),
       },
     );
     if (error || !data || typeof data !== "object" || Array.isArray(data)) {
@@ -425,24 +435,25 @@ export async function updateAgentDraft(
   status: AgentCategoryDraftStatus,
   payload: AgentCategoryDraftPayload,
   expectedUpdatedAt?: string,
-  whatsappLease?: { userId: string; leaseId: string; epoch: number },
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  },
 ): Promise<AgentDraft> {
   if (source === "WHATSAPP") {
     if (!whatsappLease) handleError(new Error("Missing WhatsApp execution lease"), "update_agent_draft");
     const { data, error } = await getSupabaseAdminClient().rpc(
-      "fn_update_whatsapp_agent_draft",
+      "fn_update_whatsapp_draft_event",
       {
         p_id: id,
-        p_household_id: householdId,
-        p_actor_member_id: actorMemberId,
         p_conversation_key: conversationKey,
         p_operation_type: operationType,
         p_payload: payload,
         p_status: status,
         p_expected_updated_at: expectedUpdatedAt ?? null,
-        p_user_id: whatsappLease.userId,
-        p_lease_id: whatsappLease.leaseId,
-        p_lease_epoch: whatsappLease.epoch,
+        ...eventArguments(whatsappLease.event as WhatsAppEventFence),
       },
     );
     if (error || !data || typeof data !== "object" || Array.isArray(data)) {
@@ -474,24 +485,25 @@ export async function updateCategoryDraft(
   source: ExpenseSource,
   payload: AgentCategoryDraftPayload,
   expectedUpdatedAt?: string,
-  whatsappLease?: { userId: string; leaseId: string; epoch: number },
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  },
 ): Promise<AgentCategoryDraft> {
   if (source === "WHATSAPP") {
     if (!whatsappLease) handleError(new Error("Missing WhatsApp execution lease"), "update_category_draft");
     const { data, error } = await getSupabaseAdminClient().rpc(
-      "fn_update_whatsapp_agent_draft",
+      "fn_update_whatsapp_draft_event",
       {
         p_id: id,
-        p_household_id: householdId,
-        p_actor_member_id: actorMemberId,
         p_conversation_key: conversationKey,
         p_operation_type: "expense" in payload ? "CREATE_EXPENSE" : "CREATE_INCOME",
         p_payload: payload,
         p_status: "AWAITING_CATEGORY",
         p_expected_updated_at: expectedUpdatedAt ?? null,
-        p_user_id: whatsappLease.userId,
-        p_lease_id: whatsappLease.leaseId,
-        p_lease_epoch: whatsappLease.epoch,
+        ...eventArguments(whatsappLease.event as WhatsAppEventFence),
       },
     );
     if (error || !data || typeof data !== "object" || Array.isArray(data)) {
@@ -523,21 +535,22 @@ export async function deleteAgentDraft(
   conversationKey: string,
   source: ExpenseSource,
   expectedUpdatedAt: string,
-  whatsappLease?: { userId: string; leaseId: string; epoch: number },
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  },
 ): Promise<CategoryDraftDeleteResult> {
   if (source === "WHATSAPP") {
     if (!whatsappLease) handleError(new Error("Missing WhatsApp execution lease"), "delete_agent_draft");
     const { data, error } = await getSupabaseAdminClient().rpc(
-      "fn_delete_whatsapp_agent_draft",
+      "fn_delete_whatsapp_draft_event",
       {
         p_id: id,
-        p_household_id: householdId,
-        p_actor_member_id: actorMemberId,
         p_conversation_key: conversationKey,
         p_expected_updated_at: expectedUpdatedAt,
-        p_user_id: whatsappLease.userId,
-        p_lease_id: whatsappLease.leaseId,
-        p_lease_epoch: whatsappLease.epoch,
+        ...eventArguments(whatsappLease.event as WhatsAppEventFence),
       },
     );
     if (error) handleError(error, "delete_agent_draft");
@@ -592,7 +605,12 @@ export async function deleteCategoryDraft(
   conversationKey: string,
   source: ExpenseSource,
   expectedUpdatedAt: string,
-  whatsappLease?: { userId: string; leaseId: string; epoch: number },
+  whatsappLease?: {
+    userId: string;
+    leaseId: string;
+    epoch: number;
+    event?: WhatsAppEventFence;
+  },
 ): Promise<CategoryDraftDeleteResult> {
   return deleteAgentDraft(
     id,

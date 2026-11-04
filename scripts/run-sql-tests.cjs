@@ -412,6 +412,9 @@ async function main() {
     }
     await require("../tests/financial-eligibility-concurrency.cjs")(postgres);
     await require("../tests/financial-eligibility-races.cjs")(postgres);
+    await require("../tests/whatsapp-authorization-concurrency.cjs")(postgres);
+    await require("../tests/whatsapp-event-recovery-concurrency.cjs")(postgres);
+    await require("../tests/whatsapp-event-http-sql.cjs")(postgres);
     await require("../tests/whatsapp-linking-http-sql.cjs")(postgres);
   } catch (error) {
     failure = error;

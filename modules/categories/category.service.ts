@@ -57,6 +57,7 @@ export async function createOrReuseMicroCategory(input: {
   name: string;
   movementType: CategoryMovementType;
   parentMacroId: string;
+  whatsappEvent?: import("@/modules/whatsapp/whatsapp-event.repository").WhatsAppEventFence;
 }): Promise<HierarchicalCategory> {
   try {
     return await createOrReuseMicroCategoryInRepository(input);

@@ -24,6 +24,7 @@ export interface AgentContext {
   source: ExpenseSource;
   /** Trusted channel execution guard. Never included in model input or schemas. */
   whatsappExecution?: {
+    event?: import("@/modules/whatsapp/whatsapp-event.repository").WhatsAppEventFence;
     userId: string;
     leaseId: string;
     epoch: number;

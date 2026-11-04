@@ -38,6 +38,7 @@ const proposalId = "52000000-0000-4000-8000-000000000001";
 const appSecret = "whatsapp-app-secret";
 
 const processedEvents = new Set();
+const receipts = new Map();
 const whatsappUserContext = {
   selected_household_id: null,
   selected_member_id: null,
@@ -64,6 +65,8 @@ let agentMode = "proposal";
 let agentStarted;
 let agentGate = Promise.resolve();
 let outboundMode = "success";
+let outboundStarted;
+let outboundGate = Promise.resolve();
 let operationStep = 0;
 let updatedProposalAmount = 70000;
 let updatedProposalDate = "2026-08-16";
@@ -255,6 +258,155 @@ const fakeClient = {
   },
   async rpc(name, args) {
     operations.push({ type: "rpc", name, args });
+    const reply = (data) => ({ data, error: null });
+    const event = receipts.get(args.p_event_id);
+    const fingerprint = JSON.stringify([
+      args.p_sender,
+      args.p_phone_number_id,
+      args.p_message_digest,
+    ]);
+    if (name === "fn_claim_whatsapp_event") {
+      if (event) {
+        if (event.fingerprint !== fingerprint)
+          return reply({ status: "CONFLICT" });
+        return reply({
+          status:
+            event.state === "COMPLETED" &&
+            ["READY", "RETRYABLE"].includes(event.delivery)
+              ? "READY"
+              : event.state === "RUNNING"
+                ? "BUSY"
+                : "DUPLICATE",
+        });
+      }
+      if (processedEvents.has(args.p_event_id))
+        return reply({ status: "HISTORICAL" });
+      if (args.p_sender !== sender) return reply({ status: "UNAVAILABLE" });
+      if (
+        Date.parse(whatsappUserContext.processing_expires_at ?? "") > Date.now()
+      )
+        return reply({ status: "BUSY" });
+      whatsappUserContext.processing_lease_id = args.p_new_token;
+      whatsappUserContext.processing_epoch++;
+      whatsappUserContext.processing_expires_at = new Date(
+        Date.now() + 120000,
+      ).toISOString();
+      receipts.set(args.p_event_id, {
+        fingerprint,
+        state: "RESERVED",
+        delivery: "NONE",
+        token: args.p_new_token,
+        epoch: 1,
+        leaseId: args.p_new_token,
+        contextEpoch: whatsappUserContext.processing_epoch,
+      });
+      processedEvents.add(args.p_event_id);
+      return reply({
+        status: "CLAIMED",
+        userId: "user-1",
+        leaseId: args.p_new_token,
+        epoch: 1,
+        contextEpoch: whatsappUserContext.processing_epoch,
+      });
+    }
+    if (name === "fn_complete_whatsapp_link_event") {
+      if (event)
+        return reply({
+          status: event.fingerprint === fingerprint ? "READY" : "CONFLICT",
+        });
+      receipts.set(args.p_event_id, {
+        fingerprint,
+        state: "COMPLETED",
+        delivery: "READY",
+        text: "Solicitud de vinculación procesada. Consulta el estado en la aplicación.",
+      });
+      processedEvents.add(args.p_event_id);
+      return reply({ status: "READY" });
+    }
+    if (name === "fn_prepare_whatsapp_delivery") {
+      if (!event || event.fingerprint !== fingerprint)
+        return reply({ status: "CONFLICT" });
+      if (!["READY", "RETRYABLE"].includes(event.delivery))
+        return reply({ status: event.delivery });
+      if (
+        event.householdId &&
+        !activeWhatsAppHouseholds.some(
+          (h) => h.householdId === event.householdId,
+        )
+      ) {
+        event.delivery = "BLOCKED";
+        return reply({ status: "BLOCKED" });
+      }
+      if (
+        event.menuExpiresAt &&
+        Date.parse(event.menuExpiresAt) <= Date.now()
+      ) {
+        event.delivery = "EXPIRED";
+        return reply({ status: "EXPIRED" });
+      }
+      Object.assign(event, {
+        delivery: "SENDING",
+        deliveryToken: args.p_new_token,
+        deliveryEpoch: (event.deliveryEpoch ?? 0) + 1,
+      });
+      return reply({
+        status: "SEND",
+        epoch: event.deliveryEpoch,
+        text: event.text,
+      });
+    }
+    if (name === "fn_finish_whatsapp_delivery") {
+      assert.ok(
+        event &&
+          event.deliveryToken === args.p_token &&
+          event.deliveryEpoch === args.p_epoch,
+      );
+      event.delivery = args.p_outcome;
+      return reply({ status: args.p_outcome });
+    }
+    if (args.p_event_id) {
+      if (
+        !event ||
+        event.token !== args.p_token ||
+        event.epoch !== args.p_epoch
+      )
+        return { data: null, error: { code: "40001" } };
+      if (name === "fn_begin_whatsapp_event") {
+        if (event.state === "RUNNING")
+          return reply({ status: "ALREADY_STARTED" });
+        event.state = "RUNNING";
+        return reply({ status: "STARTED" });
+      }
+      if (name === "fn_assert_whatsapp_event")
+        return reply(event.state === "RUNNING");
+      if (name === "fn_renew_whatsapp_event")
+        return reply(event.state === "RUNNING");
+      if (name === "fn_bind_whatsapp_event_context") {
+        event.householdId = whatsappUserContext.selected_household_id;
+        return reply({ status: "BOUND" });
+      }
+      if (name === "fn_finish_whatsapp_event") {
+        Object.assign(event, {
+          state: "COMPLETED",
+          delivery: "READY",
+          text: args.p_reply_text,
+          menuExpiresAt: whatsappUserContext.menu_expires_at,
+        });
+        return reply({ status: "COMPLETED" });
+      }
+      if (name === "fn_fail_whatsapp_event") {
+        event.state = "UNCERTAIN";
+        return reply({ status: "UNCERTAIN" });
+      }
+      if (name === "fn_transition_whatsapp_event_context") {
+        args = {
+          ...args,
+          p_lease_id: event.leaseId,
+          p_lease_epoch: event.contextEpoch,
+        };
+        name = "fn_transition_whatsapp_household_context";
+      }
+    }
     const leaseMatches = () =>
       whatsappUserContext.processing_lease_id === args.p_lease_id &&
       whatsappUserContext.processing_epoch === args.p_lease_epoch &&
@@ -472,6 +624,13 @@ async function runHarness() {
 
   global.fetch = async (url, init) => {
     sentMessages.push({ url, init });
+    assert.ok(init.signal, "Outbound must have a bounded timeout");
+    if (outboundMode === "delay") {
+      outboundStarted?.();
+      await outboundGate;
+    }
+    if (outboundMode === "timeout")
+      throw new DOMException("private-timeout-detail", "TimeoutError");
     if (outboundMode === "network") {
       throw new Error("private-network-message");
     }
@@ -1174,7 +1333,12 @@ async function runHarness() {
   );
   assert.doesNotMatch(firstProposalText, /Descripción:/);
   assert.doesNotMatch(firstProposalText, /42000000-/);
-  assert.equal(operations.filter(({ type }) => type === "insert").length, 1);
+  assert.equal(operations.filter(({ type }) => type === "insert").length, 0);
+  assert.ok(
+    operations.some(
+      ({ type, name }) => type === "rpc" && name === "fn_claim_whatsapp_event",
+    ),
+  );
   console.log(
     "PASS text message resolves controlled context and delegates to Agent",
   );
@@ -1738,6 +1902,130 @@ async function runHarness() {
     "PASS WhatsApp outbound diagnostics classify failures without sensitive data",
   );
 
+  const beforeRecoveryAgent = agentCalls.length,
+    beforeRecoverySends = sentMessages.length;
+  assert.equal(
+    receipts.get("event-provider-missing-configuration").delivery,
+    "RETRYABLE",
+  );
+  const recoveredReply = receipts.get(
+    "event-provider-missing-configuration",
+  ).text;
+  const recovery = await route.POST(
+    signedRequest(
+      rawBody(incomingPayload("event-provider-missing-configuration", "Hola")),
+    ),
+  );
+  assert.equal(recovery.status, 200);
+  assert.equal(agentCalls.length, beforeRecoveryAgent);
+  assert.equal(sentMessages.length, beforeRecoverySends + 1);
+  assert.equal(
+    JSON.parse(sentMessages.at(-1).init.body).text.body,
+    recoveredReply,
+  );
+  assert.equal(
+    receipts.get("event-provider-missing-configuration").delivery,
+    "ACCEPTED",
+  );
+  for (const id of [
+    "event-provider-network",
+    "event-provider-http-numeric",
+    "event-provider-http-invalid",
+  ]) {
+    const sends = sentMessages.length;
+    assert.equal(receipts.get(id).delivery, "UNKNOWN");
+    assert.equal(
+      (await route.POST(signedRequest(rawBody(incomingPayload(id, "Hola")))))
+        .status,
+      200,
+    );
+    assert.equal(sentMessages.length, sends);
+    assert.equal(agentCalls.length, beforeRecoveryAgent);
+  }
+  outboundMode = "timeout";
+  assert.equal(
+    (
+      await route.POST(
+        signedRequest(
+          rawBody(incomingPayload("event-timeout-recovery", "Hola")),
+        ),
+      )
+    ).status,
+    500,
+  );
+  assert.equal(receipts.get("event-timeout-recovery").delivery, "UNKNOWN");
+  const afterTimeoutAgent = agentCalls.length,
+    afterTimeoutSends = sentMessages.length;
+  outboundMode = "success";
+  assert.equal(
+    (
+      await route.POST(
+        signedRequest(
+          rawBody(incomingPayload("event-timeout-recovery", "Hola")),
+        ),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(agentCalls.length, afterTimeoutAgent);
+  assert.equal(sentMessages.length, afterTimeoutSends);
+  console.log(
+    "PASS persisted reply retries only proven pre-HTTP failure; network/HTTP/timeout UNKNOWN never resend or invoke Agent",
+  );
+
+  let releaseOutbound;
+  outboundGate = new Promise((resolve) => {
+    releaseOutbound = resolve;
+  });
+  const startedOutbound = new Promise((resolve) => {
+    outboundStarted = resolve;
+  });
+  outboundMode = "delay";
+  const concurrentBody = rawBody(
+    incomingPayload("event-concurrent-outbound", "Hola"),
+  );
+  const sending = route.POST(signedRequest(concurrentBody));
+  await startedOutbound;
+  const concurrentAgent = agentCalls.length,
+    concurrentSends = sentMessages.length;
+  assert.equal((await route.POST(signedRequest(concurrentBody))).status, 200);
+  assert.equal(agentCalls.length, concurrentAgent);
+  assert.equal(sentMessages.length, concurrentSends);
+  releaseOutbound();
+  assert.equal((await sending).status, 200);
+  outboundMode = "success";
+  outboundStarted = undefined;
+  outboundGate = Promise.resolve();
+  console.log(
+    "PASS simultaneous redelivery while SENDING makes one outbound call",
+  );
+
+  const beforeLinkAgent = agentCalls.length;
+  for (const text of [
+    "VINCULAR malformed",
+    `VINCULAR 52000000-0000-4000-8000-000000000001 ${"a".repeat(43)}`,
+  ]) {
+    const linkBody = rawBody(
+      incomingPayload(`event-link-${text.length}`, text, unknownSender),
+    );
+    const capture = await captureInfo(() =>
+      route.POST(signedRequest(linkBody)),
+    );
+    assert.equal(capture.result.status, 200);
+    assert.equal(agentCalls.length, beforeLinkAgent);
+    assert.ok(!JSON.stringify(capture.entries).includes("a".repeat(43)));
+    assert.match(
+      JSON.parse(sentMessages.at(-1).init.body).text.body,
+      /Consulta el estado en la aplicación/,
+    );
+    const sends = sentMessages.length;
+    await route.POST(signedRequest(linkBody));
+    assert.equal(sentMessages.length, sends);
+  }
+  console.log(
+    "PASS reserved linking commands bypass ordinary identity and Agent, disclose no secret and deduplicate delivery",
+  );
+
   agentMode = "operation";
   operationStep = 0;
   const operationEvents = [
@@ -2154,6 +2442,7 @@ async function runHarness() {
 
   let signalAgentStarted;
   const startedAgent = new Promise((resolve) => { signalAgentStarted = resolve; });
+  agentStarted = signalAgentStarted;
   let releaseAgent;
   agentGate = new Promise((resolve) => { releaseAgent = resolve; });
   agentMode = "delay";
@@ -2171,6 +2460,7 @@ async function runHarness() {
   assert.equal((await firstConcurrent).status, 200);
   agentGate = Promise.resolve();
   agentMode = "proposal";
+  agentStarted = undefined;
   console.log("PASS a per-user lease fences distinct concurrent WhatsApp events");
 
   for (const source of [
@@ -2223,9 +2513,19 @@ async function main() {
   );
   const originalFetch = global.fetch;
 
+  let watchdog;
   try {
-    await runHarness();
+    await Promise.race([
+      runHarness(),
+      new Promise((_, reject) => {
+        watchdog = setTimeout(
+          () => reject(new Error("WhatsApp harness did not complete")),
+          15000,
+        );
+      }),
+    ]);
   } finally {
+    clearTimeout(watchdog);
     global.fetch = originalFetch;
     for (const key of environmentKeys) {
       const value = originalEnvironment[key];
@@ -2240,7 +2540,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+module.exports = { createLoader, incomingPayload };
+if (require.main === module)
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

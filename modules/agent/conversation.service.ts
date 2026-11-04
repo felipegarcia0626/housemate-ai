@@ -958,6 +958,12 @@ async function confirmPendingCategoryCreation(
   context: AgentContext,
   draft: AgentCategoryDraft,
 ): Promise<AgentMessageResult> {
+  if (context.source === "WHATSAPP" && !context.whatsappExecution?.event) {
+    throw new AgentDomainError(
+      "PERSISTENCE_ERROR",
+      "The WhatsApp event context is unavailable.",
+    );
+  }
   const pendingCategoryCreation = getPendingCategoryCreation(draft);
   if (!pendingCategoryCreation?.parentMacroId) {
     return categoryCreationFailureClarification(
@@ -971,6 +977,10 @@ async function confirmPendingCategoryCreation(
       name: pendingCategoryCreation.name,
       movementType: pendingCategoryCreation.movementType,
       parentMacroId: pendingCategoryCreation.parentMacroId,
+      whatsappEvent:
+        context.source === "WHATSAPP"
+          ? context.whatsappExecution?.event
+          : undefined,
     });
   } catch (error) {
     if (error instanceof CategoryDomainError) {
@@ -1499,6 +1509,7 @@ async function applyPendingProposalCorrection(
             userId: context.whatsappExecution.userId,
             leaseId: context.whatsappExecution.leaseId,
             epoch: context.whatsappExecution.epoch,
+            event: context.whatsappExecution.event,
           }
         : undefined,
     });
@@ -2034,6 +2045,7 @@ async function compensatePendingProposalAfterDraftFailure(
         context.conversationKey,
         context.actorMemberId,
         context.source,
+        context.whatsappExecution?.event,
       );
       return;
     }
@@ -2043,6 +2055,7 @@ async function compensatePendingProposalAfterDraftFailure(
       context.conversationKey,
       context.actorMemberId,
       context.source,
+      context.whatsappExecution?.event,
     );
   } catch (error) {
     if (error instanceof PendingProposalRepositoryError) {
