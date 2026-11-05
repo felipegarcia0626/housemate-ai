@@ -1,5 +1,26 @@
 # API Contract — HouseMate AI
 
+## WhatsApp 2B.2 y recuperación outbound (código versionado; estado remoto no verificado)
+
+POST `/api/webhooks/whatsapp` conserva HMAC y el contrato HTTP: 200 con `ok` y
+PROCESSED/DUPLICATE, o error 500 sanitizado cuando corresponde. PROCESSED significa
+tratamiento, no entrega al dispositivo. Históricos, UNCERTAIN y UNKNOWN se
+reconocen sin ejecutar nuevamente el agente ni enviar otra respuesta. READY y
+RETRYABLE recuperan el contenido persistido, revalidando acceso.
+
+`VINCULAR <UUID> <secreto>` solo usa el remitente autenticado por HMAC. La forma
+reservada malformada tampoco llega al agente. La respuesta es genérica; el estado
+se consulta desde la ruta autenticada de vinculación. Logs/DTO públicos no incluyen
+secretos, snapshots ni detalles de identidad. El inicio conserva la respuesta
+inicial única de 2B.1.
+
+Una confirmación puede recuperarse aunque Node no recibiera la respuesta SQL de
+COMMIT. HTTP no exitoso/timeout queda UNKNOWN, sin reenvío automático. Solo un fallo
+demostrado anterior a HTTP permite RETRYABLE. Menús/respuestas vencidos y acceso
+revocado no se reenvían. No se promete exactly-once de HTTP ni cancelación de una
+solicitud ya autorizada. El código está versionado; el estado de despliegue y de
+aplicación de migraciones en entornos remotos no está verificado.
+
 Version: 1.0
 
 ### Vinculación WhatsApp — backend 2B.1

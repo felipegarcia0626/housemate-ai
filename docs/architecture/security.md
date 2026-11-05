@@ -1,5 +1,188 @@
 # Security
 
+## Fencing y recuperación outbound 0046–0047 (código versionado; estado remoto no verificado)
+
+HMAC precede toda admisión. VINCULAR, incluso malformado, se intercepta antes de
+identidad ordinaria/agente y responde genéricamente. Los mensajes ordinarios
+resuelven identidad y adquieren contexto atómicamente mediante el helper 0044
+dentro de claim; el runtime ya no usa búsqueda legacy y reserva separadas.
+
+Begin es la autorización única: STARTED se concede una vez incluso si su respuesta
+SQL se pierde. No se promete cancelar una ejecución previamente autorizada tras
+expiración/revocación. Los asserts TypeScript son defensa adicional. Cada escritura
+protegida revalida evento y contexto en SQL; un worker obsoleto no puede escribir,
+compensar, renovar ni obtener un permiso nuevo de entrega. No se retienen
+transacciones durante HTTP/OpenAI.
+
+El gate (18443,43) precede los bloqueos del flujo WhatsApp. Antes de entrar a
+helpers de negocio se toman prebloqueos SHARE NOWAIT de Auth, hogar, usuario y
+membership para evitar inversiones con Web. Las pruebas multisesión observan
+pg_blocking_pids en ambos órdenes con revocación, invitación, salida, remoción y
+transferencia. Los conflictos NOWAIT abortan sin escribir; no reinician el agente.
+
+El permiso SEND revalida identidad/origen/vínculo/versión, membership, selección,
+elegibilidad y guards de recursos. Revocación confirmada impide permisos nuevos.
+Un HTTP ya autorizado puede continuar; ACCEPTED significa aceptación HTTP, no
+entrega al dispositivo. Transporte ambiguo queda UNKNOWN. La respuesta se guarda
+antes de enviar. UNCERTAIN/UNKNOWN requieren diagnóstico, sin desbloqueo automático.
+Replay de un menú vencido no amplía su TTL.
+
+Los cuatro helpers nuevos son privados y la tabla nueva no concede DML directo.
+Las RPC heredadas y grants privilegiados siguen bajo FINDING-013: no se afirma un
+corte de ACL. El runtime nuevo no consume las entradas antiguas de reserva y
+escritura WhatsApp. Las restauraciones directas rechazan WHATSAPP; compensar exige
+evento creador y versión. La inserción confirmada de categorías también tiene fence.
+
+Antes de activar remotamente se necesita un corte coordinado: bloquear admisiones,
+drenar consumidores anteriores, aplicar dependencias y 0046–0047, y publicar solo
+consumidores con receipts. No operar versiones antiguas y nuevas simultáneamente.
+La unidad versionada no realiza ese corte. La retención requiere ejecutar
+periódicamente el purge como propietario mediante una operación posterior
+autorizada; no se añade scheduler ni infraestructura.
+
+## Backend de vinculación 2B.1
+
+Las rutas autenticadas GET/POST/DELETE `/api/auth/whatsapp/link` delegan al servicio
+de vinculación. La identidad procede de `getAuthenticatedAuthUser()` y se valida
+de nuevo en SQL con Auth actual; nunca del body. El repositorio solo llama a
+inicio, consulta y cancelación de 0043; no accede a tablas de vinculación ni expone
+helpers o RPC de revocación. Las migraciones 0044/0045 permanecen intactas;
+la integración posterior del webhook se describe arriba.
+
+El secreto usa `randomBytes(32)` y SHA-256; no se persiste texto plano ni se registra
+en logs. Solo la respuesta inicial de creación contiene el mensaje de verificación,
+con `private, no-store`. La clave UUID de idempotencia identifica también el desafío.
+Una respuesta perdida no es recuperable: reintentar devuelve `RESTART_REQUIRED`,
+sin sustituir el digest. Un resultado de escritura incierto se comunica como tal.
+Consultar/cancelar y volver a empezar requiere una clave nueva y respeta límites.
+No se promete entrega exactamente una vez de HTTP. Ver contrato en api_contract.md.
+
+Las pruebas HTTP usan autenticación controlada y el servicio/repositorio reales;
+el runner SQL añade la misma ruta contra PostgreSQL local descartable bajo
+service_role, comprobando digest, aislamiento, pérdida de respuesta, límites,
+vencimiento y revalidación Auth. Esto no prueba una sesión real en producción ni
+activa la vinculación por WhatsApp. FINDING-012 y FINDING-013 permanecen abiertos.
+
+## Autorización WhatsApp 0044: orden y frontera del incremento 2A
+
+La corrección forward-only 0045 revalida la expiración después de las posibles
+esperas al resolver identidad. Renovar también exige lease/epoch coincidentes y
+expiración futura en el propio UPDATE. La regresión multisesión reproduce la
+renovación indebida anterior y exige rechazo sin cambios después del arreglo
+(FINDING-016). No se modifica ninguna migración 0040–0043.
+
+La autorización del lease incluye origen, remitente y vínculo/versión cuando sea
+VERIFIED. Todas las operaciones SQL coordinadas de WhatsApp, incluyendo las cuatro
+confirmaciones públicas en la rama WHATSAPP, toman primero el gate transaccional
+exclusivo `(18443,43)` compartido con inicio/cancelación/finalización 0043. Se mantiene
+solo durante cada llamada SQL; nunca se retiene una transacción durante OpenAI,
+HTTP outbound ni procesamiento TypeScript. Serializa esta capacidad incluso para
+usuarios distintos; es una decisión de simplicidad para el MVP, no de rendimiento.
+
+El orden global obligatorio es gate antes de cualquier bloqueo del flujo
+WhatsApp. Dentro de esa sección, el inventario real es:
+
+| Operación | Bloqueos posteriores al gate |
+| --- | --- |
+| Resolver/admitir | usuario legacy SHARE si existe → vínculo activo SHARE si existe → contexto INSERT/UPDATE al adquirir |
+| Renovar/assert lease | contexto SHARE → resolver (usuario legacy/vínculo SHARE) → contexto UPDATE solo al renovar |
+| Seleccionar hogar | validación de lease anterior → contexto UPDATE → membership SHARE mediante helper 0041 |
+| Guard de draft/propuesta/rechazo | validación del lease → contexto SHARE → membership SHARE → recurso escrito/rechazado |
+| Confirmación eligible WhatsApp | Auth SHARE → hogar SHARE → usuario SHARE → membership SHARE (0042) → wrapper consistent |
+| Confirmación consistent WhatsApp | propuesta UPDATE → membership SHARE → validación del lease/contexto → confirmación base y recursos financieros |
+| Revocación | Auth SHARE → usuario SHARE → vínculo UPDATE; no bloquea contexto ni modifica recursos financieros |
+| Finalización 0043 | evento/contador → Auth SHARE → usuario SHARE → vínculo INSERT y desafío UPDATE |
+| Liberación | contexto UPDATE condicionado por lease y epoch; permite limpieza tras revocación |
+
+Las entradas eligible/consistent adquieren el gate al comienzo de su rama
+WHATSAPP, no al llegar tarde al guard. Las escrituras de draft/propuesta ya entran
+por el guard antes de bloquear el recurso. Así, el orden distinto de contexto y
+vínculo entre ramas no puede producir un ciclo entre esas operaciones: solo una
+posee el gate. Las operaciones Web conservan su orden de elegibilidad 0042 y no
+acceden a contexto/vínculo ni intentan adquirir después el gate. Los helpers de
+membership no adquieren gate para no introducir una inversión en Web. Llamadores
+externos no deben abrir transacciones, bloquear recursos y luego entrar a estas
+RPC en un orden contrario; las garantías cubren el inventario backend controlado.
+
+Si la operación protegida gana el gate, completa o revierte su transacción antes
+de que revocación pueda confirmarse. Si revocación gana, una operación pendiente
+que aún no adquirió el gate falla con 40001 antes de escribir. No se promete
+cancelar retroactivamente una escritura ya confirmada. Renovación/assert también
+rechazan el vínculo revocado, origen cambiado, vínculo sustituido o versión antigua.
+Una re-verificación genera una versión nueva por usuario; los leases anteriores
+no la heredan. Los bloqueos SHARE sobre el vínculo duran la transacción de la
+operación, no una comprobación TypeScript aislada.
+
+Las funciones nuevas/reemplazadas tienen propietario postgres, SECURITY DEFINER,
+search_path pg_catalog y objetos calificados. Los tres helpers nuevos son privados;
+service_role ejecuta únicamente entradas autorizadas y no obtiene SELECT/UPDATE
+sobre tablas de vinculación. Los grants existentes sobre contexto se conservan;
+service_role sigue siendo un backend de confianza. Auth en revocación procede del
+backend autenticado, no del cliente; el remitente de admisión futura procederá de
+Meta después de HMAC. No se implementa aún esa integración ni un endpoint de
+revocación. Tampoco se verifica el estado del despliegue o ACL remotas aquí.
+
+Las pruebas locales usan sesiones independientes y pg_blocking_pids para observar
+esperas reales. Cubren ambas carreras admisión/revocación y confirmación/revocación
+para Expense e Income, estado final, renovación inválida, idempotencia con un mismo
+lease y aislamiento de versiones tras re-verificación. La suite SQL cubre además
+selección, rechazo de cada escritura de draft/propuesta y permisos. No cubren
+cancelar un envío outbound ya iniciado ni prueban todo el entorno Supabase.
+Los grants heredados fuera de los wrappers siguen bajo FINDING-013; la recuperación
+outbound sigue bajo FINDING-012. 0044 no cierra esos hallazgos ni activa el canal.
+
+## Vinculación WhatsApp: persistencia 0043, sin activar en el canal
+
+Las cuatro tablas nuevas tienen RLS habilitado, sin políticas cliente, propietario
+postgres y sin grants directos a PUBLIC, anon, authenticated ni service_role. No
+usan secuencias (UUID). Las cuatro RPC de entrada son SECURITY DEFINER, propietario
+postgres, `search_path=pg_catalog`, objetos calificados y EXECUTE solo para
+service_role. El helper `fn_whatsapp_link_account` es privado; comprueba correo
+actual no vacío/confirmado y resuelve el usuario interno desde Auth. Todas las
+mutaciones adquieren primero el gate advisory transaccional `(18443,43)`.
+Inicio/cancelación bloquean después Auth SHARE → usuario interno SHARE → tablas
+nuevas. Finalización reserva el evento y actualiza el contador antes de comprobar
+el desafío; solo un código correcto y vigente requiere después Auth SHARE →
+usuario SHARE, antes de insertar el vínculo y consumir el desafío. El gate impide
+que otra mutación de esta capacidad invierta esos bloqueos; las operaciones
+existentes de Auth no acceden a las tablas nuevas. La consulta de estado usa
+Auth/usuario SHARE y una sola instantánea para sus datos; no toma el gate ni llama
+a otras mutaciones.
+
+El gate serializa las mutaciones de esta capacidad entre sesiones. Su alcance
+deliberadamente global es aceptable para un flujo infrecuente de cuenta; no toca
+los leases ni las operaciones financieras. Evita doble consumo y altas concurrentes
+por remitente/usuario. Los índices únicos son una segunda defensa. No coordina
+operaciones administrativas directas sobre identificadores heredados; no deben
+realizarse cambios manuales concurrentes durante una transición.
+
+Las RPC confían en el backend service_role, no en un UUID suministrado por clientes.
+El backend futuro obtendrá Auth mediante `auth.getUser()` y nunca aceptará ese
+argumento del body/modelo. SQL valida identidad y relación actuales, pero no prueba
+por sí solo que el titular de la sesión fue quien invocó un service_role comprometido.
+Anon/authenticated no pueden pasar otro UUID porque no tienen EXECUTE ni acceso
+directo. La finalización obtiene el propietario desde el desafío, revalida su Auth
+y exige el mismo usuario interno incluso después de esperar bloqueos. Su remitente
+debe provenir exclusivamente de un webhook HMAC validado. SQL no verifica HMAC ni
+posesión física del teléfono; esa frontera de integración queda para el incremento 2.
+
+La reserva de evento y el resultado de verificación son atómicos con el consumo;
+replay no repite ni amplía intentos. Colisiones de evento/argumentos fallan cerradas.
+Los resultados nunca contienen código, digest, teléfono o correo. Los límites son
+persistentes: creación 3/15 minutos con cooldown de 60 segundos, cinco códigos
+erróneos por desafío y veinte eventos nuevos/15 minutos por remitente, incluidos
+códigos desconocidos. Identificadores de desafío desconocidos no revelan cuentas.
+La revalidación Auth fallida aborta la transacción y permite reintento posterior
+sin reserva parcial. No se aplican reintentos automáticos.
+
+No hay backfill, revocación expuesta, sustitución, recuperación de números heredados
+ni modificación del flujo financiero. Versionar el vínculo no activa todavía
+fencing en el canal. Antes de integrar se deben implementar admisión y revocación
+coordinadas, resolver pendientes, probar carreras reales con operaciones financieras
+y evitar que una revocación pueda eludirse por fallback a `external_identifier`.
+El número ya reasignado manualmente permanece heredado, no verificado por 0043.
+FINDING-012 y FINDING-013 siguen abiertos y no se resuelven por esta migración.
+
 ## Elegibilidad financiera transaccional — transición 0042
 
 Las rutas financieras Web exigen correo presente y confirmado obtenido mediante

@@ -9,6 +9,30 @@
 - **Impacto:** Una tabla nueva creada bajo ese propietario/esquema podría recibir acceso de cliente por defecto si su migración no lo revoca explícitamente. No se afirma que la configuración remota coincida.
 - **Criterio de resolución:** Verificar las ACL predeterminadas en cada entorno autorizado, inventariar consumidores legítimos y definir una corrección acotada por propietario/esquema junto con migraciones de tabla que preserven los accesos requeridos.
 
+### FINDING-017
+
+- **Área:** Harness WhatsApp / señal de concurrencia.
+- **Estado:** RESOLVED (local).
+- **Descripción:** La prueba esperaba startedAgent pero el fake invocaba agentStarted,
+  sin conectar ambas señales. Node podía terminar con código 0 antes de las
+  aserciones finales, porque la promesa pendiente no mantenía activo el proceso.
+- **Corrección:** Se conecta la señal y se añade watchdog con fallo explícito.
+- **Evidencia:** phase-4-whatsapp-functional.cjs completa las aserciones de lease
+  concurrente y frontera de persistencia; ya no se acepta el código 0 aislado.
+
+### FINDING-016
+
+- **Área:** Autorización WhatsApp 0044 / expiración del lease.
+- **Estado:** RESOLVED (local; pendiente de despliegue).
+- **Prioridad:** HIGH.
+- **Descripción:** La renovación comprobaba expiración antes de resolver el vínculo.
+  Una espera en su bloqueo SHARE podía superar la expiración y renovar un lease vencido.
+- **Corrección:** 0045 revalida el reloj después de resolver identidad y condiciona
+  el UPDATE de renovación al lease/epoch vigente y expiración futura.
+- **Evidencia:** whatsapp-authorization-concurrency.cjs bloquea el vínculo desde
+  otra sesión hasta vencer el lease: 0044 devuelve true (regresión reproducida);
+  0045 devuelve false y conserva íntegro el estado persistido.
+
 ### FINDING-013
 
 - **Área:** Elegibilidad financiera / transición de permisos 0042.
@@ -22,6 +46,9 @@
 - **Cierre:** verificar el despliegue de todos los repositorios nuevos y retirar
   las vías anteriores mediante un corte autorizado y pruebas de privilegios
   efectivos. No restaurar grants amplios para recuperar una versión antigua.
+- **0046–0047:** el runtime nuevo usa receipts y fencing, pero siguen las RPC
+  WhatsApp antiguas y grants privilegiados capaces de omitirlos. No se ha hecho
+  un corte remoto ni se cierra este hallazgo por migrar únicamente los consumidores.
 
 ### FINDING-014
 
@@ -191,6 +218,17 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 - **Descripción:** El webhook reserva persistentemente el ID del evento antes de resolver el hogar y procesar el mensaje. Si el procesamiento o el envío outbound falla después de esa reserva, una redelivery del mismo evento se clasifica como duplicada y no vuelve a procesar ni enviar la respuesta.
 - **Impacto:** Un fallo transitorio posterior a la reserva puede dejar al usuario sin respuesta aunque Meta reintente la entrega. La reserva sigue evitando que una redelivery repita mutaciones financieras.
 - **Prioridad:** MEDIUM
-- **Estado:** OPEN
+- **Estado:** IN_PROGRESS (implementado localmente; pendiente de auditoría y corte operativo).
 - **Origen/detección:** Revisión del orden `reserveWhatsAppEvent()` → resolución/Agent → `sendWhatsAppReply()` en `modules/whatsapp/whatsapp.service.ts`; el incidente de producción reportado anteriormente mostró una redelivery clasificada como duplicada tras fallar el envío outbound.
 - **Criterio de resolución:** Diseñar un incremento independiente de recuperación de entregas que permita reintentar respuestas sin volver a aplicar operaciones financieras, con pruebas de fallos antes y después de cualquier mutación.
+- **Implementación local:** 0046–0047 separan resultado/entrega, checkpoint atómico
+  Expense/Income, begin único, fences independientes, compensación con versión y
+  permisos de envío revalidados. UNKNOWN/UNCERTAIN son cierres deliberados, sin
+  reintento automático. No se promete exactly-once HTTP ni reparación de históricos.
+- **Evidencia:** phase-4-whatsapp-event-receipts.sql,
+  whatsapp-event-recovery-concurrency.cjs y whatsapp-event-http-sql.cjs prueban
+  rollback del checkpoint/vínculo, COMMIT con respuesta perdida, redelivery,
+  revocación, retención, permisos y carreras con lifecycle de memberships.
+  El harness WhatsApp cubre HMAC, secretos, timeout y una sola llamada outbound.
+- **Pendiente:** auditoría independiente, corte verificable de consumidores
+  antiguos, aplicación/despliegue autorizados y pruebas manuales posteriores.

@@ -1,5 +1,232 @@
 # Data Model — HouseMate AI
 
+## Recuperación outbound 0046–0047 (código versionado; estado remoto no verificado)
+
+`tb_whatsapp_event_receipts` complementa el ledger histórico por external_event_id
+(FK RESTRICT). No hay backfill: una reserva sin receipt devuelve HISTORICAL y
+nunca se reconstruye. Una huella SHA-256 vincula evento, remitente, emisor y
+digest del texto, sin guardar el mensaje entrante. RLS está habilitado, postgres
+es propietario y ningún rol de aplicación obtiene DML directo.
+
+Procesamiento: RESERVED → RUNNING → COMPLETED o UNCERTAIN. Solo begin concede
+STARTED una vez; repetir devuelve ALREADY_STARTED. Un RESERVED vencido puede
+recuperarse con otro token/epoch y la misma identidad y selección/menú de admisión.
+Si cambió ese contexto, queda UNCERTAIN sin ejecutar en otro hogar. RUNNING nunca vuelve a
+ejecutar el agente: con checkpoint recupera COMPLETED; sin él queda UNCERTAIN.
+El inicio ya autorizado puede continuar físicamente; las escrituras posteriores
+revalidan el fence dentro de su transacción.
+
+Entrega independiente: NONE → READY → SENDING → ACCEPTED / RETRYABLE / UNKNOWN.
+Solo un fallo demostrado anterior a HTTP permite RETRYABLE. HTTP no exitoso,
+timeout, excepción de transporte o SENDING abandonado quedan UNKNOWN. Antes de
+SEND se revalidan identidad/origen/vínculo/versión, selección, membership ACTIVE,
+elegibilidad financiera y guards de recursos. Denegación produce BLOCKED; respuesta
+o menú vencido produce EXPIRED. UNCERTAIN/UNKNOWN no tienen desbloqueo automático.
+
+Lifecycle: `fn_claim_whatsapp_event`, `fn_begin_whatsapp_event`,
+`fn_assert_whatsapp_event`, `fn_bind_whatsapp_event_context`,
+`fn_renew_whatsapp_event`, `fn_finish_whatsapp_event`, `fn_fail_whatsapp_event`,
+`fn_prepare_whatsapp_delivery` y `fn_finish_whatsapp_delivery`. Se distinguen
+token/epoch de evento, lease/epoch de contexto y permiso de entrega.
+
+`fn_confirm_whatsapp_expense_event` y `fn_confirm_whatsapp_income_event` derivan
+usuario/hogar/actor/lease del receipt, llaman las RPC eligible existentes y guardan
+resultado/referencia y respuesta mínima versionada en la misma transacción.
+Solo CREATED/ALREADY_COMPLETED con referencia son checkpoint. NOT_FOUND,
+INVALID_OPERATION y REJECTED no son confirmaciones. Una excepción del checkpoint
+revierte movimiento y propuesta; el digest de operación impide sustituir argumentos.
+
+0047 añade `fn_{create,update,reject,compensate}_whatsapp_proposal_event` y
+`fn_{create,update,delete}_whatsapp_draft_event`. La compensación exige contexto,
+operación, AWAITING_CONFIRMATION y versión original registrada por el evento
+creador; VERSION_CONFLICT conserva el recurso. Las entradas adicionales
+`fn_transition_whatsapp_event_context` y `fn_insert_whatsapp_category_event`
+protegen selección e inserción confirmada de microcategorías sin cambiar sus reglas.
+
+`fn_complete_whatsapp_link_event` engloba la finalización 0043 y el receipt en una
+transacción. Solo copia estado y respuesta genérica, sin secreto, digest del código,
+link ID ni identidad. Replay no consume otro desafío ni incrementa contadores.
+Un resultado LINKED histórico no concede autorización actual.
+
+Las 25 funciones nuevas son SECURITY DEFINER, propietario postgres y
+search_path=pg_catalog. Cuatro son privadas: `fn_whatsapp_event_fingerprint`,
+`fn_require_whatsapp_event`, `fn_require_whatsapp_event_conversation` y
+`fn_purge_whatsapp_event_payloads`. Solo las otras 21 conceden EXECUTE a
+service_role; PUBLIC/anon/authenticated no tienen acceso.
+
+Respuesta: 72 horas; datos operativos: 30 días. El purge privado elimina texto,
+guards, identidad, tokens y metadatos vencidos, conservando tombstone, huella y
+referencia mínima. No se ha programado limpieza remota. 0043–0045 y el ledger
+previo permanecen intactos; no se afirma aplicación remota de 0046–0047.
+
+## Adaptador backend de vinculación 2B.1
+
+No añade esquema ni modifica 0043–0045. `whatsapp-linking.repository.ts` usa solo
+las RPC de inicio, estado y cancelación de 0043; el servicio genera el secreto y
+envía su digest. La clave UUID de idempotencia es también el ID del desafío.
+Los contratos HTTP, incluida la respuesta perdida no recuperable y el reinicio,
+están en api_contract.md. La integración posterior 0046–0047 se describe arriba.
+
+## Autorización de leases WhatsApp: base 0044 (incremento 2A)
+
+0045 corrige únicamente la comprobación temporal: vuelve a validar expiración
+después de resolver identidad y antes de renovar, sin cambiar firmas ni esquema.
+Un lease que vence mientras espera un bloqueo no puede resucitar por renovación.
+
+Solo persistencia; no activa rutas, comandos, UI ni resolución nueva en el webhook.
+No modifica 0043 ni las asociaciones heredadas. Añade a `tb_whatsapp_user_contexts`
+`authorization_origin`, `authorization_sender`, `authorization_link_id` (FK RESTRICT)
+y `authorization_version`. La restricción permite todos nulos para filas previas,
+o una tupla LEGACY (remitente, sin vínculo/versión) o VERIFIED (remitente,
+vínculo/versión no nulos). El guard rechaza leases sin esa instantánea: no hay
+backfill ni promoción de leases ya iniciados; antes de aplicar debe drenarse el
+canal o aceptar el rechazo cerrado hasta liberación/expiración y nueva adquisición.
+
+| RPC nueva | Argumentos | Resultado JSONB |
+| --- | --- | --- |
+| `fn_resolve_whatsapp_sender` | remitente TEXT canónico | `RESOLVED`, usuario y origen, vínculo/versión si VERIFIED; o `UNAVAILABLE` |
+| `fn_admit_whatsapp_sender` | remitente TEXT, lease UUID, segundos INTEGER (120 por defecto; 30–300) | `ADMITTED`, identidad/epoch y `acquired=true`; o `BUSY`/`UNAVAILABLE`, `acquired=false` |
+| `fn_revoke_whatsapp_link` | Auth UUID, vínculo UUID, versión BIGINT esperada | `REVOKED`, `NOT_FOUND` o `STALE` |
+
+Los contratos están en `modules/whatsapp/whatsapp-authorization.types.ts`; siguen
+siendo internos del backend. Resolver no autoriza una operación posterior por sí
+solo: la admisión resuelve de nuevo y adquiere el lease en la misma transacción.
+Si legacy y un vínculo activo apuntan al mismo usuario gana VERIFIED; si discrepan
+se devuelve UNAVAILABLE. Sin vínculo activo, cualquier historial revocado para el
+remitente impide fallback a legacy. Una re-verificación legítima mediante 0043 puede
+crear un nuevo vínculo activo: se utiliza su nueva identidad/version, nunca se
+convierte un lease antiguo. No hay recuperación administrativa ni transferencia.
+
+La entrada histórica por `p_user_id` se conserva solo para el backend legacy:
+deriva y revalida el identificador actual de esa fila y no admite usuarios que
+tengan historial de vínculos. No es la admisión nueva por remitente ni garantiza
+por sí sola la correspondencia con un mensaje Meta previamente resuelto por
+TypeScript. No realizar reasignaciones administrativas concurrentes con ese flujo.
+La integración siguiente debe sustituir conjuntamente la búsqueda TypeScript y
+esa adquisición por `fn_admit_whatsapp_sender`, que no acepta un usuario elegido.
+Los identificadores históricos exactos se conservan para compatibilidad; las dos
+entradas nuevas por remitente sí exigen el formato canónico numérico de Meta.
+
+La renovación comprueba la misma identidad/origen/vínculo/versión de admisión,
+además de lease/epoch/expiración; nunca migra de origen. Revocar exige la cuenta
+Auth actual confirmada, propietario y versión esperada, incrementa versión y
+marca REVOKED sin borrar historial. Repetir revocación propia es idempotente.
+No borra propuestas, drafts, selección ni el lease: este queda no autorizado,
+puede liberarse para limpieza y nunca renovarse/usarse para nuevas escrituras.
+Una admisión posterior puede devolver BUSY hasta su liberación/expiración.
+
+Inventario de operaciones protegidas por el guard actualizado:
+
+- `fn_create_whatsapp_agent_draft`, `fn_update_whatsapp_agent_draft`,
+  `fn_delete_whatsapp_agent_draft`;
+- `fn_create_whatsapp_pending_proposal`, `fn_update_whatsapp_pending_proposal`,
+  `fn_reject_whatsapp_pending_proposal`;
+- `fn_transition_whatsapp_household_context`,
+  `fn_assert_whatsapp_context_lease`, `fn_assert_whatsapp_active_context`;
+- `fn_confirm_pending_expense_consistent`, `fn_confirm_pending_income_consistent`
+  y sus entradas `*_eligible`.
+
+Las seis escrituras de drafts/propuestas ya invocan el guard antes de escribir;
+no se duplican sus cuerpos. Las cuatro confirmaciones se reemplazan preservando
+firma y reglas financieras para tomar el gate antes de sus bloqueos existentes.
+Los resultados terminales de confirmación conservan su idempotencia histórica,
+sin crear movimientos: no equivalen a autorizar nuevos mensajes tras revocación.
+El guard mantiene la validación ACTIVE y los filtros de hogar/actor.
+
+Las RPC CRUD financieras de Web y las funciones base históricas no se convierten
+en entradas WhatsApp: no reciben un lease. Sus grants no se retiran aquí;
+FINDING-013 sigue siendo una vía privilegiada fuera de estos guards. No se afirma
+que un service_role comprometido carezca de otras vías SQL para escribir.
+
+No se ofrece migración inversa automática. Tras activación, eliminar columnas o
+restaurar guards antiguos permitiría perder el fencing. Preferir corrección
+forward-only; una reversión excepcional exige parar/drenar llamadores, revisar
+leases e historial y aprobación separada. Nunca borrar vínculos, revocaciones,
+datos financieros o eventos para recuperar compatibilidad. No aplicar 0044 ni
+ninguna migración remota como parte de las pruebas locales.
+
+## Vinculación WhatsApp: base aditiva 0043
+
+Persistencia y contratos SQL únicamente; sin endpoints, UI, webhook ni backfill.
+No cambia `tb_users.external_identifier`, Auth, memberships ni datos financieros.
+No demuestra vinculación del número actualmente utilizado por el canal heredado.
+
+- `tb_whatsapp_links`: propietario `user_id`, remitente canónico (8–15 dígitos,
+  sin `+`, primer dígito distinto de cero), estado `ACTIVE`/`REVOKED`, versión
+  positiva y fechas de creación/verificación/revocación. Índices únicos parciales
+  por usuario y remitente activo. El historial revocado se conserva en la misma
+  tabla; `(user_id, authorization_version)` es único. No hay RPC de revocación o
+  sustitución en este incremento; una fila revocada no aparece como vínculo activo.
+- `tb_whatsapp_link_challenges`: UUID, propietario, remitente esperado, digest
+  SHA-256 hexadecimal, clave de idempotencia por usuario, estado, hasta cinco
+  intentos, creación/expiración/resolución. Expira exactamente diez minutos después
+  de crearse. Estados terminales: `CONSUMED`, `CANCELLED`, `EXPIRED`, `EXHAUSTED`.
+  Un índice parcial impide dos `PENDING` por usuario, incluso si uno ya venció;
+  iniciar otro cierra el anterior sin borrar su historia. El estado consultado
+  proyecta `EXPIRED` para un pendiente vencido, sin escribir durante la consulta.
+- `tb_whatsapp_link_attempt_buckets`: digest del remitente, ventana de quince
+  minutos y contador hasta veinte. Limita también desafíos/códigos desconocidos;
+  el digest del teléfono es seudonimización, no anonimización ni secreto fuerte.
+- `tb_whatsapp_link_events`: evento, digest del conjunto de argumentos y resultado
+  sanitizado. Referencia el identificador único de `tb_processed_whatsapp_events`.
+  Una finalización reserva el evento, aplica intentos/consumo/vínculo y guarda el
+  resultado en la misma transacción. Un error SQL revierte todo. Una redelivery
+  idéntica devuelve el resultado guardado; un evento con otros argumentos o ya
+  reservado por otro flujo devuelve `EVENT_CONFLICT` sin completar el vínculo.
+  Un replay `LINKED` describe el resultado histórico del evento, no una autorización
+  vigente; el canal futuro siempre deberá consultar el vínculo activo y su versión.
+
+Los contratos TypeScript están en `modules/whatsapp/whatsapp-linking.types.ts`;
+no se expone todavía ningún contrato HTTP:
+
+| RPC | Argumentos PostgreSQL | Resultado JSONB |
+| --- | --- | --- |
+| `fn_start_whatsapp_link_challenge` | Auth UUID, desafío UUID, remitente TEXT, digest TEXT, idempotencia UUID | Estado y, si existe, `challengeId`/`expiresAt`; conflictos/límite sin datos de otra cuenta |
+| `fn_cancel_whatsapp_link_challenge` | Auth UUID, desafío UUID | Estado terminal y `challengeId`, o `NOT_FOUND` |
+| `fn_get_whatsapp_link_state` | Auth UUID | `link` activo y último `challenge`, o null; sin remitente completo ni digest |
+| `fn_complete_whatsapp_link_challenge` | desafío UUID, remitente TEXT, digest TEXT, evento TEXT | `LINKED`/`linkId`, `INVALID`, `UNAVAILABLE`, `RATE_LIMITED` o `EVENT_CONFLICT` |
+
+Iniciar admite como máximo tres desafíos nuevos en quince minutos y exige un
+minuto entre creaciones. Cancelar no reinicia esos límites. Repetir exactamente
+la clave y argumentos recupera el desafío existente, sin recuperar el código ni
+extender su vida; cambiar argumentos devuelve `IDEMPOTENCY_CONFLICT`. El backend
+futuro debe generar UUID, clave y código con CSPRNG (recomendación: 32 bytes,
+256 bits), calcular SHA-256 y mostrar el código una sola vez. El mensaje futuro
+deberá identificar desafío y secreto: `VINCULAR <uuid> <secreto>`. Si se pierde el
+secreto se inicia otra solicitud, respetando los límites; nunca se almacena texto
+plano para recuperarlo. Esta generación no está implementada en 0043.
+
+El índice global único de digest evita reutilizar el mismo secreto en desafíos
+distintos. Un código incorrecto desde el remitente esperado incrementa el contador
+del desafío; un remitente distinto no puede agotar a la víctima, pero consume su
+propio presupuesto por remitente. Los intentos repetidos con el mismo evento no
+incrementan contadores. El límite por remitente es fijo, no deslizante. Los
+contadores están compartidos por todas las instancias PostgreSQL.
+
+### Transición y rollback
+
+Todo remitente que ya exista en `external_identifier`, incluso en la misma cuenta,
+produce `UNAVAILABLE`: no se promueve ni transfiere silenciosamente. También se
+revalida al completar. El canal heredado permanece intacto. La integración futura
+debe interceptar el prefijo reservado después de HMAC/extracción y antes de buscar
+el usuario, adquirir el lease ordinario o reservar el evento. No puede reservarlo
+antes de llamar a la finalización, ni mandar códigos inválidos al agente.
+
+No hay limpieza automática. Antes de exponer el flujo deben fijarse retención,
+limpieza y presupuesto operativo del ledger/contadores, sin borrar correlaciones
+durante la ventana de redelivery. Una limpieza de desafíos tampoco podrá permitir
+eludir límites de creación. Nunca se deben registrar códigos, digests, remitentes
+completos ni cuerpos de mensajes en logs.
+
+La migración es transaccional y no idempotente. Si falla, su `ROLLBACK` transaccional
+no deja objetos parciales. Para revertir una aplicación ya confirmada, primero
+deshabilitar futuros llamadores y verificar que no existen vínculos/desafíos/eventos
+que deban conservarse; respaldar ese historial bajo acceso restringido. Solo con
+autorización eliminar las cuatro entradas y el helper, luego el ledger específico,
+contadores, desafíos y vínculos, sin `CASCADE`. No borrar eventos del ledger
+compartido: podrían afectar la deduplicación. Con vínculos en uso, preferir una
+migración correctiva y no una reversión destructiva. Nada de esto se ejecuta aquí.
+
 ## Correlación de invitaciones (`0038`)
 
 `tb_household_invitations.creator_user_id` referencia `tb_users.id` y
