@@ -1432,9 +1432,13 @@ Los siguientes tipos enum de PostgreSQL serán definidos en `public`:
 | --- | --- | --- | --- | --- |
 | `id` | `UUID` | NOT NULL | `gen_random_uuid()` | PK `pk_tb_users` |
 | `display_name` | `TEXT` | NOT NULL | — | — |
-| `external_identifier` | `TEXT` | NOT NULL | — | UNIQUE `uq_tb_users_external_identifier` |
+| `external_identifier` | `TEXT` | NULL desde 0050 (NOT NULL desde 0001) | — | UNIQUE `uq_tb_users_external_identifier` |
 | `auth_user_id` | `UUID` | NULL | — | UNIQUE `uq_tb_users_auth_user_id`; FK a `auth.users(id)` cuando el schema Auth está disponible |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL | `now()` | — |
+
+La migración 0050 solo elimina `NOT NULL`; no actualiza identificadores ni filas
+existentes. La unicidad se conserva para los valores no nulos; la restricción
+UNIQUE ordinaria de PostgreSQL admite varios valores `NULL`.
 
 ### 28.2.2 `public.tb_households`
 
