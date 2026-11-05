@@ -12,6 +12,12 @@ const ts = require("typescript");
 
 const root = path.resolve(__dirname, "..");
 const clientModule = path.join(root, "infrastructure", "database", "client.ts");
+const authClientModule = path.join(
+  root,
+  "infrastructure",
+  "auth",
+  "supabase-server.client.ts",
+);
 const expenseServiceModule = path.join(
   root,
   "modules",
@@ -857,6 +863,29 @@ function createLoader(overrides = new Map()) {
     if (overrides.has(resolved)) return overrides.get(resolved);
     if (resolved === clientModule) {
       return { getSupabaseAdminClient: () => fakeClient };
+    }
+    if (resolved === authClientModule) {
+      return {
+        createSupabaseAuthServerClient: async () => ({
+          rpc(name, args) {
+            assert.equal(name, "fn_create_web_agent_draft");
+            operations.push({ type: "rpc", name, args });
+            return new FakeQuery("tb_agent_category_drafts")
+              .insert({
+                id: args.p_id,
+                household_id: args.p_household_id,
+                actor_member_id: args.p_actor_member_id,
+                conversation_key: args.p_conversation_key,
+                source: "WEB",
+                operation_type: args.p_operation_type,
+                payload: args.p_payload,
+                status: args.p_status,
+              })
+              .select()
+              .single();
+          },
+        }),
+      };
     }
     if (cache.has(resolved)) return cache.get(resolved).exports;
     const loaded = { exports: {} };

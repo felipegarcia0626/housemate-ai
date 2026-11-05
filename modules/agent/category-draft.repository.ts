@@ -3,6 +3,7 @@ import {
   type WhatsAppEventFence,
 } from "@/modules/whatsapp/whatsapp-event.repository";
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import { createSupabaseAuthServerClient } from "@/infrastructure/auth/supabase-server.client";
 import type {
   AgentDraft,
   AgentCategoryDraft,
@@ -367,20 +368,33 @@ export async function createAgentDraft(input: {
     return parseDraftRow(data);
   }
 
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_agent_category_drafts")
-    .insert({
-      id: input.id,
-      household_id: input.householdId,
-      actor_member_id: input.actorMemberId,
-      conversation_key: input.conversationKey,
-      source: input.source,
-      operation_type: input.operationType,
-      payload: input.payload,
-      status: input.status,
-    })
-    .select(columns)
-    .single();
+  const { data, error } =
+    input.source === "WEB"
+      ? await (
+          await createSupabaseAuthServerClient()
+        ).rpc("fn_create_web_agent_draft", {
+          p_id: input.id,
+          p_household_id: input.householdId,
+          p_actor_member_id: input.actorMemberId,
+          p_conversation_key: input.conversationKey,
+          p_operation_type: input.operationType,
+          p_payload: input.payload,
+          p_status: input.status,
+        })
+      : await getSupabaseAdminClient()
+        .from("tb_agent_category_drafts")
+        .insert({
+          id: input.id,
+          household_id: input.householdId,
+          actor_member_id: input.actorMemberId,
+          conversation_key: input.conversationKey,
+          source: input.source,
+          operation_type: input.operationType,
+          payload: input.payload,
+          status: input.status,
+        })
+        .select(columns)
+        .single();
 
   if (error || !data) handleError(error, "create_agent_draft");
   return parseDraftRow(data);
