@@ -174,9 +174,9 @@ BEGIN
       RAISE EXCEPTION 'Wrong service_role financial access';
     END IF;
   END LOOP;
-  -- Explicitly record the additive transition: legacy writes are NOT closed yet.
-  IF NOT has_table_privilege('service_role','public.tb_incomes','INSERT') THEN
-    RAISE EXCEPTION 'Additive migration unexpectedly removed legacy privileges';
+  -- 0052 closes the legacy direct-DML path; eligible RPCs remain available.
+  IF has_table_privilege('service_role','public.tb_incomes','INSERT,UPDATE,DELETE,TRUNCATE') THEN
+    RAISE EXCEPTION 'Legacy Income table writes remain available to service_role';
   END IF;
 END;
 $$;

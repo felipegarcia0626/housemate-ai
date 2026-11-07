@@ -76,16 +76,18 @@ VALUES (
 
 DO $$
 BEGIN
-  IF NOT has_table_privilege('service_role', 'public.tb_incomes', 'DELETE')
+  IF has_table_privilege('service_role', 'public.tb_incomes', 'DELETE')
      OR NOT has_table_privilege('service_role', 'public.tb_incomes', 'SELECT')
-     OR NOT has_table_privilege('service_role', 'public.tb_incomes', 'INSERT') THEN
-    RAISE EXCEPTION 'FAIL service_role lacks required Income privileges';
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'INSERT')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'UPDATE')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'FAIL service_role direct Income access is not read-only';
   END IF;
 
-  IF NOT has_column_privilege(
+  IF has_column_privilege(
     'service_role', 'public.tb_incomes', 'description', 'UPDATE'
   ) THEN
-    RAISE EXCEPTION 'FAIL service_role lacks approved Income UPDATE';
+    RAISE EXCEPTION 'FAIL service_role retains Income UPDATE';
   END IF;
 
   IF has_column_privilege(
@@ -113,11 +115,9 @@ BEGIN
     RAISE EXCEPTION 'FAIL service_role has unexpected DELETE on another table';
   END IF;
 
-  RAISE NOTICE 'PASS service_role has minimum Income DELETE and existing read/create/update access';
+  RAISE NOTICE 'PASS service_role retains Income SELECT without direct writes';
 END;
 $$;
-
-SET LOCAL ROLE service_role;
 
 DO $$
 DECLARE
@@ -208,8 +208,6 @@ BEGIN
   RAISE NOTICE 'PASS compound id + household_id filter isolates foreign and missing Incomes';
 END;
 $$;
-
-RESET ROLE;
 
 SELECT 'PASS Phase 2 Income delete SQL checks completed' AS result;
 SELECT 'PASS Phase 2 Income delete fixtures will now be rolled back' AS result;

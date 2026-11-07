@@ -78,8 +78,6 @@ VALUES
 INSERT INTO public.tb_categories (id, name, description, created_at)
 VALUES ('27000000-0000-4000-8000-000000000031', 'Phase 2 Income Create', NULL, '2026-08-09T12:00:00Z');
 
-SET LOCAL ROLE service_role;
-
 INSERT INTO public.tb_incomes (
   id, household_id, created_by, member_id, amount, income_date,
   description, category_id, created_at, updated_at
@@ -191,25 +189,26 @@ SELECT pg_temp.expect_sqlstate(
   '23503'
 );
 
-RESET ROLE;
-
 DO $$
 DECLARE
   allowed_column TEXT;
   protected_column TEXT;
 BEGIN
-  IF NOT has_table_privilege('service_role', 'public.tb_incomes', 'INSERT')
+  IF has_table_privilege('service_role', 'public.tb_incomes', 'INSERT')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'UPDATE')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'DELETE')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'TRUNCATE')
      OR NOT has_table_privilege('service_role', 'public.tb_incomes', 'SELECT') THEN
-    RAISE EXCEPTION 'FAIL service_role lacks required Income create privileges';
+    RAISE EXCEPTION 'FAIL service_role direct Income access is not read-only';
   END IF;
 
   FOREACH allowed_column IN ARRAY ARRAY[
     'member_id', 'amount', 'income_date', 'description', 'category_id'
   ] LOOP
-    IF NOT has_column_privilege(
+    IF has_column_privilege(
       'service_role', 'public.tb_incomes', allowed_column, 'UPDATE'
     ) THEN
-      RAISE EXCEPTION 'FAIL service_role lacks UPDATE on %', allowed_column;
+      RAISE EXCEPTION 'FAIL service_role retains UPDATE on %', allowed_column;
     END IF;
   END LOOP;
 
@@ -223,10 +222,7 @@ BEGIN
     END IF;
   END LOOP;
 
-  IF NOT has_table_privilege('service_role', 'public.tb_incomes', 'DELETE') THEN
-    RAISE EXCEPTION 'FAIL service_role lacks approved Income DELETE privilege';
-  END IF;
-  RAISE NOTICE 'PASS service_role has required Income create/read/delete and approved column UPDATE privileges';
+  RAISE NOTICE 'PASS service_role retains Income SELECT without direct writes';
 END;
 $$;
 

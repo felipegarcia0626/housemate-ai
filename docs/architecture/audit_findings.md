@@ -39,16 +39,26 @@
 - **Estado:** OPEN.
 - **Prioridad:** HIGH.
 - **Descripción:** 0042 añade entradas financieras protegidas y el código migra a
-  ellas, pero conserva por compatibilidad los grants históricos de service_role
-  para DML y las RPC antiguas. Esas vías SQL todavía pueden omitir la elegibilidad.
-- **Evidencia:** migraciones 0003–0009, 0018–0021 y 0042; la prueba SQL de
-  elegibilidad comprueba explícitamente que el grant histórico sigue presente.
-- **Cierre:** verificar el despliegue de todos los repositorios nuevos y retirar
-  las vías anteriores mediante un corte autorizado y pruebas de privilegios
-  efectivos. No restaurar grants amplios para recuperar una versión antigua.
-- **0046–0047:** el runtime nuevo usa receipts y fencing, pero siguen las RPC
-  WhatsApp antiguas y grants privilegiados capaces de omitirlos. No se ha hecho
-  un corte remoto ni se cierra este hallazgo por migrar únicamente los consumidores.
+  ellas, pero el HEAD publicado con 0051 conserva grants históricos de `service_role`
+  para DML financiero y RPC base. La migración local propuesta 0052 revoca DML
+  directo en gastos/ítems/distribuciones/ingresos y `EXECUTE` en siete RPC base;
+  no cambia 0043–0051 ni toca datos.
+- **Evidencia local:** `tests/phase-4-legacy-financial-permissions.sql` comprueba
+  ACL efectivas, rechazo de los caminos históricos y funcionamiento de los RPC
+  elegibles de Expense/Income bajo `service_role`. `npm run test:sql` pasó el
+  2026-11-06 en PostgreSQL embebido descartable con todas las migraciones hasta
+  0052. 0052 no está en el HEAD publicado ni se ha aplicado a Supabase remoto.
+- **Límite:** las entradas 0042 siguen usando la credencial compartida
+  `service_role`: los repositorios Web usan los RPC elegibles, mientras WhatsApp
+  confirma mediante wrappers 0047 que validan receipt/lease/generación. Los
+  grants no aíslan criptográficamente los canales; hay que verificar los callers
+  de la versión desplegada y las ACL efectivas remotas antes de afirmar el corte.
+- **Cierre:** publicar y aplicar 0052 en una ventana/corte autorizado; verificar
+  SHA activo, privilegios efectivos e inexistencia de consumidores antiguos. No
+  restaurar grants amplios para recuperar una versión antigua.
+- **0046–0047:** el runtime versionado usa receipts y fencing. No se ha hecho un
+  corte remoto ni se cierra este hallazgo por pruebas locales o por migrar solo
+  los consumidores.
 
 ### FINDING-014
 

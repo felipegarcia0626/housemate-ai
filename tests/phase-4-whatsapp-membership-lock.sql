@@ -2,10 +2,20 @@ BEGIN;
 
 CREATE ROLE housemate_whatsapp_membership_test NOLOGIN;
 
+CREATE SCHEMA IF NOT EXISTS auth;
+CREATE TABLE IF NOT EXISTS auth.users(id UUID PRIMARY KEY, email TEXT);
+ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS email_confirmed_at TIMESTAMPTZ;
+INSERT INTO auth.users(id, email, email_confirmed_at)
+VALUES ('61000000-0000-4000-8000-000000000099', 'whatsapp-lock@example.test', now());
+
 INSERT INTO public.tb_users (id, display_name, external_identifier)
 VALUES
   ('61000000-0000-4000-8000-000000000001', 'WhatsApp Lock User', 'wa-lock-user'),
   ('61000000-0000-4000-8000-000000000002', 'WhatsApp Lock Other User', 'wa-lock-other-user');
+
+UPDATE public.tb_users
+   SET auth_user_id = '61000000-0000-4000-8000-000000000099'
+ WHERE id = '61000000-0000-4000-8000-000000000001';
 
 INSERT INTO public.tb_households (id, name)
 VALUES
@@ -65,16 +75,24 @@ BEGIN
     'service_role',
     'public.fn_assert_whatsapp_active_context(uuid,uuid,bigint,uuid,uuid)'::REGPROCEDURE,
     'EXECUTE'
-  ) OR NOT has_function_privilege(
+  ) OR has_function_privilege(
     'service_role',
     'public.fn_confirm_pending_expense_consistent(uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::REGPROCEDURE,
     'EXECUTE'
-  ) OR NOT has_function_privilege(
+  ) OR has_function_privilege(
     'service_role',
     'public.fn_confirm_pending_income_consistent(uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::REGPROCEDURE,
     'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'service_role',
+    'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::REGPROCEDURE,
+    'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'service_role',
+    'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::REGPROCEDURE,
+    'EXECUTE'
   ) THEN
-    RAISE EXCEPTION 'FAIL existing WhatsApp RPC grants changed';
+    RAISE EXCEPTION 'FAIL current eligible confirmation RPC permissions changed';
   END IF;
 
   SELECT EXISTS (
@@ -234,7 +252,8 @@ BEGIN
 
   v_rejected := FALSE;
   BEGIN
-    PERFORM public.fn_confirm_pending_expense_consistent(
+    PERFORM public.fn_confirm_pending_expense_eligible(
+      p_auth_user_id => '61000000-0000-4000-8000-000000000099',
       p_proposal_id => '61000000-0000-4000-8000-000000000031',
       p_household_id => v_household_two,
       p_conversation_key => 'whatsapp:lock-expense',
@@ -257,7 +276,8 @@ BEGIN
 
   v_rejected := FALSE;
   BEGIN
-    PERFORM public.fn_confirm_pending_income_consistent(
+    PERFORM public.fn_confirm_pending_income_eligible(
+      p_auth_user_id => '61000000-0000-4000-8000-000000000099',
       p_proposal_id => '61000000-0000-4000-8000-000000000032',
       p_household_id => v_household_two,
       p_conversation_key => 'whatsapp:lock-income',
@@ -352,31 +372,46 @@ BEGIN
     RAISE EXCEPTION 'FAIL inactive membership passed the draft write guard';
   END IF;
 
-  v_result := public.fn_confirm_pending_expense_consistent(
-    p_proposal_id => '61000000-0000-4000-8000-000000000031',
-    p_household_id => v_household_two,
-    p_conversation_key => 'whatsapp:lock-expense',
-    p_actor_member_id => v_member_two,
-    p_context_source => 'WHATSAPP'::public.expense_source,
-    p_whatsapp_user_id => v_user_id,
-    p_whatsapp_lease_id => v_lease_id,
-    p_whatsapp_lease_epoch => v_epoch
-  );
-  IF v_result ->> 'status' IS DISTINCT FROM 'NOT_FOUND' THEN
-    RAISE EXCEPTION 'FAIL revoked membership passed expense confirmation';
+  v_rejected := FALSE;
+  BEGIN
+    PERFORM public.fn_confirm_pending_expense_eligible(
+      p_auth_user_id => '61000000-0000-4000-8000-000000000099',
+      p_proposal_id => '61000000-0000-4000-8000-000000000031',
+      p_household_id => v_household_two,
+      p_conversation_key => 'whatsapp:lock-expense',
+      p_actor_member_id => v_member_two,
+      p_context_source => 'WHATSAPP'::public.expense_source,
+      p_whatsapp_user_id => v_user_id,
+      p_whatsapp_lease_id => v_lease_id,
+      p_whatsapp_lease_epoch => v_epoch
+    );
+  EXCEPTION WHEN SQLSTATE '42501' THEN
+    IF SQLERRM <> 'Financial access is unavailable' THEN RAISE; END IF;
+    v_rejected := TRUE;
+  END;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'FAIL eligible expense confirmation accepted an inactive membership';
   END IF;
-  v_result := public.fn_confirm_pending_income_consistent(
-    p_proposal_id => '61000000-0000-4000-8000-000000000032',
-    p_household_id => v_household_two,
-    p_conversation_key => 'whatsapp:lock-income',
-    p_actor_member_id => v_member_two,
-    p_context_source => 'WHATSAPP'::public.expense_source,
-    p_whatsapp_user_id => v_user_id,
-    p_whatsapp_lease_id => v_lease_id,
-    p_whatsapp_lease_epoch => v_epoch
-  );
-  IF v_result ->> 'status' IS DISTINCT FROM 'NOT_FOUND' THEN
-    RAISE EXCEPTION 'FAIL revoked membership passed income confirmation';
+
+  v_rejected := FALSE;
+  BEGIN
+    PERFORM public.fn_confirm_pending_income_eligible(
+      p_auth_user_id => '61000000-0000-4000-8000-000000000099',
+      p_proposal_id => '61000000-0000-4000-8000-000000000032',
+      p_household_id => v_household_two,
+      p_conversation_key => 'whatsapp:lock-income',
+      p_actor_member_id => v_member_two,
+      p_context_source => 'WHATSAPP'::public.expense_source,
+      p_whatsapp_user_id => v_user_id,
+      p_whatsapp_lease_id => v_lease_id,
+      p_whatsapp_lease_epoch => v_epoch
+    );
+  EXCEPTION WHEN SQLSTATE '42501' THEN
+    IF SQLERRM <> 'Financial access is unavailable' THEN RAISE; END IF;
+    v_rejected := TRUE;
+  END;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'FAIL eligible income confirmation accepted an inactive membership';
   END IF;
   SELECT count(*) INTO v_expense_count FROM public.tb_expenses;
   SELECT count(*) INTO v_income_count FROM public.tb_incomes;

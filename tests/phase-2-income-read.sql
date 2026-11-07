@@ -337,10 +337,10 @@ BEGIN
   FOREACH allowed_column IN ARRAY ARRAY[
     'member_id', 'amount', 'income_date', 'description', 'category_id'
   ] LOOP
-    IF NOT has_column_privilege(
+    IF has_column_privilege(
       'service_role', 'public.tb_incomes', allowed_column, 'UPDATE'
     ) THEN
-      RAISE EXCEPTION 'FAIL service_role lacks UPDATE on %', allowed_column;
+      RAISE EXCEPTION 'FAIL service_role retains UPDATE on %', allowed_column;
     END IF;
   END LOOP;
 
@@ -354,10 +354,13 @@ BEGIN
     END IF;
   END LOOP;
 
-  IF NOT has_table_privilege('service_role', 'public.tb_incomes', 'DELETE') THEN
-    RAISE EXCEPTION 'FAIL service_role lacks approved Income DELETE privilege';
+  IF has_table_privilege('service_role', 'public.tb_incomes', 'INSERT')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'UPDATE')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'DELETE')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'FAIL service_role retains direct Income writes';
   END IF;
-  RAISE NOTICE 'PASS service_role retains Income read, approved column UPDATE and DELETE access';
+  RAISE NOTICE 'PASS service_role retains Income SELECT without direct writes';
 END;
 $$;
 

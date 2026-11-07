@@ -306,10 +306,10 @@ BEGIN
   FOREACH allowed_column IN ARRAY ARRAY[
     'member_id', 'amount', 'income_date', 'description', 'category_id'
   ] LOOP
-    IF NOT has_column_privilege(
+    IF has_column_privilege(
       'service_role', 'public.tb_incomes', allowed_column, 'UPDATE'
     ) THEN
-      RAISE EXCEPTION 'FAIL service_role lacks UPDATE on %', allowed_column;
+      RAISE EXCEPTION 'FAIL service_role retains UPDATE on %', allowed_column;
     END IF;
   END LOOP;
 
@@ -323,18 +323,21 @@ BEGIN
     END IF;
   END LOOP;
 
-  IF NOT has_table_privilege('service_role', 'public.tb_incomes', 'DELETE') THEN
-    RAISE EXCEPTION 'FAIL service_role lacks approved Income DELETE';
+  IF has_table_privilege('service_role', 'public.tb_incomes', 'INSERT')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'UPDATE')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'DELETE')
+     OR has_table_privilege('service_role', 'public.tb_incomes', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'FAIL service_role retains direct Income writes';
   END IF;
 
-  RAISE NOTICE 'PASS service_role has approved Income UPDATE columns and DELETE';
+  RAISE NOTICE 'PASS service_role has no direct Income writes';
 END;
 $$;
 
 SET LOCAL ROLE service_role;
 
 SELECT pg_temp.expect_sqlstate(
-  'service_role cannot update household_id',
+  'service_role cannot update Income directly',
   $sql$UPDATE public.tb_incomes
     SET household_id = '28000000-0000-4000-8000-000000000002'
     WHERE id = '28000000-0000-4000-8000-000000000042'$sql$,
