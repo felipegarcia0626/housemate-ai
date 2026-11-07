@@ -39,6 +39,7 @@ const eventStatuses = {
     "UNCERTAIN",
     "UNKNOWN",
     "HISTORICAL",
+    "PAUSED",
     "UNAVAILABLE",
     "CONFLICT",
   ],
@@ -63,6 +64,7 @@ const eventStatuses = {
     "DUPLICATE",
     "CONFLICT",
     "HISTORICAL",
+    "PAUSED",
   ],
 };
 

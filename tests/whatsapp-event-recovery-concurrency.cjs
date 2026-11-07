@@ -134,6 +134,14 @@ module.exports = async function eventRecovery(postgres) {
       "INSERT INTO public.tb_households(id,name) VALUES($1,'Receipt races')",
       [household],
     );
+    // 0051 revokes this direct privilege from the current service_role. Keep a
+    // narrowly scoped test-only role to model a legacy instance that still had
+    // the pre-cut ledger INSERT grant during the 0046 race.
+    await inspect.query("CREATE ROLE whatsapp_legacy_runtime NOLOGIN");
+    await inspect.query("GRANT USAGE ON SCHEMA public TO whatsapp_legacy_runtime");
+    await inspect.query(
+      "GRANT INSERT ON public.tb_processed_whatsapp_events TO whatsapp_legacy_runtime",
+    );
     for (let n = 1; n <= 16; n++) {
       await inspect.query(
         "INSERT INTO auth.users(id,email,email_confirmed_at) VALUES($1,'receipt-race@example.test',now())",
@@ -249,7 +257,9 @@ module.exports = async function eventRecovery(postgres) {
       ]).then((results) => results.map((result) => result.rows[0].pid));
       racingClaim = claim(first, 17, raceEvent, raceToken);
       await waitForBlocker(blockedPid, blockerPid);
-      // This models the old service_role .insert() against the shared ledger.
+      // Model the old grant in an isolated role; 0051 correctly revokes it
+      // from the current service_role.
+      await second.query("SET LOCAL ROLE whatsapp_legacy_runtime");
       await second.query(
         "INSERT INTO public.tb_processed_whatsapp_events(external_event_id) VALUES($1)",
         [raceEvent],
@@ -377,6 +387,9 @@ module.exports = async function eventRecovery(postgres) {
         .catch(() => {});
       await inspect
         .query("DELETE FROM auth.users WHERE id=$1", [raceUser])
+        .catch(() => {});
+      await inspect
+        .query("DROP OWNED BY whatsapp_legacy_runtime; DROP ROLE whatsapp_legacy_runtime")
         .catch(() => {});
     }
 

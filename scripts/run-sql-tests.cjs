@@ -412,6 +412,9 @@ async function main() {
     }
     await require("../tests/financial-eligibility-concurrency.cjs")(postgres);
     await require("../tests/financial-eligibility-races.cjs")(postgres);
+    // This test intentionally runs before the other WhatsApp multi-session
+    // harnesses, because it proves LINK_ONLY only from a globally clear ledger.
+    await require("../tests/whatsapp-admission-barrier-concurrency.cjs")(postgres);
     await require("../tests/whatsapp-linking-concurrency.cjs")(postgres);
     await require("../tests/whatsapp-authorization-concurrency.cjs")(postgres);
     await require("../tests/whatsapp-linking-http-sql.cjs")(postgres);

@@ -40,6 +40,41 @@ La unidad versionada no realiza ese corte. La retención requiere ejecutar
 periódicamente el purge como propietario mediante una operación posterior
 autorizada; no se añade scheduler ni infraestructura.
 
+## Barrera local de admisión y drenaje 0051 (sin corte remoto)
+
+La migración 0051 añade un gate persistente con modos `OPEN`, `DRAINING` y
+`LINK_ONLY`, más una generación monotónica en los receipts y leases. El gate
+advisory transaccional `(18443,43)` serializa claims, begin, escrituras protegidas,
+permisos outbound y cambios de modo. Un claim que toma el lock antes del cierre
+queda ordenado antes de este; el cierre espera su transacción y convierte un
+`RESERVED` aún no iniciado en `PAUSED`, retirando únicamente su lease/fence. Un
+claim que obtiene el lock después queda como tombstone `PAUSED`, sin resolver
+identidad ni adquirir contexto. Al reabrir no se reutiliza la generación cerrada.
+
+Durante `DRAINING` solo un receipt `RUNNING` de la generación que se está
+cerrando puede continuar operaciones SQL cercadas; no se renuevan leases ni el
+receipt, de modo que una ejecución que excede su vencimiento pasa a `UNCERTAIN`.
+Un lease legacy sin receipt RUNNING no conserva autorización. `LINK_ONLY` solo
+se permite cuando los contadores SQL no muestran reservations, ejecuciones,
+respuestas pendientes, `SENDING`/`UNKNOWN`, ni leases; en ese modo las admisiones
+de mensajes financieros quedan `PAUSED` y el wrapper de `VINCULAR` sigue activo.
+El reaper cerca epochs y clasifica `RUNNING` vencidos como `UNCERTAIN` y `SENDING`
+vencidos como `UNKNOWN`; ambos requieren resolución humana y bloquean entrar en
+`LINK_ONLY` mientras permanezcan. No se reintenta automáticamente una operación
+financiera ni un envío incierto.
+
+El estado SQL solo demuestra que no quedan blockers representados en PostgreSQL.
+No mide invocaciones de Vercel en curso. Revocar el INSERT legacy del ledger y
+cerrar las entradas de lease impide nuevas admisiones por la ruta antigua después
+del cambio, pero no detiene una instrucción ya ejecutándose, un proceso suspendido
+con trabajo externo pendiente ni una llamada HTTP a Meta cuyo permiso SEND ya fue
+concedido. Antes de declarar el drenaje operativo, un operador debe bloquear el
+endpoint/deployment antiguo y obtener evidencia de la plataforma de que todas sus
+invocaciones terminaron y no pueden reanudarse. Si esa evidencia no existe, no se
+debe llamar `fn_enter_whatsapp_link_only`; el corte se aborta. No se presume que
+Vercel exponga esa garantía ni que Meta recupere mensajes rechazados. Esta unidad
+no se ha aplicado remotamente y no cierra FINDING-012 ni FINDING-013.
+
 ## Backend de vinculación 2B.1
 
 Las rutas autenticadas GET/POST/DELETE `/api/auth/whatsapp/link` delegan al servicio

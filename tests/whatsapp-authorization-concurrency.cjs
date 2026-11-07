@@ -299,6 +299,13 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
 
     // Admission linearizes before revocation, which then fences the exact lease.
     const beforeFirstAdmission = await state(1);
+    const gate = (
+      await observer.query(
+        "SELECT mode,generation FROM public.tb_whatsapp_admission_gate WHERE singleton",
+      )
+    ).rows[0];
+    assert.equal(gate.mode, "OPEN");
+    const admissionGeneration = Number(gate.generation);
     await operation.query("BEGIN");
     const admitted = await admit(operation, 1);
     assert.equal(admitted.status, "ADMITTED");
@@ -318,6 +325,7 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
       menu_phone_number_id: null,
       menu_expires_at: null,
       processing_lease_id: uid(1),
+      processing_admission_generation: admissionGeneration,
       processing_epoch: admitted.epoch,
       processing_expires_at: admittedContext.processing_expires_at,
       updated_at: admittedContext.updated_at,
