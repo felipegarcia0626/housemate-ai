@@ -1,4 +1,5 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import { createSupabaseAuthServerClient } from "@/infrastructure/auth/supabase-server.client";
 import {
   getAvailableCategoryIds,
   listHierarchicalCategories,
@@ -48,23 +49,19 @@ export class IncomeRepositoryError extends Error {
 }
 
 export interface IncomeCreatePersistenceInput extends IncomeCreateInput {
-  authUserId?: string;
-  actorMemberId?: string;
   householdId: string;
+  // Retained for the separate proposal-confirmation consumer; the ordinary
+  // Web CRUD RPC derives created_by from auth.uid() and does not send this.
   createdBy: string;
   categoryId: string | null;
 }
 
 export interface IncomeUpdatePersistenceInput extends IncomeUpdateInput {
-  authUserId?: string;
-  actorMemberId?: string;
   householdId: string;
   incomeId: string;
 }
 
 export interface IncomeDeletePersistenceInput {
-  authUserId?: string;
-  actorMemberId?: string;
   householdId: string;
   incomeId: string;
 }
@@ -148,8 +145,8 @@ export async function isIncomeCategoryAvailable(
 export async function createIncome(
   input: IncomeCreatePersistenceInput,
 ): Promise<Income> {
-  const { data, error } = await getSupabaseAdminClient().rpc("fn_create_income_eligible", {
-    p_auth_user_id: input.authUserId ?? null, p_actor_member_id: input.actorMemberId ?? null,
+  const client = await createSupabaseAuthServerClient();
+  const { data, error } = await client.rpc("fn_create_web_income", {
     p_household_id: input.householdId, p_member_id: input.memberId, p_amount: input.amount,
     p_income_date: input.incomeDate, p_description: input.description, p_category_id: input.categoryId,
   });
@@ -215,8 +212,8 @@ export async function updateIncome(
     payload.category_id = input.categoryId;
   }
 
-  const { data, error } = await getSupabaseAdminClient().rpc("fn_update_income_eligible", {
-    p_auth_user_id: input.authUserId ?? null, p_actor_member_id: input.actorMemberId ?? null,
+  const client = await createSupabaseAuthServerClient();
+  const { data, error } = await client.rpc("fn_update_web_income", {
     p_household_id: input.householdId, p_income_id: input.incomeId, p_changes: payload,
   });
 
@@ -240,8 +237,8 @@ export async function updateIncome(
 export async function deleteIncome(
   input: IncomeDeletePersistenceInput,
 ): Promise<string> {
-  const { data, error } = await getSupabaseAdminClient().rpc("fn_delete_income_eligible", {
-    p_auth_user_id: input.authUserId ?? null, p_actor_member_id: input.actorMemberId ?? null,
+  const client = await createSupabaseAuthServerClient();
+  const { data, error } = await client.rpc("fn_delete_web_income", {
     p_household_id: input.householdId, p_income_id: input.incomeId,
   });
 

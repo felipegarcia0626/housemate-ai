@@ -5,6 +5,7 @@ const ts = require("typescript");
 
 const root = path.resolve(__dirname, "..");
 const clientModule = path.join(root, "infrastructure", "database", "client.ts");
+const authClientModule = path.join(root, "infrastructure", "auth", "supabase-server.client.ts");
 const serviceModule = path.join(
   root,
   "modules",
@@ -510,17 +511,14 @@ class FakeQuery {
   }
 }
 
-const fakeClient = {
-  from(table) {
-    observedOperations.push({ type: "from", table });
-    return new FakeQuery(table);
-  },
-  rpc(name) {
-    const args = arguments[1];
-    assert.equal(args.p_auth_user_id, "auth-user");
-    assert.equal(args.p_actor_member_id, memberA);
-    observedOperations.push({ type: "rpc", name, args });
-    if (name === "fn_delete_expense_eligible") {
+function executeExpenseRpc(clientKind, name, args) {
+    assert.equal(clientKind, "session", "financial Web RPC must use the session client");
+    const operation = { type: "rpc", name, args };
+    Object.defineProperty(operation, "clientKind", { value: clientKind });
+    observedOperations.push(operation);
+    assert.ok(!Object.hasOwn(args, "p_auth_user_id"));
+    assert.ok(!Object.hasOwn(args, "p_actor_member_id"));
+    if (name === "fn_delete_web_expense") {
       if (rpcError) return Promise.resolve({ data: null, error: rpcError });
       const index = expenses.findIndex(
         (row) =>
@@ -540,7 +538,7 @@ const fakeClient = {
       }
       return Promise.resolve({ data: "ALREADY_CANCELLED", error: null });
     }
-    if (name === "fn_update_expense_eligible") {
+    if (name === "fn_update_web_expense") {
       if (rpcError) return Promise.resolve({ data: null, error: rpcError });
       const expense = expenses.find(
         (row) =>
@@ -559,7 +557,7 @@ const fakeClient = {
       if (args.p_set_category_id) expense.category_id = args.p_category_id;
       return Promise.resolve({ data: expense.id, error: null });
     }
-    if (name !== "fn_create_expense_eligible") {
+    if (name !== "fn_create_web_expense") {
       throw new Error("Unexpected RPC");
     }
     if (rpcError) {
@@ -576,11 +574,11 @@ const fakeClient = {
         total_amount: String(args.p_total_amount),
         expense_date: args.p_expense_date,
         status: "CONFIRMED",
-        created_by: args.p_created_by,
+        created_by: memberA,
         paid_by: args.p_paid_by,
         currency: "COP",
         description: args.p_description,
-        source: args.p_source,
+        source: "WEB",
         created_at: "2026-08-12T12:00:00.000Z",
         updated_at: "2026-08-12T12:00:00.000Z",
       });
@@ -608,6 +606,24 @@ const fakeClient = {
       }
     }
     return Promise.resolve({ data: id, error: null });
+}
+
+const fakeClient = {
+  from(table) {
+    observedOperations.push({ type: "from", table });
+    return new FakeQuery(table);
+  },
+  rpc(name, args) {
+    return executeExpenseRpc("admin", name, args);
+  },
+};
+const fakeAuthClient = {
+  from(table) {
+    observedOperations.push({ type: "from", table });
+    return new FakeQuery(table);
+  },
+  rpc(name, args) {
+    return executeExpenseRpc("session", name, args);
   },
 };
 
@@ -629,6 +645,9 @@ function createTypeScriptLoader(overrides = new Map()) {
     if (overrides.has(resolved)) return overrides.get(resolved);
     if (resolved === clientModule) {
       return { getSupabaseAdminClient: () => fakeClient };
+    }
+    if (resolved === authClientModule) {
+      return { createSupabaseAuthServerClient: async () => fakeAuthClient };
     }
     if (moduleCache.has(resolved)) return moduleCache.get(resolved).exports;
 
@@ -702,6 +721,12 @@ function hasOperation(expected) {
   return observedOperations.some((operation) =>
     Object.entries(expected).every(([key, value]) => operation[key] === value),
   );
+}
+
+function assertFinancialRpcUsesSessionClient() {
+  const rpcOperations = observedOperations.filter(({ type }) => type === "rpc");
+  assert.ok(rpcOperations.length > 0);
+  assert.ok(rpcOperations.every(({ clientKind }) => clientKind === "session"));
 }
 
 function decodeSearchTerm(orFilter) {
@@ -1710,10 +1735,11 @@ async function main() {
     assert.equal(updatedBody.data.id, expenseNewer);
     assert.equal(
       observedOperations.filter(
-        ({ type, name }) => type === "rpc" && name === "fn_update_expense_eligible",
+        ({ type, name }) => type === "rpc" && name === "fn_update_web_expense",
       ).length,
       1,
     );
+    assertFinancialRpcUsesSessionClient();
     for (const [authError, status] of [
       ["UNAUTHENTICATED", 401],
       ["APPLICATION_USER_NOT_FOUND", 403],
@@ -1844,10 +1870,9 @@ async function main() {
       [
         {
           type: "rpc",
-          name: "fn_delete_expense_eligible",
+          name: "fn_delete_web_expense",
           args: {
-            p_auth_user_id: "auth-user", p_actor_member_id: memberA,
-        p_household_id: householdB,
+            p_household_id: householdB,
             p_expense_id: expenseOtherHousehold,
           },
         },
@@ -1865,12 +1890,12 @@ async function main() {
       error: { code: "NOT_FOUND", message: "Recurso no encontrado." },
     });
     assert.deepEqual(observedOperations, [
-      { type: "rpc", name: "fn_delete_expense_eligible", args: {
-        p_auth_user_id: "auth-user", p_actor_member_id: memberA,
+      { type: "rpc", name: "fn_delete_web_expense", args: {
         p_household_id: householdB,
         p_expense_id: expenseOlder,
       } },
     ]);
+    assertFinancialRpcUsesSessionClient();
 
     for (const [authError, status] of [
       ["UNAUTHENTICATED", 401],
@@ -1906,15 +1931,15 @@ async function main() {
       [
         {
           type: "rpc",
-          name: "fn_delete_expense_eligible",
+          name: "fn_delete_web_expense",
           args: {
-            p_auth_user_id: "auth-user", p_actor_member_id: memberA,
-        p_household_id: householdA,
+            p_household_id: householdA,
             p_expense_id: expensePending,
           },
         },
       ],
     );
+    assertFinancialRpcUsesSessionClient();
     console.log("PASS DELETE removes a PENDING Expense physically");
 
     observedOperations.length = 0;
@@ -1929,7 +1954,7 @@ async function main() {
     );
     assert.equal(
       observedOperations.filter(
-        ({ type, name }) => type === "rpc" && name === "fn_delete_expense_eligible",
+        ({ type, name }) => type === "rpc" && name === "fn_delete_web_expense",
       ).length,
       1,
     );
@@ -2040,10 +2065,10 @@ async function main() {
     assert.deepEqual(createdBody.data.splits, [
       { memberId: memberA, percentage: 100, amount: 100.5 },
     ]);
-    assert.ok(hasOperation({ type: "rpc", name: "fn_create_expense_eligible" }));
+    assert.ok(hasOperation({ type: "rpc", name: "fn_create_web_expense" }));
     assert.equal(
       observedOperations.filter(
-        ({ type, name }) => type === "rpc" && name === "fn_create_expense_eligible",
+        ({ type, name }) => type === "rpc" && name === "fn_create_web_expense",
       ).length,
       1,
     );
@@ -2054,12 +2079,13 @@ async function main() {
       ),
     );
     const createRpc = observedOperations.find(
-      ({ type, name }) => type === "rpc" && name === "fn_create_expense_eligible",
+      ({ type, name }) => type === "rpc" && name === "fn_create_web_expense",
     );
     assert.equal(createRpc.args.p_household_id, householdA);
-    assert.equal(createRpc.args.p_created_by, memberA);
+    assert.ok(!Object.hasOwn(createRpc.args, "p_created_by"));
     assert.equal(createRpc.args.p_paid_by, memberC);
-    assert.equal(createRpc.args.p_source, "WEB");
+    assert.ok(!Object.hasOwn(createRpc.args, "p_source"));
+    assert.equal(createRpc.clientKind, "session");
     assert.deepEqual(createRpc.args.p_items, [
       {
         name: "Groceries",
@@ -2086,7 +2112,7 @@ async function main() {
     );
     assert.equal(crossHouseholdPayer.status, 404);
     assert.equal((await readJson(crossHouseholdPayer)).error.code, "NOT_FOUND");
-    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense_eligible" }));
+    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_web_expense" }));
 
     observedOperations.length = 0;
     const crossHouseholdSplit = await route.POST(
@@ -2097,7 +2123,7 @@ async function main() {
     );
     assert.equal(crossHouseholdSplit.status, 404);
     assert.equal((await readJson(crossHouseholdSplit)).error.code, "NOT_FOUND");
-    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense_eligible" }));
+    assert.ok(!hasOperation({ type: "rpc", name: "fn_create_web_expense" }));
 
     for (const [authError, status] of [
       ["UNAUTHENTICATED", 401],
@@ -2110,7 +2136,7 @@ async function main() {
       const response = await route.POST(postRequest(createBody));
       assert.equal(response.status, status);
       assert.equal((await readJson(response)).error.code, authError);
-      assert.ok(!hasOperation({ type: "rpc", name: "fn_create_expense_eligible" }));
+      assert.ok(!hasOperation({ type: "rpc", name: "fn_create_web_expense" }));
     }
     authContextState = { kind: "valid", householdId: householdA };
     assert.equal(

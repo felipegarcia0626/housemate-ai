@@ -149,8 +149,6 @@ export async function prepareExpenseCreation(
   );
   return {
     householdId: context.householdId,
-    authUserId: context.authUserId,
-    actorMemberId: context.actorMemberId,
     createdBy: input.createdBy,
     paidByMemberId: input.paidByMemberId,
     categoryId: input.categoryId ?? null,
@@ -335,8 +333,6 @@ async function updateValidatedExpense(
         );
   const updatedExpenseId = await updateExpenseInRepository({
     householdId: context.householdId,
-    authUserId: context.authUserId,
-    actorMemberId: context.actorMemberId,
     expenseId,
     merchantIsSet: validated.merchantIsSet,
     merchant: validated.merchantIsSet ? (input.merchant ?? null) : null,
@@ -418,8 +414,6 @@ export async function deleteExpense(
 
     const result = await deleteExpenseInRepository({
       householdId: context.householdId,
-      authUserId: context.authUserId,
-      actorMemberId: context.actorMemberId,
       expenseId,
     });
 

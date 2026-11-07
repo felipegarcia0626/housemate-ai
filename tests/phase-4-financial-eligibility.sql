@@ -170,11 +170,12 @@ BEGIN
     END IF;
     IF EXISTS(SELECT 1 FROM aclexplode(COALESCE((SELECT proacl FROM pg_proc WHERE oid=f.oid),acldefault('f',f.proowner))) a
       WHERE a.grantee=0 AND a.privilege_type='EXECUTE') THEN RAISE EXCEPTION 'PUBLIC financial access'; END IF;
-    IF has_function_privilege('service_role',f.oid,'EXECUTE') IS DISTINCT FROM (f.proname <> 'fn_require_financial_eligibility') THEN
+    IF has_function_privilege('service_role',f.oid,'EXECUTE') IS DISTINCT FROM
+       (f.proname IN ('fn_confirm_pending_expense_eligible','fn_confirm_pending_income_eligible')) THEN
       RAISE EXCEPTION 'Wrong service_role financial access';
     END IF;
   END LOOP;
-  -- 0052 closes the legacy direct-DML path; eligible RPCs remain available.
+  -- 0052 closes raw table writes; 0053 moves ordinary CRUD to JWT Web entries.
   IF has_table_privilege('service_role','public.tb_incomes','INSERT,UPDATE,DELETE,TRUNCATE') THEN
     RAISE EXCEPTION 'Legacy Income table writes remain available to service_role';
   END IF;

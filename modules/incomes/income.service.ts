@@ -129,8 +129,6 @@ export async function prepareIncomeCreation(
   return {
     ...input,
     householdId: context.householdId,
-    authUserId: context.authUserId,
-    actorMemberId: context.actorMemberId,
     createdBy: context.memberId,
     categoryId,
   };
@@ -197,8 +195,6 @@ export async function updateIncome(
 
     const persistenceInput: IncomeUpdatePersistenceInput = {
       householdId: context.householdId,
-      authUserId: context.authUserId,
-      actorMemberId: context.actorMemberId,
       incomeId,
     };
 
@@ -257,8 +253,6 @@ export async function deleteIncome(
 
     const deletedId = await deleteIncomeInRepository({
       householdId: context.householdId,
-      authUserId: context.authUserId,
-      actorMemberId: context.actorMemberId,
       incomeId,
     });
 

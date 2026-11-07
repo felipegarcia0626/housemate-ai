@@ -23,15 +23,16 @@ module.exports = async function eligibilityRaces(postgres) {
     member +
     "')";
   const write =
-    "SELECT public.fn_create_income_eligible('" +
-    auth +
-    "','" +
-    member +
-    "','" +
+    "SELECT public.fn_create_web_income('" +
     household +
     "','" +
     member +
     "',42,current_date,'Eligibility race',NULL)";
+  async function setWebIdentity(client, authUserId = auth) {
+    await client.query("SET LOCAL ROLE authenticated");
+    await client.query("SELECT set_config('request.jwt.claim.role','authenticated',true)");
+    await client.query("SELECT set_config('request.jwt.claim.sub',$1,true)", [authUserId]);
+  }
   const capture = (promise) =>
     promise.then(
       (result) => ({ result }),
@@ -122,6 +123,12 @@ module.exports = async function eligibilityRaces(postgres) {
       ownerAuth,
       "owner@example.test",
     ]);
+    await inspect.query(`CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
+      SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid
+    $$;
+    CREATE OR REPLACE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$
+      SELECT nullif(current_setting('request.jwt.claim.role',true),'')
+    $$`);
     await inspect.query(
       "UPDATE public.tb_users SET auth_user_id=$1 WHERE id=$2",
       [ownerAuth, "00000000-0000-4000-8000-000000000012"],
@@ -146,6 +153,7 @@ module.exports = async function eligibilityRaces(postgres) {
       await change.query("BEGIN; SET LOCAL ROLE service_role");
       const leaving = capture(change.query(leave));
       await blocked(cp);
+      await setWebIdentity(financial);
       const writing = capture(financial.query(write));
       const results = await Promise.all([leaving, writing]);
       assert.ok(
@@ -203,14 +211,14 @@ module.exports = async function eligibilityRaces(postgres) {
           await financial.query(guard);
           const pending = capture(change.query(mutation));
           await blocked(cp);
-          await financial.query("SET LOCAL ROLE service_role");
+          await setWebIdentity(financial);
           await financial.query(write);
           await financial.query("COMMIT");
           assert.equal((await pending).error, undefined);
           await change.query("COMMIT");
         } else {
           await change.query(mutation);
-          await financial.query("SET LOCAL ROLE service_role");
+          await setWebIdentity(financial);
           const pending = capture(financial.query(write));
           await blocked(fp);
           await change.query("COMMIT");

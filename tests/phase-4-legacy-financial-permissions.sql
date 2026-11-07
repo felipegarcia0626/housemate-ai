@@ -55,6 +55,22 @@ DECLARE
     'public.fn_confirm_whatsapp_expense_event(text,uuid,bigint,uuid,text,timestamp with time zone,uuid,uuid,uuid,text,numeric,date,text,jsonb,jsonb)'::REGPROCEDURE::OID,
     'public.fn_confirm_whatsapp_income_event(text,uuid,bigint,uuid,text,timestamp with time zone,uuid,numeric,date,text,uuid)'::REGPROCEDURE::OID
   ];
+  ordinary_crud_functions OID[] := ARRAY[
+    'public.fn_create_expense_eligible(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb)'::REGPROCEDURE::OID,
+    'public.fn_update_expense_eligible(uuid,uuid,uuid,uuid,boolean,text,boolean,text,numeric,date,uuid,boolean,uuid,jsonb,jsonb)'::REGPROCEDURE::OID,
+    'public.fn_delete_expense_eligible(uuid,uuid,uuid,uuid)'::REGPROCEDURE::OID,
+    'public.fn_create_income_eligible(uuid,uuid,uuid,uuid,numeric,date,text,uuid)'::REGPROCEDURE::OID,
+    'public.fn_update_income_eligible(uuid,uuid,uuid,uuid,jsonb)'::REGPROCEDURE::OID,
+    'public.fn_delete_income_eligible(uuid,uuid,uuid,uuid)'::REGPROCEDURE::OID
+  ];
+  web_entries OID[] := ARRAY[
+    'public.fn_create_web_expense(uuid,uuid,uuid,uuid,text,numeric,date,text,jsonb,jsonb)'::REGPROCEDURE::OID,
+    'public.fn_update_web_expense(uuid,uuid,boolean,text,boolean,text,numeric,date,uuid,boolean,uuid,jsonb,jsonb)'::REGPROCEDURE::OID,
+    'public.fn_delete_web_expense(uuid,uuid)'::REGPROCEDURE::OID,
+    'public.fn_create_web_income(uuid,uuid,numeric,date,text,uuid)'::REGPROCEDURE::OID,
+    'public.fn_update_web_income(uuid,uuid,jsonb)'::REGPROCEDURE::OID,
+    'public.fn_delete_web_income(uuid,uuid)'::REGPROCEDURE::OID
+  ];
   function_record RECORD;
 BEGIN
   IF (SELECT count(*) FROM pg_catalog.pg_proc AS p
@@ -104,8 +120,19 @@ BEGIN
 
     FOREACH function_oid IN ARRAY approved_functions LOOP
       IF has_function_privilege(role_name, function_oid, 'EXECUTE')
-         IS DISTINCT FROM (role_name = 'service_role') THEN
+         IS DISTINCT FROM (
+           role_name = 'service_role'
+           AND NOT (function_oid = ANY (ordinary_crud_functions))
+         ) THEN
         RAISE EXCEPTION 'FAIL unexpected approved-entry EXECUTE for % on %',
+          role_name, function_oid::REGPROCEDURE;
+      END IF;
+    END LOOP;
+
+    FOREACH function_oid IN ARRAY web_entries LOOP
+      IF has_function_privilege(role_name, function_oid, 'EXECUTE')
+         IS DISTINCT FROM (role_name = 'authenticated') THEN
+        RAISE EXCEPTION 'FAIL unexpected Web CRUD EXECUTE for % on %',
           role_name, function_oid::REGPROCEDURE;
       END IF;
     END LOOP;
@@ -288,97 +315,59 @@ SELECT pg_temp.expect_permission_denied(
 
 RESET ROLE;
 
--- Exercise current service_role-authorized CRUD entries after raw table grants
--- are removed. Confirmation positives remain covered by phase-4 financial and
--- WhatsApp event tests.
-CREATE SCHEMA IF NOT EXISTS auth;
-CREATE TABLE IF NOT EXISTS auth.users(id UUID PRIMARY KEY, email TEXT);
-ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS email_confirmed_at TIMESTAMPTZ;
-INSERT INTO auth.users(id, email, email_confirmed_at)
-VALUES ('52000000-0052-4000-8000-000000000099', 'financial-0052@example.test', now());
-UPDATE public.tb_users
-   SET auth_user_id = '52000000-0052-4000-8000-000000000099'
- WHERE id = '00000000-0000-4000-8000-000000000011';
-
 SET LOCAL ROLE service_role;
-
-DO $$
-DECLARE
-  income_result JSONB;
-  income_id UUID;
-  expense_id UUID;
-  update_result UUID;
-  delete_result TEXT;
-BEGIN
-  income_result := public.fn_create_income_eligible(
-    '52000000-0052-4000-8000-000000000099',
-    '00000000-0000-4000-8000-000000000021',
-    '00000000-0000-4000-8000-000000000001',
-    '00000000-0000-4000-8000-000000000021',
-    8.25, current_date, '0052 service_role eligible income', NULL
-  );
-  income_id := (income_result ->> 'id')::UUID;
-  IF income_id IS NULL THEN RAISE EXCEPTION 'FAIL eligible Income create returned no id'; END IF;
-
-  income_result := public.fn_update_income_eligible(
-    '52000000-0052-4000-8000-000000000099',
-    '00000000-0000-4000-8000-000000000021',
-    '00000000-0000-4000-8000-000000000001',
-    income_id,
-    '{"description":"0052 eligible income updated"}'::JSONB
-  );
-  IF income_result ->> 'description' IS DISTINCT FROM '0052 eligible income updated' THEN
-    RAISE EXCEPTION 'FAIL eligible Income update did not persist';
-  END IF;
-  delete_result := public.fn_delete_income_eligible(
-    '52000000-0052-4000-8000-000000000099',
-    '00000000-0000-4000-8000-000000000021',
-    '00000000-0000-4000-8000-000000000001',
-    income_id
-  );
-  IF delete_result IS DISTINCT FROM income_id::TEXT THEN
-    RAISE EXCEPTION 'FAIL eligible Income delete failed';
-  END IF;
-
-  expense_id := public.fn_create_expense_eligible(
-    '52000000-0052-4000-8000-000000000099',
-    '00000000-0000-4000-8000-000000000021',
-    '00000000-0000-4000-8000-000000000001',
-    '00000000-0000-4000-8000-000000000021',
-    '00000000-0000-4000-8000-000000000021',
-    NULL, NULL, '0052 eligible expense', 8.25, current_date,
-    '0052 service_role eligible expense', 'WEB', '[]'::JSONB,
-    '[{"householdMemberId":"00000000-0000-4000-8000-000000000021","amount":8.25,"percentage":100}]'::JSONB
-  );
-  IF expense_id IS NULL THEN RAISE EXCEPTION 'FAIL eligible Expense create returned no id'; END IF;
-
-  update_result := public.fn_update_expense_eligible(
-    '52000000-0052-4000-8000-000000000099',
-    '00000000-0000-4000-8000-000000000021',
-    '00000000-0000-4000-8000-000000000001',
-    expense_id, TRUE, '0052 updated merchant', FALSE, NULL,
-    NULL, NULL, NULL, FALSE, NULL, NULL, NULL
-  );
-  IF update_result IS DISTINCT FROM expense_id THEN
-    RAISE EXCEPTION 'FAIL eligible Expense update failed';
-  END IF;
-  delete_result := public.fn_delete_expense_eligible(
-    '52000000-0052-4000-8000-000000000099',
-    '00000000-0000-4000-8000-000000000021',
-    '00000000-0000-4000-8000-000000000001',
-    expense_id
-  );
-  IF delete_result IS NULL THEN RAISE EXCEPTION 'FAIL eligible Expense delete failed'; END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM public.tb_expenses WHERE id = expense_id AND status = 'CANCELLED'
-  ) THEN
-    RAISE EXCEPTION 'FAIL eligible Expense delete did not preserve cancellation semantics';
-  END IF;
-
-  RAISE NOTICE 'PASS service_role eligible Expense and Income create/update/delete remain usable';
-END;
-$$;
+SELECT pg_temp.expect_permission_denied(
+  'service_role cannot invoke generic eligible Expense create',
+  $sql$SELECT public.fn_create_expense_eligible(
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,1,current_date,NULL,'WEB','[]','[]'
+  )$sql$,
+  'permission denied for function fn_create_expense_eligible'
+);
+SELECT pg_temp.expect_permission_denied(
+  'service_role cannot invoke generic eligible Expense update',
+  $sql$SELECT public.fn_update_expense_eligible(
+    NULL,NULL,NULL,NULL,false,NULL,false,NULL,NULL,NULL,NULL,false,NULL,NULL,NULL
+  )$sql$,
+  'permission denied for function fn_update_expense_eligible'
+);
+SELECT pg_temp.expect_permission_denied(
+  'service_role cannot invoke generic eligible Expense delete',
+  $sql$SELECT public.fn_delete_expense_eligible(NULL,NULL,NULL,NULL)$sql$,
+  'permission denied for function fn_delete_expense_eligible'
+);
+SELECT pg_temp.expect_permission_denied(
+  'service_role cannot invoke generic eligible Income create',
+  $sql$SELECT public.fn_create_income_eligible(NULL,NULL,NULL,NULL,1,current_date,'denied',NULL)$sql$,
+  'permission denied for function fn_create_income_eligible'
+);
+SELECT pg_temp.expect_permission_denied(
+  'service_role cannot invoke generic eligible Income update',
+  $sql$SELECT public.fn_update_income_eligible(NULL,NULL,NULL,NULL,'{"amount":1}')$sql$,
+  'permission denied for function fn_update_income_eligible'
+);
+SELECT pg_temp.expect_permission_denied(
+  'service_role cannot invoke generic eligible Income delete',
+  $sql$SELECT public.fn_delete_income_eligible(NULL,NULL,NULL,NULL)$sql$,
+  'permission denied for function fn_delete_income_eligible'
+);
 
 RESET ROLE;
+
+DO $$
+BEGIN
+  IF NOT has_function_privilege(
+    'service_role',
+    'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::REGPROCEDURE,
+    'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'service_role',
+    'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::REGPROCEDURE,
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'FAIL proposal confirmation permissions were changed';
+  END IF;
+  RAISE NOTICE 'PASS service_role cannot directly execute the six ordinary CRUD entries; proposal confirmation remains authorized';
+END;
+$$;
 
 ROLLBACK;

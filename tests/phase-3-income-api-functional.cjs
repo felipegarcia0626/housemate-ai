@@ -5,6 +5,7 @@ const ts = require("typescript");
 
 const root = path.resolve(__dirname, "..");
 const clientModule = path.join(root, "infrastructure", "database", "client.ts");
+const authClientModule = path.join(root, "infrastructure", "auth", "supabase-server.client.ts");
 const serviceModule = path.join(
   root,
   "modules",
@@ -510,27 +511,43 @@ class FakeQuery {
 }
 
 let rpcError;
+async function executeIncomeRpc(clientKind, name, args) {
+    assert.equal(clientKind, "session", "financial Web RPC must use the session client");
+    if (rpcError) return {data:null,error:rpcError};
+    const operation = { type: "rpc", name, args };
+    Object.defineProperty(operation, "clientKind", { value: clientKind });
+    observedOperations.push(operation);
+    assert.ok(!Object.hasOwn(args, "p_auth_user_id"));
+    assert.ok(!Object.hasOwn(args, "p_actor_member_id"));
+    const query = new FakeQuery("tb_incomes");
+    if (name === "fn_create_web_income") return query.insert({
+      household_id: args.p_household_id, created_by: memberA, member_id: args.p_member_id,
+      amount: args.p_amount, income_date: args.p_income_date, description: args.p_description, category_id: args.p_category_id,
+    }).single();
+    if (name === "fn_update_web_income") return query.update(args.p_changes).eq("id",args.p_income_id).eq("household_id",args.p_household_id).maybeSingle();
+    if (name === "fn_delete_web_income") {
+      const result=await query.delete().eq("id",args.p_income_id).eq("household_id",args.p_household_id).maybeSingle();
+      return {data:result.data?.id ?? null,error:result.error};
+    }
+    throw new Error("Unexpected RPC");
+}
+
 const fakeClient = {
   from(table) {
     observedOperations.push({ type: "from", table });
     return new FakeQuery(table);
   },
-  async rpc(name, args) {
-    if (rpcError) return {data:null,error:rpcError};
-    observedOperations.push({ type: "rpc", name, args });
-    assert.equal(args.p_auth_user_id, "auth-user");
-    assert.equal(args.p_actor_member_id, memberA);
-    const query = new FakeQuery("tb_incomes");
-    if (name === "fn_create_income_eligible") return query.insert({
-      household_id: args.p_household_id, created_by: args.p_actor_member_id, member_id: args.p_member_id,
-      amount: args.p_amount, income_date: args.p_income_date, description: args.p_description, category_id: args.p_category_id,
-    }).single();
-    if (name === "fn_update_income_eligible") return query.update(args.p_changes).eq("id",args.p_income_id).eq("household_id",args.p_household_id).maybeSingle();
-    if (name === "fn_delete_income_eligible") {
-      const result=await query.delete().eq("id",args.p_income_id).eq("household_id",args.p_household_id).maybeSingle();
-      return {data:result.data?.id ?? null,error:result.error};
-    }
-    throw new Error("Unexpected RPC");
+  rpc(name, args) {
+    return executeIncomeRpc("admin", name, args);
+  },
+};
+const fakeAuthClient = {
+  from(table) {
+    observedOperations.push({ type: "from", table });
+    return new FakeQuery(table);
+  },
+  rpc(name, args) {
+    return executeIncomeRpc("session", name, args);
   },
 };
 
@@ -552,6 +569,9 @@ function createTypeScriptLoader(overrides = new Map()) {
     if (overrides.has(resolved)) return overrides.get(resolved);
     if (resolved === clientModule) {
       return { getSupabaseAdminClient: () => fakeClient };
+    }
+    if (resolved === authClientModule) {
+      return { createSupabaseAuthServerClient: async () => fakeAuthClient };
     }
     if (moduleCache.has(resolved)) return moduleCache.get(resolved).exports;
 
@@ -645,6 +665,12 @@ function hasOperation(expected) {
   );
 }
 
+function assertFinancialRpcUsesSessionClient() {
+  const rpcOperations = observedOperations.filter(({ type }) => type === "rpc");
+  assert.ok(rpcOperations.length > 0);
+  assert.ok(rpcOperations.every(({ clientKind }) => clientKind === "session"));
+}
+
 async function main() {
   const previousHouseholdId = process.env.HOUSEMATE_MVP_HOUSEHOLD_ID;
   const previousMemberId = process.env.HOUSEMATE_MVP_MEMBER_ID;
@@ -723,6 +749,7 @@ async function main() {
       description: "Created over HTTP",
       category_id: categoryA,
     });
+    assertFinancialRpcUsesSessionClient();
     assert.equal(
       observedOperations.filter(
         ({ type, table }) => type === "insert" && table === "tb_incomes",
@@ -1347,9 +1374,10 @@ async function main() {
       1,
     );
     assert.equal(
-      observedOperations.filter(({ type, name }) => type === "rpc" && name === "fn_update_income_eligible").length,
+      observedOperations.filter(({ type, name }) => type === "rpc" && name === "fn_update_web_income").length,
       1,
     );
+    assertFinancialRpcUsesSessionClient();
     console.log(
       "PASS PATCH query householdId cannot override context and performs one update",
     );

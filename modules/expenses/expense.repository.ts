@@ -1,4 +1,5 @@
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import { createSupabaseAuthServerClient } from "@/infrastructure/auth/supabase-server.client";
 import { getAvailableCategoryIds } from "@/modules/categories/category.repository";
 
 import type {
@@ -34,9 +35,9 @@ export class ExpenseRepositoryError extends Error {
 }
 
 export interface ExpenseCreatePersistenceInput {
-  authUserId?: string;
-  actorMemberId?: string;
   householdId: string;
+  // Retained for the separate proposal-confirmation consumer; the ordinary
+  // Web CRUD RPC deliberately does not send either value to PostgreSQL.
   createdBy: string;
   paidByMemberId: string;
   categoryId: string | null;
@@ -51,8 +52,6 @@ export interface ExpenseCreatePersistenceInput {
 }
 
 export interface ExpenseUpdatePersistenceInput {
-  authUserId?: string;
-  actorMemberId?: string;
   householdId: string;
   expenseId: string;
   merchantIsSet: boolean;
@@ -69,8 +68,6 @@ export interface ExpenseUpdatePersistenceInput {
 }
 
 export interface ExpenseDeletePersistenceInput {
-  authUserId?: string;
-  actorMemberId?: string;
   householdId: string;
   expenseId: string;
 }
@@ -507,13 +504,11 @@ export async function findReceiptForExpenseCreation(
 export async function createExpense(
   input: ExpenseCreatePersistenceInput,
 ): Promise<string> {
-  const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_create_expense_eligible",
+  const client = await createSupabaseAuthServerClient();
+  const { data, error } = await client.rpc(
+    "fn_create_web_expense",
     {
       p_household_id: input.householdId,
-      p_auth_user_id: input.authUserId ?? null,
-      p_actor_member_id: input.actorMemberId ?? null,
-      p_created_by: input.createdBy,
       p_paid_by: input.paidByMemberId,
       p_category_id: input.categoryId,
       p_receipt_id: input.receiptId,
@@ -521,7 +516,6 @@ export async function createExpense(
       p_total_amount: input.totalAmount,
       p_expense_date: input.expenseDate,
       p_description: input.description,
-      p_source: input.source,
       p_items: input.items.map((item) => ({
         name: item.name,
         quantity: item.quantity ?? null,
@@ -550,12 +544,11 @@ export async function createExpense(
 export async function updateExpense(
   input: ExpenseUpdatePersistenceInput,
 ): Promise<string> {
-  const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_update_expense_eligible",
+  const client = await createSupabaseAuthServerClient();
+  const { data, error } = await client.rpc(
+    "fn_update_web_expense",
     {
       p_household_id: input.householdId,
-      p_auth_user_id: input.authUserId ?? null,
-      p_actor_member_id: input.actorMemberId ?? null,
       p_expense_id: input.expenseId,
       p_set_merchant: input.merchantIsSet,
       p_merchant: input.merchant,
@@ -597,12 +590,11 @@ export async function updateExpense(
 export async function deleteExpense(
   input: ExpenseDeletePersistenceInput,
 ): Promise<ExpenseDeleteOutcome> {
-  const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_delete_expense_eligible",
+  const client = await createSupabaseAuthServerClient();
+  const { data, error } = await client.rpc(
+    "fn_delete_web_expense",
     {
       p_household_id: input.householdId,
-      p_auth_user_id: input.authUserId ?? null,
-      p_actor_member_id: input.actorMemberId ?? null,
       p_expense_id: input.expenseId,
     },
   );

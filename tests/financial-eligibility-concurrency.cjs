@@ -6,9 +6,15 @@ module.exports = async function financialEligibilityConcurrency(postgres) {
   await Promise.all(clients.map((client) => client.connect()));
   const [operation, change, observer] = clients;
   const auth = "42000000-0042-4000-8000-000000000001";
-  const write = `SELECT public.fn_create_income_eligible('${auth}',
-    '00000000-0000-4000-8000-000000000021','00000000-0000-4000-8000-000000000001',
-    '00000000-0000-4000-8000-000000000021',42,current_date,'Eligibility concurrency',NULL)`;
+  const write = `SELECT public.fn_create_web_income(
+    '00000000-0000-4000-8000-000000000001',
+    '00000000-0000-4000-8000-000000000021',42,current_date,
+    'Eligibility concurrency',NULL)`;
+  async function setWebIdentity(client) {
+    await client.query("SET LOCAL ROLE authenticated");
+    await client.query("SELECT set_config('request.jwt.claim.role','authenticated',true)");
+    await client.query("SELECT set_config('request.jwt.claim.sub',$1,true)", [auth]);
+  }
   async function waitBlocked(pid) {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -25,6 +31,12 @@ module.exports = async function financialEligibilityConcurrency(postgres) {
     await observer.query(`CREATE SCHEMA IF NOT EXISTS auth;
       CREATE TABLE IF NOT EXISTS auth.users(id uuid PRIMARY KEY,email text);
       ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS email_confirmed_at timestamptz;
+      CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
+        SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid
+      $$;
+      CREATE OR REPLACE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$
+        SELECT nullif(current_setting('request.jwt.claim.role',true),'')
+      $$;
       INSERT INTO auth.users VALUES('${auth}','eligible@example.test',now());
       UPDATE public.tb_users SET auth_user_id='${auth}' WHERE id='00000000-0000-4000-8000-000000000011'`);
     await Promise.all(
@@ -44,7 +56,8 @@ module.exports = async function financialEligibilityConcurrency(postgres) {
         (await observer.query("SELECT count(*) AS n FROM public.tb_incomes"))
           .rows[0].n,
       );
-      await operation.query("BEGIN; SET LOCAL ROLE service_role");
+      await operation.query("BEGIN");
+      await setWebIdentity(operation);
       await operation.query(write);
       await change.query("BEGIN");
       const pending = change.query(
@@ -77,7 +90,8 @@ module.exports = async function financialEligibilityConcurrency(postgres) {
       await change.query(
         `UPDATE auth.users SET email_confirmed_at=NULL WHERE id='${auth}'`,
       );
-      await operation.query("BEGIN; SET LOCAL ROLE service_role");
+      await operation.query("BEGIN");
+      await setWebIdentity(operation);
       const pending = operation.query(write).then(
         () => null,
         (error) => error,

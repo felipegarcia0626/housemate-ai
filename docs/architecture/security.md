@@ -218,20 +218,28 @@ y evitar que una revocación pueda eludirse por fallback a `external_identifier`
 El número ya reasignado manualmente permanece heredado, no verificado por 0043.
 FINDING-012 y FINDING-013 siguen abiertos y no se resuelven por esta migración.
 
-## Elegibilidad financiera transaccional — transición 0042
+## Elegibilidad financiera Web y transición de privilegios — 0042/0048/0053
 
 Las rutas financieras Web exigen correo presente y confirmado obtenido mediante
 `auth.getUser()`. `ACCOUNT_NOT_ELIGIBLE` se proyecta como HTTP 403. Recuperación,
 autenticación y gestión de cuenta mantienen su primitiva de sesión independiente.
 
-Las entradas `*_eligible` reciben la identidad Auth únicamente del contexto backend,
-nunca del modelo ni del body. El helper privado adquiere `FOR SHARE` en este orden:
+Las operaciones CRUD Web ordinarias de gastos e ingresos usan el cliente de sesión
+Supabase y las entradas `fn_*_web_*` de 0053. PostgreSQL deriva al usuario con
+`auth.uid()`, exige `auth.role() = authenticated`, obtiene la membership ACTIVE del
+hogar y fija `Expense.source = WEB`; no recibe del caller identidad, actor ni source.
+El wrapper valida en SQL la disponibilidad y el tipo de categoría; las funciones
+0042 conservan el resto de las reglas, ownership por hogar, atomicidad de items,
+distribuciones y asociación del recibo.
+
+El helper privado de elegibilidad adquiere `FOR SHARE` en este orden:
 `auth.users` → hogar → `tb_users` → membership ACTIVE. Verifica correo/confirmación
 y relación Auth, y mantiene el bloqueo de la membership
-antes de adquirir el recurso financiero. No se conceden permisos generales
-de Auth a clientes ni al service role. Las funciones tienen propietario postgres,
-SECURITY DEFINER, search_path pg_catalog y objetos calificados. Solo las entradas
-pueden ejecutarse como service_role; el helper no es ejecutable por ese rol.
+antes de adquirir el recurso financiero. Los wrappers 0053 son propiedad de
+`postgres`, `SECURITY DEFINER`, usan `search_path = pg_catalog` y califican objetos.
+Solo `authenticated` puede ejecutar las seis entradas Web. `PUBLIC`, `anon` y
+`service_role` no pueden ejecutarlas. El helper privado no es directamente
+ejecutable por ningún rol de aplicación.
 
 WhatsApp conserva temporalmente su identificación heredada: la confirmación
 protegida deriva Auth del usuario del lease y comprueba la relación con el actor
@@ -239,17 +247,22 @@ antes de la RPC existente, que sigue validando lease/selección dentro de la mis
 transacción. Un usuario demo sin Auth no puede confirmar mediante esta entrada.
 Esto NO constituye vinculación verificada de WhatsApp.
 
-0042 es aditiva: no retira los grants históricos. Por tanto, todavía existen vías
-SQL antiguas y DML de service_role que omiten la elegibilidad. El corte requiere:
+0052 retiró DML financiero directo y RPC base históricas. 0053 retiró
+`service_role` de las seis RPC genéricas CRUD y conserva permisos de confirmación
+de propuestas para el runtime actual. El repositorio versiona 0051–0053, pero la
+aplicación remota y las ACL efectivas del entorno desplegado no están verificadas.
+La frontera privilegiada de WhatsApp y las confirmaciones siguen pendientes; no
+se declara aislado el canal por compartir el perímetro `service_role`.
 
-1. Aplicar 0042; verificar firmas, propietario, ACL y esquema Auth remoto.
-2. Desplegar todos los repositorios y rutas adaptados y comprobar la versión efectiva.
-3. Drenar solicitudes antiguas o programar un corte breve.
-4. En una migración posterior autorizada, retirar EXECUTE de las entradas antiguas
-   de gastos/confirmación y DML de ingresos/gastos/dependencias que pueda omitir
-   los wrappers. Verificar privilegios efectivos, incluidos grants por columna,
-   PUBLIC y roles heredados. Los cuerpos antiguos solo serán invocables internamente
-   por las entradas SECURITY DEFINER protegidas.
+El cambio remoto de privilegios requiere:
+
+1. Verificar destino, esquema Auth, firmas, propietarios y ACL efectivos remotos.
+2. Desplegar el runtime 0053 y comprobar que el SHA activo usa JWT para estos seis
+   writes y conserva los callers privilegiados aún legítimos.
+3. Aplicar la migración solo con un plan de corte y rollback autorizados.
+4. Verificar privilegios efectivos, incluidos `PUBLIC`, roles heredados,
+   ownership y permisos por columna. Los cuerpos CRUD genéricos quedan invocables
+   internamente por sus wrappers `SECURITY DEFINER` propiedad de `postgres`.
 
 No aplicar el corte antes de actualizar la versión desplegada. Una reversión a
 código antiguo después del corte fallará cerrada y requiere un plan específico.
@@ -259,9 +272,9 @@ Mapa de sustitución para el corte (solo después de verificar el despliegue):
 
 | Repositorio | Entradas nuevas | Vías históricas que deben quedar privadas |
 | --- | --- | --- |
-| `expense.repository.ts` | `fn_create_expense_eligible`, `fn_update_expense_eligible`, `fn_delete_expense_eligible` | `fn_create_expense`, `fn_update_expense`, `fn_delete_expense`; DML directo de gastos, ítems y distribuciones |
-| `income.repository.ts` | `fn_create_income_eligible`, `fn_update_income_eligible`, `fn_delete_income_eligible` | INSERT/UPDATE/DELETE de `tb_incomes`, incluidos grants por columna |
-| `pending-proposal.repository.ts` | `fn_confirm_pending_expense_eligible`, `fn_confirm_pending_income_eligible` | Las dos RPC `*_consistent` y las dos `fn_confirm_pending_*` base |
+| `expense.repository.ts` | `fn_create_web_expense`, `fn_update_web_expense`, `fn_delete_web_expense` para mutaciones Web; lecturas y validaciones auxiliares conservan algunos accesos `service_role` | `fn_create_expense_eligible`, `fn_update_expense_eligible`, `fn_delete_expense_eligible` no tienen EXECUTE para `service_role`; las funciones base y DML directo están cerrados por 0052 |
+| `income.repository.ts` | `fn_create_web_income`, `fn_update_web_income`, `fn_delete_web_income` para mutaciones Web; lecturas conservan `service_role` | Las tres RPC genéricas de CRUD no tienen EXECUTE para `service_role`; DML directo está cerrado por 0052 |
+| `pending-proposal.repository.ts` | `fn_confirm_pending_expense_eligible`, `fn_confirm_pending_income_eligible` aún usan `service_role` en Web; WhatsApp usa wrappers de evento | Las dos RPC `*_consistent` y las dos `fn_confirm_pending_*` base |
 
 La asociación de recibos con gastos se mantiene dentro de la creación protegida;
 en el corte también debe retirarse el UPDATE directo de `tb_receipts.expense_id`

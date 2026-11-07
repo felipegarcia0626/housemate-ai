@@ -129,11 +129,11 @@ Los siguientes endpoints del contrato ya están implementados en el repositorio 
 
 Los demás endpoints descritos en este contrato son objetivos del MVP y permanecen pendientes de implementación HTTP hasta que exista un Route Handler correspondiente.
 
-La autenticación Web se migra gradualmente. Los endpoints Web que todavía no
-han sido migrados continúan utilizando el contexto de usuario y hogar
-previamente configurado del MVP; `GET /api/balance`,
-`GET /api/household-members` y `GET /api/sharing-rules` requieren una sesión
-autenticada de Supabase.
+La autenticación Web se migra gradualmente. El CRUD de gastos e ingresos y las
+rutas `GET /api/balance`, `GET /api/household-members`, `GET /api/sharing-rules`
+y `GET /api/dashboard/summary` requieren sesión Supabase y contexto autenticado.
+Los endpoints aún no migrados conservan el contexto de usuario/hogar configurado
+del MVP.
 
 ---
 
@@ -184,10 +184,11 @@ para timestamps.
 # 3. Contexto del usuario
 
 Los endpoints Web todavía no migrados trabajan con un contexto de usuario
-determinado por la configuración de la aplicación. Los endpoints migrados
+determinado por la configuración de la aplicación. El CRUD de gastos e ingresos,
 `GET /api/balance`, `GET /api/household-members`, `GET /api/sharing-rules` y
-`GET /api/dashboard/summary` requieren una sesión autenticada de Supabase y
-derivan el hogar exclusivamente mediante `AuthenticatedContext`.
+`GET /api/dashboard/summary` requieren sesión autenticada de Supabase y derivan
+el hogar mediante `AuthenticatedContext`. Para el CRUD financiero, las RPC Web
+derivan además el actor con `auth.uid()` en PostgreSQL.
 
 Para WhatsApp, el backend asocia el identificador externo del remitente con el
 usuario, obtiene sus memberships activas y carga la selección persistente de
@@ -204,9 +205,9 @@ Memberships `ACTIVE` y selección de WhatsApp
 Operación
 
 En la aplicación Web/PWA, los endpoints no migrados utilizan el contexto
-configurado para el MVP. Balance, Household Members, Sharing Rules y Dashboard
-Summary utilizan el contexto autenticado y no aceptan un hogar seleccionado por
-el cliente.
+configurado para el MVP. El CRUD de Expense e Income, Balance, Household Members,
+Sharing Rules y Dashboard Summary utilizan contexto autenticado y no aceptan un
+hogar seleccionado por el cliente.
 
 El cliente no deberá enviar libremente un user_id para modificar el contexto de una operación.
 
@@ -295,12 +296,11 @@ La API utilizará códigos HTTP convencionales.
 | 422    | Error de validación             |
 | 500    | Error interno                   |
 
-La autenticación Web se migra gradualmente. `GET /api/balance` ya requiere
-autenticación y puede responder `401 UNAUTHENTICATED` o `403` según el contexto
-autenticado. `GET /api/household-members` y `GET /api/sharing-rules` siguen el
-mismo mapping autenticado, incluyendo `409 HOUSEHOLD_SELECTION_REQUIRED`.
-Los demás endpoints Web que todavía utilizan el contexto MVP conservan su
-comportamiento actual hasta ser migrados.
+La autenticación Web se migra gradualmente. El CRUD de Expense e Income y las
+rutas autenticadas pueden responder `401 UNAUTHENTICATED` o `403` según la sesión
+y el contexto. `GET /api/household-members` y `GET /api/sharing-rules` siguen el
+mismo mapping autenticado, incluyendo `409 HOUSEHOLD_SELECTION_REQUIRED`. Los
+endpoints aún basados en el contexto MVP conservan su comportamiento actual.
 
 # 7. Expenses
 
