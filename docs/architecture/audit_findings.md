@@ -40,9 +40,10 @@
 - **Prioridad:** HIGH.
 - **Descripción:** 0042 añade entradas financieras protegidas y el código migra a
   ellas. Los commits publicados 0051 y 0052 retiran DML financiero directo,
-  siete RPC base y permisos genéricos heredados. El cambio local 0053 añade seis
-  entradas CRUD Web basadas en JWT y revoca `service_role` de las seis RPC CRUD
-  elegibles; no cambia 0043–0052 ni modifica datos.
+  siete RPC base y permisos genéricos heredados. El commit publicado 0053
+  (`3bc50199d0482694b2aa4113a25b107ae564b6c2`) añade seis entradas CRUD Web
+  basadas en JWT y revoca `service_role` de las seis RPC CRUD elegibles; no cambia
+  0043–0052 ni modifica datos.
 - **Evidencia local:** `tests/phase-4-legacy-financial-permissions.sql` comprueba
   ACL efectivas y rechazo de los caminos históricos. `tests/phase-4-web-financial-crud.sql`
   comprueba las seis entradas bajo `authenticated`, actor derivado, hogar,
@@ -50,13 +51,30 @@
   de aplicación. `npm run test:sql` pasó el 2026-11-06 en PostgreSQL embebido
   descartable con migraciones hasta 0053. Ese harness simula claims PostgreSQL;
   no prueba JWT firmado ni transporte PostgREST para estas seis RPC. 0052 está
-  publicado en Git; 0053 sigue local y ninguna de las dos se ha verificado en
-  el esquema remoto.
-- **Límite:** las entradas 0042 siguen usando la credencial compartida
-  `service_role` para confirmación Web de propuestas y las operaciones
-  privilegiadas WhatsApp. Los grants no aíslan criptográficamente esos canales;
-  también falta probar el transporte JWT de las seis operaciones por PostgREST,
-  verificar los callers desplegados y las ACL remotas.
+  publicados en Git; no se ha verificado su aplicación en el esquema remoto.
+- **Separación de confirmaciones (0054, local):** se preparan entradas Web con
+  JWT para confirmar Expense/Income y rechazar propuestas. Derivan actor y
+  conversación desde `auth.uid()`/membership y consumen una instantánea de los
+  datos presentados junto con los valores preparados por el servicio. La
+  migración también revoca el acceso directo a propuestas de `PUBLIC`, `anon` y
+  `authenticated`, necesario para proteger esa instantánea; conserva el acceso
+  de repositorio `service_role`. Los wrappers WhatsApp 0047 y los grants
+  heredados `service_role` de las funciones genéricas se conservan por
+  compatibilidad; el corte de esos permisos queda aparte. Las propuestas Web
+  activas anteriores a 0054 no tienen la instantánea y fallan cerradas; antes
+  del despliegue deben resolverse o recrearse en un corte controlado.
+  `npm run test:sql`, los harnesses funcionales Agent/WhatsApp, typecheck,
+  ESLint focal y `git diff --check` pasan localmente. La suite SQL usa claims
+  simulados: no prueba JWT firmado ni transporte PostgREST, aplicación remota
+  de la migración ni consumidores desplegados.
+- **Límite:** el último commit publicado en Git conocido (0053) aún contiene
+  confirmaciones Web mediante `service_role`; el despliegue activo no está
+  verificado. El cambio local 0054 reemplaza esos tres callers por entradas JWT,
+  pero todavía no está publicado ni aplicado. Las funciones
+  genéricas conservan EXECUTE para `service_role` por compatibilidad con
+  WhatsApp/consumidores antiguos, así que sigue pendiente retirar esa vía después
+  de verificar el runtime y ACL efectivos. También falta probar el transporte
+  JWT de las operaciones Web por PostgREST y verificar los callers desplegados.
 - **Cierre:** aplicar los cambios autorizados mediante un corte planificado;
   verificar SHA activo, JWT/`auth.uid()` por PostgREST, privilegios efectivos y
   ausencia de consumidores antiguos. No restaurar grants amplios para recuperar

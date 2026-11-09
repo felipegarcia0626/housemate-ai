@@ -194,6 +194,7 @@ let hydrationFailure = false;
 let confirmationFailure = false;
 let confirmationRpcError = null;
 let confirmationPayloadMutation = null;
+let authClientCreationFailure = false;
 let rejectionFailure = false;
 let categoryDraftDeletionFailure = false;
 let categoryDraftStaleDelete = false;
@@ -866,25 +867,234 @@ function createLoader(overrides = new Map()) {
     }
     if (resolved === authClientModule) {
       return {
-        createSupabaseAuthServerClient: async () => ({
-          rpc(name, args) {
-            assert.equal(name, "fn_create_web_agent_draft");
-            operations.push({ type: "rpc", name, args });
-            return new FakeQuery("tb_agent_category_drafts")
-              .insert({
-                id: args.p_id,
-                household_id: args.p_household_id,
-                actor_member_id: args.p_actor_member_id,
-                conversation_key: args.p_conversation_key,
-                source: "WEB",
-                operation_type: args.p_operation_type,
-                payload: args.p_payload,
-                status: args.p_status,
-              })
-              .select()
-              .single();
-          },
-        }),
+        createSupabaseAuthServerClient: async () => {
+          if (authClientCreationFailure) {
+            throw new Error("Authenticated session is unavailable");
+          }
+          return {
+            rpc(name, args) {
+              if (name === "fn_create_web_agent_draft") {
+                operations.push({ type: "rpc", name, args });
+                return new FakeQuery("tb_agent_category_drafts")
+                  .insert({
+                    id: args.p_id,
+                    household_id: args.p_household_id,
+                    actor_member_id: args.p_actor_member_id,
+                    conversation_key: args.p_conversation_key,
+                    source: "WEB",
+                    operation_type: args.p_operation_type,
+                    payload: args.p_payload,
+                    status: args.p_status,
+                  })
+                  .select()
+                  .single();
+              }
+
+              operations.push({ type: "auth_rpc", name, args });
+              if (name === "fn_reject_web_pending_proposal") {
+                assert.deepEqual(Object.keys(args).sort(), [
+                  "p_household_id",
+                  "p_operation_type",
+                  "p_proposal_id",
+                ]);
+                if (rejectionFailure) {
+                  return Promise.resolve({ data: null, error: { code: "40001" } });
+                }
+                const proposal = proposals.find(
+                  (row) =>
+                    row.id === args.p_proposal_id &&
+                    row.household_id === args.p_household_id &&
+                    (row.source ?? row.payload?.source) === "WEB",
+                );
+                if (!proposal) {
+                  return Promise.resolve({
+                    data: {
+                      status: "NOT_FOUND",
+                      expense_id: null,
+                      income_id: null,
+                    },
+                    error: null,
+                  });
+                }
+                if (
+                  !["CREATE_EXPENSE", "CREATE_INCOME"].includes(args.p_operation_type) ||
+                  proposal.operation_type !== args.p_operation_type
+                ) {
+                  return Promise.resolve({
+                    data: {
+                      status: "INVALID_OPERATION",
+                      expense_id: null,
+                      income_id: null,
+                    },
+                    error: null,
+                  });
+                }
+                if (proposal.status === "COMPLETED") {
+                  return Promise.resolve({
+                    data: {
+                      status: "ALREADY_COMPLETED",
+                      expense_id: proposal.expense_id ?? null,
+                      income_id: proposal.income_id ?? null,
+                    },
+                    error: null,
+                  });
+                }
+                if (proposal.status === "REJECTED") {
+                  return Promise.resolve({
+                    data: { status: "REJECTED", expense_id: null, income_id: null },
+                    error: null,
+                  });
+                }
+                Object.assign(proposal, {
+                  status: "REJECTED",
+                  updated_at: "2026-08-12T12:01:00.000Z",
+                  resolved_at: "2026-08-12T12:01:00.000Z",
+                  expense_id: null,
+                  income_id: null,
+                });
+                return Promise.resolve({
+                  data: { status: "REJECTED", expense_id: null, income_id: null },
+                  error: null,
+                });
+              }
+
+              const rpcKinds = {
+                fn_confirm_web_pending_expense: "CREATE_EXPENSE",
+                fn_confirm_web_pending_income: "CREATE_INCOME",
+              };
+              assert.ok(rpcKinds[name], `Unexpected authenticated RPC: ${name}`);
+              assert.deepEqual(Object.keys(args).sort(), [
+                "p_expected_updated_at",
+                "p_household_id",
+                "p_proposal_id",
+              ]);
+              if (confirmationRpcError) {
+                return Promise.resolve({ data: null, error: confirmationRpcError });
+              }
+              if (confirmationFailure) {
+                return Promise.resolve({ data: null, error: { code: "40001" } });
+              }
+
+              const proposal = proposals.find(
+                (row) =>
+                  row.id === args.p_proposal_id &&
+                  row.household_id === args.p_household_id &&
+                  (row.source ?? row.payload?.source) === "WEB",
+              );
+              if (!proposal) {
+                return Promise.resolve({
+                  data: {
+                    status: "NOT_FOUND",
+                    expense_id: null,
+                    income_id: null,
+                  },
+                  error: null,
+                });
+              }
+              if (confirmationPayloadMutation) {
+                const mutation = confirmationPayloadMutation;
+                confirmationPayloadMutation = null;
+                proposal.payload = {
+                  ...proposal.payload,
+                  [mutation.operation]: {
+                    ...proposal.payload[mutation.operation],
+                    description: mutation.description,
+                  },
+                };
+                proposal.updated_at = "2026-08-12T12:02:00.000Z";
+              }
+              if (proposal.operation_type !== rpcKinds[name]) {
+                return Promise.resolve({
+                  data: {
+                    status: "INVALID_OPERATION",
+                    [rpcKinds[name] === "CREATE_EXPENSE" ? "expense_id" : "income_id"]: null,
+                  },
+                  error: null,
+                });
+              }
+              if (
+                proposal.status === "AWAITING_CONFIRMATION" &&
+                args.p_expected_updated_at !== proposal.updated_at
+              ) {
+                return Promise.resolve({ data: null, error: { code: "40001" } });
+              }
+              if (proposal.status === "COMPLETED") {
+                const id = proposal.operation_type === "CREATE_EXPENSE"
+                  ? proposal.expense_id
+                  : proposal.income_id;
+                return Promise.resolve({
+                  data: {
+                    status: "ALREADY_COMPLETED",
+                    [proposal.operation_type === "CREATE_EXPENSE" ? "expense_id" : "income_id"]: id,
+                  },
+                  error: null,
+                });
+              }
+              if (proposal.status === "REJECTED") {
+                return Promise.resolve({
+                  data: {
+                    status: "REJECTED",
+                    expense_id: null,
+                    income_id: null,
+                  },
+                  error: null,
+                });
+              }
+              const snapshot = proposal.payload._web_confirmation;
+              if (
+                !snapshot ||
+                JSON.stringify(snapshot.presented) !== JSON.stringify(
+                  proposal.payload[
+                    proposal.operation_type === "CREATE_EXPENSE" ? "expense" : "income"
+                  ],
+                )
+              ) {
+                return Promise.resolve({ data: null, error: { code: "40001" } });
+              }
+              if (proposal.operation_type === "CREATE_EXPENSE") {
+                const expenseId = `expense-${createdExpenses.length + 1}`;
+                createdExpenses.push({
+                  context: { householdId: args.p_household_id },
+                  input: {
+                    ...snapshot.persistence,
+                    splits: snapshot.persistence.distributions.map((distribution) => ({
+                      householdMemberId: distribution.householdMemberId,
+                      percentage: distribution.percentage,
+                    })),
+                  },
+                });
+                Object.assign(proposal, {
+                  status: "COMPLETED",
+                  expense_id: expenseId,
+                  income_id: null,
+                  resolved_at: "2026-08-12T12:00:00.000Z",
+                });
+                return Promise.resolve({
+                  data: { status: "CREATED", expense_id: expenseId },
+                  error: null,
+                });
+              }
+              const incomeId = `income-${createdIncomes.length + 1}`;
+              createdIncomes.push({
+                context: {
+                  householdId: args.p_household_id,
+                  memberId: snapshot.persistence.createdBy,
+                },
+                input: snapshot.persistence,
+              });
+              Object.assign(proposal, {
+                status: "COMPLETED",
+                expense_id: null,
+                income_id: incomeId,
+                resolved_at: "2026-08-12T12:00:00.000Z",
+              });
+              return Promise.resolve({
+                data: { status: "CREATED", income_id: incomeId },
+                error: null,
+              });
+            },
+          };
+        },
       };
     }
     if (cache.has(resolved)) return cache.get(resolved).exports;
@@ -1896,7 +2106,7 @@ async function main() {
         tool.confirmCreateExpenseTool(context, proposalId),
       financialWrites: () => createdExpenses.length,
       financialReference: "expense_id",
-      confirmRpc: "fn_confirm_pending_expense_eligible",
+      confirmRpc: "fn_confirm_web_pending_expense",
     },
     {
       operation: "income",
@@ -1917,13 +2127,13 @@ async function main() {
         createIncome.confirmCreateIncomeTool(context, proposalId),
       financialWrites: () => createdIncomes.length,
       financialReference: "income_id",
-      confirmRpc: "fn_confirm_pending_income_eligible",
+      confirmRpc: "fn_confirm_web_pending_income",
     },
   ];
   for (const categoryCase of categoryDeactivationCases) {
     const writesBefore = categoryCase.financialWrites();
     const confirmationRpcsBefore = operations.filter(
-      ({ type, name }) => type === "rpc" && name === categoryCase.confirmRpc,
+      ({ type, name }) => type === "auth_rpc" && name === categoryCase.confirmRpc,
     ).length;
     const created = await categoryCase.create(categoryCase.context);
     const pendingRow = proposals.find((row) => row.id === created.proposalId);
@@ -1948,7 +2158,7 @@ async function main() {
         assert.equal(
           operations.filter(
             ({ type, name }) =>
-              type === "rpc" && name === categoryCase.confirmRpc,
+              type === "auth_rpc" && name === categoryCase.confirmRpc,
           ).length,
           confirmationRpcsBefore,
         );
@@ -2209,6 +2419,47 @@ async function main() {
   assert.equal(createdExpenses.length, 1);
   console.log("PASS repeated confirmation reuses the same Expense");
 
+  const noSessionExpenseContext = {
+    ...contextA,
+    conversationKey: "agent-web-confirm-expense-no-session",
+  };
+  const noSessionExpenseProposal = await tool.createExpenseTool(
+    noSessionExpenseContext,
+    expenseInput,
+  );
+  const noSessionExpenseWrites = createdExpenses.length;
+  const noSessionAdminConfirmCalls = operations.filter(
+    ({ type, name }) =>
+      type === "rpc" &&
+      ["fn_confirm_pending_expense_eligible", "fn_confirm_pending_income_eligible"].includes(name),
+  ).length;
+  authClientCreationFailure = true;
+  try {
+    await expectAgentError(
+      tool.confirmCreateExpenseTool(
+        noSessionExpenseContext,
+        noSessionExpenseProposal.proposalId,
+      ),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    authClientCreationFailure = false;
+  }
+  assert.equal(createdExpenses.length, noSessionExpenseWrites);
+  assert.equal(
+    proposals.find((row) => row.id === noSessionExpenseProposal.proposalId)?.status,
+    "AWAITING_CONFIRMATION",
+  );
+  assert.equal(
+    operations.filter(
+      ({ type, name }) =>
+        type === "rpc" &&
+        ["fn_confirm_pending_expense_eligible", "fn_confirm_pending_income_eligible"].includes(name),
+    ).length,
+    noSessionAdminConfirmCalls,
+  );
+  console.log("PASS missing Web session fails closed without privileged Expense confirmation");
+
   const fencedExpenseContext = {
     ...contextA,
     conversationKey: "agent-confirmation-payload-fence-expense",
@@ -2412,8 +2663,21 @@ async function main() {
   assert.ok(
     operations.some(
       ({ type, name }) =>
-        type === "rpc" && name === "fn_confirm_pending_expense_eligible",
+        type === "auth_rpc" && name === "fn_confirm_web_pending_expense",
     ),
+  );
+  assert.equal(
+    operations.filter(
+      ({ type, name }) =>
+        type === "rpc" &&
+        [
+          "fn_confirm_pending_expense_eligible",
+          "fn_confirm_pending_income_eligible",
+          "fn_reject_pending_proposal",
+        ].includes(name),
+    ).length,
+    0,
+    "Web proposal writes must not use the admin client or generic RPCs",
   );
   console.log("PASS Agent persistence is isolated to PendingProposal");
 
@@ -5165,6 +5429,27 @@ async function main() {
     created_at: "2026-08-12T12:00:00.000Z",
     updated_at: "2026-08-12T12:00:00.000Z",
   };
+  staleProposal.payload._web_confirmation = {
+    presented: staleProposal.payload.expense,
+    persistence: {
+      householdId: staleStateContext.householdId,
+      createdBy: staleStateContext.actorMemberId,
+      paidByMemberId: staleStateContext.actorMemberId,
+      categoryId: "category-1",
+      receiptId: null,
+      merchant: null,
+      totalAmount: 321,
+      expenseDate: "2026-08-12",
+      description: "Stale proposal",
+      source: "WEB",
+      items: [],
+      distributions: [{
+        householdMemberId: staleStateContext.actorMemberId,
+        amount: 321,
+        percentage: 100,
+      }],
+    },
+  };
   categoryDrafts.push(staleDraft);
   proposals.push(staleProposal);
   const createdExpensesBeforeStaleRejection = createdExpenses.length;
@@ -5272,6 +5557,30 @@ async function main() {
       created_at: timestamp,
       updated_at: timestamp,
     };
+    if (context.source === "WEB") {
+      const presented = proposal.payload.expense;
+      proposal.payload._web_confirmation = {
+        presented,
+        persistence: {
+          householdId: context.householdId,
+          createdBy: context.actorMemberId,
+          paidByMemberId: presented.paidByMemberId,
+          categoryId: presented.categoryId,
+          receiptId: null,
+          merchant: null,
+          totalAmount: presented.totalAmount,
+          expenseDate: presented.expenseDate,
+          description: presented.description,
+          source: "WEB",
+          items: [],
+          distributions: [{
+            householdMemberId: context.actorMemberId,
+            amount: presented.totalAmount,
+            percentage: 100,
+          }],
+        },
+      };
+    }
     categoryDrafts.push(draft);
     proposals.push(proposal);
     return { draft, proposal };
@@ -5521,6 +5830,49 @@ async function main() {
   );
   console.log("PASS create_income confirmation is terminal and idempotent");
 
+  const noSessionIncomeContext = {
+    ...contextA,
+    conversationKey: "agent-web-confirm-income-no-session",
+  };
+  const noSessionIncomeProposal = await createIncome.createIncomeTool(
+    noSessionIncomeContext,
+    {
+      memberId: memberA,
+      amount: 41,
+      incomeDate: "2026-08-12",
+      description: "No session income",
+      categoryId: "category-income-salary",
+    },
+  );
+  const noSessionIncomeWrites = createdIncomes.length;
+  const noSessionAdminIncomeCalls = operations.filter(
+    ({ type, name }) => type === "rpc" && name === "fn_confirm_pending_income_eligible",
+  ).length;
+  authClientCreationFailure = true;
+  try {
+    await expectAgentError(
+      createIncome.confirmCreateIncomeTool(
+        noSessionIncomeContext,
+        noSessionIncomeProposal.proposalId,
+      ),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    authClientCreationFailure = false;
+  }
+  assert.equal(createdIncomes.length, noSessionIncomeWrites);
+  assert.equal(
+    proposals.find((row) => row.id === noSessionIncomeProposal.proposalId)?.status,
+    "AWAITING_CONFIRMATION",
+  );
+  assert.equal(
+    operations.filter(
+      ({ type, name }) => type === "rpc" && name === "fn_confirm_pending_income_eligible",
+    ).length,
+    noSessionAdminIncomeCalls,
+  );
+  console.log("PASS missing Web session fails closed without privileged Income confirmation");
+
   missingIncomeIds.add(incomeConfirmed.incomeId);
   const deletedIncomeRetry = await conversation.processAgentMessage(
     incomeContext,
@@ -5750,8 +6102,6 @@ async function main() {
   );
   for (const invalidContext of [
     { ...rejectionIsolationContext, householdId: householdB },
-    { ...rejectionIsolationContext, conversationKey: "agent-other-conversation" },
-    { ...rejectionIsolationContext, actorMemberId: memberB },
     withWhatsAppExecution({ ...rejectionIsolationContext, source: "WHATSAPP" }),
   ]) {
     await expectAgentError(
@@ -5800,6 +6150,41 @@ async function main() {
   );
   assert.equal(failedRejectionRow.status, "AWAITING_CONFIRMATION");
   console.log("PASS rejection persistence failure preserves pending proposal");
+
+  const noSessionRejectContext = {
+    ...contextA,
+    conversationKey: "agent-web-reject-no-session",
+  };
+  const noSessionRejectProposal = await tool.createExpenseTool(
+    noSessionRejectContext,
+    expenseInput,
+  );
+  const noSessionAdminRejectCalls = operations.filter(
+    ({ type, name }) => type === "rpc" && name === "fn_reject_pending_proposal",
+  ).length;
+  authClientCreationFailure = true;
+  try {
+    await expectAgentError(
+      tool.rejectCreateExpenseTool(
+        noSessionRejectContext,
+        noSessionRejectProposal.proposalId,
+      ),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    authClientCreationFailure = false;
+  }
+  assert.equal(
+    proposals.find((row) => row.id === noSessionRejectProposal.proposalId)?.status,
+    "AWAITING_CONFIRMATION",
+  );
+  assert.equal(
+    operations.filter(
+      ({ type, name }) => type === "rpc" && name === "fn_reject_pending_proposal",
+    ).length,
+    noSessionAdminRejectCalls,
+  );
+  console.log("PASS missing Web session fails closed without privileged proposal rejection");
 
   const expenseRead = await getExpenses.getExpensesTool(contextA, {
     from: "2026-08-01",
@@ -8913,7 +9298,7 @@ async function main() {
   }
 
   function makeCausalExpenseProposal(context, id, draftId, status = "AWAITING_CONFIRMATION") {
-    return {
+    const proposal = {
       id,
       household_id: context.householdId,
       conversation_key: context.conversationKey,
@@ -8934,6 +9319,31 @@ async function main() {
       expense_id: status === "COMPLETED" ? `expense-${id}` : null,
       income_id: null,
     };
+    if (context.source === "WEB") {
+      const presented = proposal.payload.expense;
+      proposal.payload._web_confirmation = {
+        presented,
+        persistence: {
+          householdId: context.householdId,
+          createdBy: context.actorMemberId,
+          paidByMemberId: presented.paidByMemberId,
+          categoryId: presented.categoryId ?? null,
+          receiptId: presented.receiptId ?? null,
+          merchant: presented.merchant ?? null,
+          totalAmount: presented.totalAmount,
+          expenseDate: presented.expenseDate,
+          description: presented.description ?? null,
+          source: "WEB",
+          items: presented.items ?? [],
+          distributions: presented.splits.map((split) => ({
+            householdMemberId: split.householdMemberId,
+            amount: (presented.totalAmount * split.percentage) / 100,
+            percentage: split.percentage,
+          })),
+        },
+      };
+    }
+    return proposal;
   }
 
   function makeCausalIncomeProposal(
@@ -8942,7 +9352,7 @@ async function main() {
     draftId,
     status = "AWAITING_CONFIRMATION",
   ) {
-    return {
+    const proposal = {
       id,
       household_id: context.householdId,
       conversation_key: context.conversationKey,
@@ -8966,6 +9376,22 @@ async function main() {
       expense_id: null,
       income_id: status === "COMPLETED" ? `income-${id}` : null,
     };
+    if (context.source === "WEB") {
+      const presented = proposal.payload.income;
+      proposal.payload._web_confirmation = {
+        presented,
+        persistence: {
+          householdId: context.householdId,
+          createdBy: context.actorMemberId,
+          memberId: presented.memberId,
+          amount: presented.amount,
+          incomeDate: presented.incomeDate,
+          description: presented.description,
+          categoryId: presented.categoryId,
+        },
+      };
+    }
+    return proposal;
   }
 
   const causalMismatchContext = {

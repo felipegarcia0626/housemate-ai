@@ -3,6 +3,7 @@ import {
   confirmAgentProposal,
   findLatestTerminalProposal,
   getTerminalProposalResult,
+  prepareWebPendingProposalSnapshot,
   rejectAgentProposal,
 } from "./agent.service";
 import { createIncomeTool } from "./tools/create-income.tool";
@@ -1495,6 +1496,10 @@ async function applyPendingProposalCorrection(
 
   let updated: PendingProposal | null;
   try {
+    const webConfirmationSnapshot = await prepareWebPendingProposalSnapshot(
+      context,
+      payload,
+    );
     updated = await updatePendingProposalConditionally({
       id: proposal.id,
       householdId: context.householdId,
@@ -1503,6 +1508,7 @@ async function applyPendingProposalCorrection(
       source: context.source,
       operationType: proposal.operationType,
       payload,
+      webConfirmationSnapshot,
       expectedUpdatedAt: proposal.updatedAt,
       whatsappLease: context.whatsappExecution
         ? {

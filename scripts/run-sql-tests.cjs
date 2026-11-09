@@ -167,6 +167,9 @@ async function main() {
         const isLinkingMigration =
           path.basename(migrationPath) ===
           "0043_whatsapp_linking_persistence.sql";
+        const isWebProposalMigration =
+          path.basename(migrationPath) ===
+          "0054_web_pending_proposal_jwt.sql";
         if (isLinkingMigration) {
           await client.query("CREATE ROLE anon NOLOGIN");
           await client.query("CREATE ROLE authenticated NOLOGIN");
@@ -234,6 +237,14 @@ async function main() {
           console.log(
             "PASS application roles and scoped default ACLs prepared before migration 0043",
           );
+        }
+        if (isWebProposalMigration) {
+          // Model broad inherited API-role table ACLs on the legacy proposal
+          // table so 0054's targeted revoke is exercised rather than vacuous.
+          await client.query(`
+            GRANT ALL ON TABLE public.tb_pending_proposals
+            TO PUBLIC, anon, authenticated
+          `);
         }
         // Seeds run later. Populate financial tables before this snapshot so an
         // accidental destructive migration cannot pass against empty tables.
@@ -410,6 +421,7 @@ async function main() {
         await client.end();
       }
     }
+    await require("../tests/web-pending-proposal-concurrency.cjs")(postgres);
     await require("../tests/financial-eligibility-concurrency.cjs")(postgres);
     await require("../tests/financial-eligibility-races.cjs")(postgres);
     // This test intentionally runs before the other WhatsApp multi-session

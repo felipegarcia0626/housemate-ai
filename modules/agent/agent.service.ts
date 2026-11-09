@@ -42,6 +42,7 @@ import {
   findPendingIncomeProposal,
   rejectPendingProposal,
   PendingProposalRepositoryError,
+  type WebProposalConfirmationSnapshot,
 } from "./pending-proposal.repository";
 import {
   IncomeDomainError,
@@ -185,6 +186,46 @@ function mapRepositoryError(error: unknown): AgentDomainError {
   return persistenceError();
 }
 
+export async function prepareWebPendingProposalSnapshot(
+  context: AgentContext,
+  payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload,
+): Promise<WebProposalConfirmationSnapshot | undefined> {
+  if (context.source !== "WEB") return undefined;
+  if (
+    payload.actorMemberId !== context.actorMemberId ||
+    payload.source !== "WEB"
+  ) {
+    throw new AgentDomainError(
+      "HOUSEHOLD_MISMATCH",
+      "The pending proposal does not belong to the current context.",
+    );
+  }
+
+  if ("expense" in payload) {
+    return {
+      operationType: "CREATE_EXPENSE",
+      persistence: await prepareExpenseCreation(
+        { householdId: context.householdId },
+        {
+          ...payload.expense,
+          createdBy: context.actorMemberId,
+          source: "WEB",
+        },
+      ),
+    };
+  }
+  return {
+    operationType: "CREATE_INCOME",
+    persistence: await prepareIncomeCreation(
+      {
+        householdId: context.householdId,
+        memberId: context.actorMemberId,
+      },
+      payload.income,
+    ),
+  };
+}
+
 export async function createExpenseProposal(
   context: AgentContext,
   input: ExpenseProposalInput,
@@ -203,17 +244,23 @@ export async function createExpenseProposal(
   };
 
   try {
+    const webConfirmationSnapshot = await prepareWebPendingProposalSnapshot(
+      context,
+      payload,
+    );
     const proposal = await createPendingProposal({
       id: randomUUID(),
       householdId: context.householdId,
       conversationKey: context.conversationKey,
       operationType: "CREATE_EXPENSE",
       payload,
+      webConfirmationSnapshot,
       whatsappLease: whatsappLease(context),
     });
     return { proposalId: proposal.id, status: "AWAITING_CONFIRMATION" };
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
+    if (error instanceof ExpenseDomainError) throw error;
     throw mapRepositoryError(error);
   }
 }
@@ -233,16 +280,22 @@ export async function createIncomeProposal(
     income: input,
   };
   try {
+    const webConfirmationSnapshot = await prepareWebPendingProposalSnapshot(
+      context,
+      payload,
+    );
     const proposal = await createPendingIncomeProposal({
       id: randomUUID(),
       householdId: context.householdId,
       conversationKey: context.conversationKey,
       payload,
+      webConfirmationSnapshot,
       whatsappLease: whatsappLease(context),
     });
     return { proposalId: proposal.id, status: "AWAITING_CONFIRMATION" };
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
+    if (error instanceof IncomeDomainError) throw error;
     throw mapRepositoryError(error);
   }
 }

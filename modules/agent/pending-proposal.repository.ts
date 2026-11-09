@@ -3,6 +3,7 @@ import {
   type WhatsAppEventFence,
 } from "@/modules/whatsapp/whatsapp-event.repository";
 import { getSupabaseAdminClient } from "@/infrastructure/database/client";
+import { createSupabaseAuthServerClient } from "@/infrastructure/auth/supabase-server.client";
 import type { ExpenseCreatePersistenceInput } from "@/modules/expenses/expense.repository";
 import type { ExpenseSource } from "@/modules/expenses/expense.types";
 import type { IncomeCreatePersistenceInput } from "@/modules/incomes/income.repository";
@@ -75,7 +76,7 @@ function mapRow(row: PendingProposalRow): PendingProposal {
       conversationKey: row.conversation_key,
       operationType: row.operation_type,
       payload: {
-        ...row.payload,
+        ...publicPayload(row.payload),
         actorMemberId,
         source,
       } as PendingIncomeProposalPayload,
@@ -93,7 +94,7 @@ function mapRow(row: PendingProposalRow): PendingProposal {
     conversationKey: row.conversation_key,
     operationType: row.operation_type,
     payload: {
-      ...row.payload,
+      ...publicPayload(row.payload),
       actorMemberId,
       source,
     } as PendingExpenseProposalPayload,
@@ -109,6 +110,7 @@ function mapRow(row: PendingProposalRow): PendingProposal {
 function persistenceError(
   operation: string,
   error: unknown,
+  tableOrRpc?: string,
 ): PendingProposalRepositoryError {
   const code =
     typeof error === "object" && error !== null && "code" in error
@@ -116,7 +118,7 @@ function persistenceError(
       : "";
   if (code === "42501" && typeof error === "object" && error !== null
       && "details" in error && error.details === "HOUSEMATE_FINANCIAL_ELIGIBILITY_V1") {
-    return new PendingProposalRepositoryError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.", error, operation, pendingProposalTableOrRpc(operation));
+    return new PendingProposalRepositoryError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.", error, operation, tableOrRpc ?? pendingProposalTableOrRpc(operation));
   }
   if (code === "23505") {
     return new PendingProposalRepositoryError(
@@ -124,7 +126,7 @@ function persistenceError(
       `Pending proposal conflict during ${operation}.`,
       error,
       operation,
-      pendingProposalTableOrRpc(operation),
+      tableOrRpc ?? pendingProposalTableOrRpc(operation),
     );
   }
   return new PendingProposalRepositoryError(
@@ -132,8 +134,59 @@ function persistenceError(
     `Pending proposal persistence failed during ${operation}.`,
     error,
     operation,
-    pendingProposalTableOrRpc(operation),
+    tableOrRpc ?? pendingProposalTableOrRpc(operation),
   );
+}
+
+export type WebProposalConfirmationSnapshot =
+  | {
+      operationType: "CREATE_EXPENSE";
+      persistence: ExpenseCreatePersistenceInput;
+    }
+  | {
+      operationType: "CREATE_INCOME";
+      persistence: IncomeCreatePersistenceInput;
+    };
+
+const WEB_CONFIRMATION_PAYLOAD_KEY = "_web_confirmation";
+
+function publicPayload(
+  payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload,
+): PendingExpenseProposalPayload | PendingIncomeProposalPayload {
+  const { [WEB_CONFIRMATION_PAYLOAD_KEY]: _privateSnapshot, ...visiblePayload } =
+    payload as unknown as Record<string, unknown>;
+  return visiblePayload as unknown as
+    | PendingExpenseProposalPayload
+    | PendingIncomeProposalPayload;
+}
+
+function storagePayload(
+  payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload,
+  snapshot?: WebProposalConfirmationSnapshot,
+): PendingExpenseProposalPayload | PendingIncomeProposalPayload {
+  const visiblePayload = publicPayload(payload) as unknown as Record<string, unknown>;
+  if (!snapshot) {
+    return visiblePayload as unknown as
+      | PendingExpenseProposalPayload
+      | PendingIncomeProposalPayload;
+  }
+  if (snapshot.operationType === "CREATE_EXPENSE" && !("expense" in payload)) {
+    throw persistenceError("store Web proposal confirmation", new Error("Snapshot operation mismatch"));
+  }
+  if (snapshot.operationType === "CREATE_INCOME" && !("income" in payload)) {
+    throw persistenceError("store Web proposal confirmation", new Error("Snapshot operation mismatch"));
+  }
+  if (payload.source !== "WEB") {
+    throw persistenceError("store Web proposal confirmation", new Error("Snapshot source mismatch"));
+  }
+  const presented = "expense" in payload ? payload.expense : payload.income;
+  return {
+    ...visiblePayload,
+    [WEB_CONFIRMATION_PAYLOAD_KEY]: {
+      presented,
+      persistence: snapshot.persistence,
+    },
+  } as unknown as PendingExpenseProposalPayload | PendingIncomeProposalPayload;
 }
 
 function pendingProposalTableOrRpc(operation: string): string {
@@ -155,6 +208,7 @@ export async function createPendingProposal(input: {
   conversationKey: string;
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
+  webConfirmationSnapshot?: WebProposalConfirmationSnapshot;
   whatsappLease?: {
     userId: string;
     leaseId: string;
@@ -191,7 +245,7 @@ export async function createPendingProposal(input: {
       actor_member_id: input.payload.actorMemberId,
       source: input.payload.source,
       operation_type: input.operationType,
-      payload: input.payload,
+      payload: storagePayload(input.payload, input.webConfirmationSnapshot),
       status: "AWAITING_CONFIRMATION",
     })
     .select(
@@ -208,6 +262,7 @@ export async function createPendingIncomeProposal(input: {
   householdId: string;
   conversationKey: string;
   payload: PendingIncomeProposalPayload;
+  webConfirmationSnapshot?: WebProposalConfirmationSnapshot;
   whatsappLease?: {
     userId: string;
     leaseId: string;
@@ -230,6 +285,7 @@ export async function updatePendingProposalConditionally(input: {
   source: ExpenseSource;
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
+  webConfirmationSnapshot?: WebProposalConfirmationSnapshot;
   expectedUpdatedAt: string;
   whatsappLease?: {
     userId: string;
@@ -263,7 +319,7 @@ export async function updatePendingProposalConditionally(input: {
 
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
-    .update({ payload: input.payload })
+    .update({ payload: storagePayload(input.payload, input.webConfirmationSnapshot) })
     .eq("id", input.id)
     .eq("household_id", input.householdId)
     .eq("conversation_key", input.conversationKey)
@@ -507,14 +563,42 @@ export async function confirmPendingExpense(input: {
     Object.assign(rpcArguments, eventInput);
   }
 
-  const { data, error } = await getSupabaseAdminClient().rpc(
-    input.source === "WHATSAPP"
-      ? "fn_confirm_whatsapp_expense_event"
-      : "fn_confirm_pending_expense_eligible",
-    rpcArguments,
-  );
+  let data: unknown;
+  let error: unknown;
+  if (input.source === "WHATSAPP") {
+    const result = await getSupabaseAdminClient().rpc(
+      "fn_confirm_whatsapp_expense_event",
+      rpcArguments,
+    );
+    data = result.data;
+    error = result.error;
+  } else if (input.source === "WEB") {
+    const rpcName = "fn_confirm_web_pending_expense";
+    try {
+      const client = await createSupabaseAuthServerClient();
+      const result = await client.rpc(rpcName, {
+        p_proposal_id: input.proposalId,
+        p_household_id: input.householdId,
+        p_expected_updated_at: input.expectedUpdatedAt,
+      });
+      data = result.data;
+      error = result.error;
+    } catch (cause) {
+      throw persistenceError("confirm expense", cause, rpcName);
+    }
+  } else {
+    throw persistenceError(
+      "confirm expense",
+      new Error("Receipt proposal confirmation has no authorized caller"),
+      "fn_confirm_web_pending_expense",
+    );
+  }
 
-  if (error) throw persistenceError("confirm expense", error);
+  if (error) throw persistenceError(
+    "confirm expense",
+    error,
+    input.source === "WEB" ? "fn_confirm_web_pending_expense" : undefined,
+  );
   if (
     !data ||
     typeof data !== "object" ||
@@ -625,14 +709,42 @@ export async function confirmPendingIncome(input: {
     Object.assign(rpcArguments, eventInput);
   }
 
-  const { data, error } = await getSupabaseAdminClient().rpc(
-    input.source === "WHATSAPP"
-      ? "fn_confirm_whatsapp_income_event"
-      : "fn_confirm_pending_income_eligible",
-    rpcArguments,
-  );
+  let data: unknown;
+  let error: unknown;
+  if (input.source === "WHATSAPP") {
+    const result = await getSupabaseAdminClient().rpc(
+      "fn_confirm_whatsapp_income_event",
+      rpcArguments,
+    );
+    data = result.data;
+    error = result.error;
+  } else if (input.source === "WEB") {
+    const rpcName = "fn_confirm_web_pending_income";
+    try {
+      const client = await createSupabaseAuthServerClient();
+      const result = await client.rpc(rpcName, {
+        p_proposal_id: input.proposalId,
+        p_household_id: input.householdId,
+        p_expected_updated_at: input.expectedUpdatedAt,
+      });
+      data = result.data;
+      error = result.error;
+    } catch (cause) {
+      throw persistenceError("confirm income", cause, rpcName);
+    }
+  } else {
+    throw persistenceError(
+      "confirm income",
+      new Error("Receipt proposal confirmation has no authorized caller"),
+      "fn_confirm_web_pending_income",
+    );
+  }
 
-  if (error) throw persistenceError("confirm income", error);
+  if (error) throw persistenceError(
+    "confirm income",
+    error,
+    input.source === "WEB" ? "fn_confirm_web_pending_income" : undefined,
+  );
   if (
     !data ||
     typeof data !== "object" ||
@@ -698,19 +810,31 @@ export async function rejectPendingProposal(input: {
     }
     return mapRejectionResult(data as Record<string, unknown>);
   }
-  const { data, error } = await getSupabaseAdminClient().rpc(
-    "fn_reject_pending_proposal",
-    {
+
+  if (input.source !== "WEB") {
+    throw persistenceError(
+      "reject proposal",
+      new Error("Receipt proposal rejection has no authorized caller"),
+      "fn_reject_web_pending_proposal",
+    );
+  }
+
+  let data: unknown;
+  let error: unknown;
+  try {
+    const client = await createSupabaseAuthServerClient();
+    const result = await client.rpc("fn_reject_web_pending_proposal", {
       p_proposal_id: input.proposalId,
       p_household_id: input.householdId,
-      p_conversation_key: input.conversationKey,
-      p_actor_member_id: input.actorMemberId,
-      p_context_source: input.source,
       p_operation_type: input.operationType,
-    },
-  );
+    });
+    data = result.data;
+    error = result.error;
+  } catch (cause) {
+    throw persistenceError("reject proposal", cause, "fn_reject_web_pending_proposal");
+  }
 
-  if (error) throw persistenceError("reject proposal", error);
+  if (error) throw persistenceError("reject proposal", error, "fn_reject_web_pending_proposal");
   if (
     !data ||
     typeof data !== "object" ||
