@@ -7,15 +7,15 @@ import type {
   AgentContext,
   ExpenseConfirmationResult,
   ExpenseProposalInput,
-  ExpenseProposalResult,
   ExpenseRejectionResult,
+  PendingProposalCreationResult,
 } from "@/modules/agent/agent.types";
 
 export async function createExpenseTool(
   context: AgentContext,
   input: ExpenseProposalInput,
   draftId?: string,
-): Promise<ExpenseProposalResult> {
+): Promise<PendingProposalCreationResult> {
   return createExpenseProposal(context, input, draftId);
 }
 

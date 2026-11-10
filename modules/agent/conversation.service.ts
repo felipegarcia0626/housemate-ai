@@ -1145,6 +1145,8 @@ async function completeCategoryDraft(
           context,
           draft.operationType,
           result.proposalId,
+          result.createdAt,
+          result.version,
         );
         await restoreCategoryDraftAfterFailure(
           context,
@@ -1202,6 +1204,8 @@ async function completeCategoryDraft(
         context,
         draft.operationType,
         result.proposalId,
+        result.createdAt,
+        result.version,
       );
       await restoreCategoryDraftAfterFailure(
         context,
@@ -1509,7 +1513,8 @@ async function applyPendingProposalCorrection(
       operationType: proposal.operationType,
       payload,
       webConfirmationSnapshot,
-      expectedUpdatedAt: proposal.updatedAt,
+      expectedVersion: context.source === "WEB" ? proposal.version : undefined,
+      expectedUpdatedAt: context.source === "WHATSAPP" ? proposal.updatedAt : undefined,
       whatsappLease: context.whatsappExecution
         ? {
             userId: context.whatsappExecution.userId,
@@ -1521,6 +1526,21 @@ async function applyPendingProposalCorrection(
     });
   } catch (error) {
     if (error instanceof PendingProposalRepositoryError) {
+      if (
+        context.source === "WEB" &&
+        error.kind === "ACCOUNT_NOT_ELIGIBLE"
+      ) {
+        throw new AgentDomainError(
+          "ACCOUNT_NOT_ELIGIBLE",
+          "Financial access is unavailable.",
+          error,
+        );
+      }
+      if (context.source === "WEB" && error.kind === "VERSION_CONFLICT") {
+        return correctionClarification(
+          "La propuesta cambió mientras la corregías. Vuelve a revisarla antes de continuar.",
+        );
+      }
       throw new AgentDomainError(
         "PERSISTENCE_ERROR",
         "The pending proposal could not be updated.",
@@ -1864,7 +1884,8 @@ function createdExpenseResult(
 ): AgentProposalMessageResult {
   return {
     type: "PROPOSAL_CREATED",
-    ...result,
+    proposalId: result.proposalId,
+    status: result.status,
     operationType: "CREATE_EXPENSE",
     payload: {
       expense: {
@@ -1888,7 +1909,8 @@ function createdIncomeResult(
 ): AgentProposalMessageResult {
   return {
     type: "PROPOSAL_CREATED",
-    ...result,
+    proposalId: result.proposalId,
+    status: result.status,
     operationType: "CREATE_INCOME",
     payload: {
       income: {
@@ -2042,6 +2064,8 @@ async function compensatePendingProposalAfterDraftFailure(
   context: AgentContext,
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME",
   proposalId: string,
+  createdAt: string,
+  version: string,
 ): Promise<void> {
   try {
     if (operationType === "CREATE_EXPENSE") {
@@ -2049,9 +2073,10 @@ async function compensatePendingProposalAfterDraftFailure(
         proposalId,
         context.householdId,
         context.conversationKey,
-        context.actorMemberId,
         context.source,
         context.whatsappExecution?.event,
+        createdAt,
+        version,
       );
       return;
     }
@@ -2059,9 +2084,10 @@ async function compensatePendingProposalAfterDraftFailure(
       proposalId,
       context.householdId,
       context.conversationKey,
-      context.actorMemberId,
       context.source,
       context.whatsappExecution?.event,
+      createdAt,
+      version,
     );
   } catch (error) {
     if (error instanceof PendingProposalRepositoryError) {
@@ -2282,6 +2308,8 @@ async function completeOperationDraft(
         context,
         operation,
         result.proposalId,
+        result.createdAt,
+        result.version,
       );
       throw error;
     }
@@ -2397,6 +2425,8 @@ async function completeOperationDraft(
       context,
       operation,
       result.proposalId,
+      result.createdAt,
+      result.version,
     );
     throw error;
   }
@@ -2442,6 +2472,16 @@ export async function processAgentMessage(
       return pendingProposal;
     } catch (error) {
       if (error instanceof PendingProposalRepositoryError) {
+        if (
+          context.source === "WEB" &&
+          error.kind === "ACCOUNT_NOT_ELIGIBLE"
+        ) {
+          throw new AgentDomainError(
+            "ACCOUNT_NOT_ELIGIBLE",
+            "Financial access is unavailable.",
+            error,
+          );
+        }
         throw new AgentDomainError(
           "PERSISTENCE_ERROR",
           "The pending proposal could not be loaded.",

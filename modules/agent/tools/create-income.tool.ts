@@ -6,8 +6,8 @@ import {
 import type {
   AgentContext,
   IncomeConfirmationResult,
-  IncomeProposalResult,
   IncomeRejectionResult,
+  PendingProposalCreationResult,
 } from "@/modules/agent/agent.types";
 import type { IncomeCreateInput } from "@/modules/incomes/income.types";
 
@@ -15,7 +15,7 @@ export async function createIncomeTool(
   context: AgentContext,
   input: IncomeCreateInput,
   draftId?: string,
-): Promise<IncomeProposalResult> {
+): Promise<PendingProposalCreationResult> {
   return createIncomeProposal(context, input, draftId);
 }
 

@@ -190,6 +190,18 @@ let createdExpenses = [];
 let createdIncomes = [];
 const missingIncomeIds = new Set();
 let nextProposal = 1;
+
+// Test fixtures inserted before a case's first database operation represent
+// rows after 0056's backfill/default. Updates emulate the BEFORE UPDATE trigger.
+function initializeProposalVersion(row) {
+  if (row.version === undefined || row.version === null) row.version = "1";
+  return row;
+}
+
+function bumpProposalVersion(row) {
+  initializeProposalVersion(row);
+  row.version = (BigInt(row.version) + 1n).toString();
+}
 let hydrationFailure = false;
 let confirmationFailure = false;
 let confirmationRpcError = null;
@@ -361,6 +373,8 @@ class FakeQuery {
       return { data: rows.map(normalizedCategoryDraftRow), error: null };
     }
 
+    proposals.forEach(initializeProposalVersion);
+
     if (this.insertPayload !== undefined) {
       if (pendingProposalCreationFailure) {
         return { data: null, error: { code: "PROPOSAL_CREATE_FAILURE" } };
@@ -381,6 +395,7 @@ class FakeQuery {
         ...this.insertPayload,
         created_at: this.insertPayload.created_at ?? now,
         updated_at: this.insertPayload.updated_at ?? now,
+        version: "1",
       };
       proposals.push(row);
       return { data: [row], error: null };
@@ -399,6 +414,7 @@ class FakeQuery {
       Object.assign(row, this.updatePayload, {
         updated_at: new Date(nextUpdatedAt).toISOString(),
       });
+      bumpProposalVersion(row);
       return { data: [row], error: null };
     }
 
@@ -440,6 +456,7 @@ const fakeClient = {
   },
   rpc(name, args) {
     operations.push({ type: "rpc", name, args });
+    proposals.forEach(initializeProposalVersion);
     if (args.p_event_id) {
       const context = eventContexts.get(args.p_event_id);
       assert.ok(context, "Controlled event scope must exist in the fake");
@@ -575,6 +592,7 @@ const fakeClient = {
         status: "AWAITING_CONFIRMATION",
         created_at: now,
         updated_at: now,
+        version: "1",
         resolved_at: null,
         expense_id: null,
         income_id: null,
@@ -599,6 +617,7 @@ const fakeClient = {
         payload: args.p_payload,
         updated_at: new Date(Date.parse(row.updated_at) + 1).toISOString(),
       });
+      bumpProposalVersion(row);
       return Promise.resolve({ data: row, error: null });
     }
     if (name === "fn_reject_whatsapp_pending_proposal") {
@@ -640,6 +659,7 @@ const fakeClient = {
         expense_id: null,
         income_id: null,
       });
+      bumpProposalVersion(row);
       return Promise.resolve({
         data: { status: "REJECTED", expense_id: null, income_id: null },
         error: null,
@@ -693,6 +713,7 @@ const fakeClient = {
         },
       };
       proposal.updated_at = "2026-08-12T12:02:00.000Z";
+      bumpProposalVersion(proposal);
     }
     if (
       (name === "fn_confirm_pending_expense_eligible" ||
@@ -750,6 +771,7 @@ const fakeClient = {
         expense_id: null,
         income_id: null,
       });
+      bumpProposalVersion(proposal);
       return Promise.resolve({
         data: { status: "REJECTED", expense_id: null, income_id: null },
         error: null,
@@ -794,6 +816,7 @@ const fakeClient = {
         income_id: incomeId,
         resolved_at: "2026-08-12T12:00:00.000Z",
       });
+      bumpProposalVersion(proposal);
       return Promise.resolve({
         data: { status: "CREATED", income_id: incomeId },
         error: null,
@@ -839,6 +862,7 @@ const fakeClient = {
       income_id: null,
       resolved_at: "2026-08-12T12:00:00.000Z",
     });
+    bumpProposalVersion(proposal);
     return Promise.resolve({
       data: { status: "CREATED", expense_id: expenseId },
       error: null,
@@ -891,6 +915,130 @@ function createLoader(overrides = new Map()) {
               }
 
               operations.push({ type: "auth_rpc", name, args });
+              proposals.forEach(initializeProposalVersion);
+              if (name === "fn_create_web_pending_proposal") {
+                if (pendingProposalCreationFailure) {
+                  return Promise.resolve({ data: null, error: { code: "PROPOSAL_CREATE_FAILURE" } });
+                }
+                assert.deepEqual(Object.keys(args).sort(), [
+                  "p_conversation_key",
+                  "p_household_id",
+                  "p_operation_type",
+                  "p_payload",
+                ]);
+                const actorMemberId = args.p_payload.actorMemberId;
+                const conflict = proposals.some(
+                  (row) => row.household_id === args.p_household_id &&
+                    row.conversation_key === args.p_conversation_key &&
+                    row.actor_member_id === actorMemberId && row.source === "WEB" &&
+                    row.status === "AWAITING_CONFIRMATION",
+                );
+                if (conflict) return Promise.resolve({ data: null, error: { code: "23505" } });
+                const now = new Date().toISOString();
+                const row = {
+                  id: `55000000-0055-4000-8000-${String(nextProposal++).padStart(12, "0")}`,
+                  household_id: args.p_household_id,
+                  conversation_key: args.p_conversation_key,
+                  actor_member_id: actorMemberId,
+                  source: "WEB",
+                  operation_type: args.p_operation_type,
+                  payload: { ...args.p_payload, actorMemberId, source: "WEB" },
+                  status: "AWAITING_CONFIRMATION",
+                  created_at: now,
+                  updated_at: now,
+                  version: "1",
+                  resolved_at: null,
+                  expense_id: null,
+                  income_id: null,
+                };
+                proposals.push(row);
+                return Promise.resolve({ data: row, error: null });
+              }
+              if (name === "fn_get_web_pending_proposal") {
+                assert.deepEqual(Object.keys(args).sort(), [
+                  "p_conversation_key", "p_household_id", "p_operation_type", "p_proposal_id",
+                ]);
+                const row = proposals.find((candidate) =>
+                  candidate.id === args.p_proposal_id &&
+                  candidate.household_id === args.p_household_id &&
+                  candidate.conversation_key === args.p_conversation_key &&
+                  (candidate.source ?? candidate.payload?.source) === "WEB" &&
+                  candidate.operation_type === args.p_operation_type &&
+                  candidate.status === "AWAITING_CONFIRMATION",
+                );
+                return Promise.resolve({ data: row ?? null, error: null });
+              }
+              if (name === "fn_get_web_active_pending_proposal") {
+                assert.deepEqual(Object.keys(args).sort(), ["p_conversation_key", "p_household_id"]);
+                const row = proposals.find((candidate) =>
+                  candidate.household_id === args.p_household_id &&
+                  candidate.conversation_key === args.p_conversation_key &&
+                  (candidate.source ?? candidate.payload?.source) === "WEB" &&
+                  candidate.status === "AWAITING_CONFIRMATION",
+                );
+                return Promise.resolve({ data: row ?? null, error: null });
+              }
+              if (name === "fn_get_web_latest_terminal_pending_proposal") {
+                assert.deepEqual(Object.keys(args).sort(), ["p_conversation_key", "p_household_id"]);
+                const row = proposals
+                  .filter((candidate) =>
+                    candidate.household_id === args.p_household_id &&
+                    candidate.conversation_key === args.p_conversation_key &&
+                    (candidate.source ?? candidate.payload?.source) === "WEB" &&
+                    ["COMPLETED", "REJECTED"].includes(candidate.status),
+                  )
+                  .sort((left, right) => Date.parse(right.resolved_at ?? "") - Date.parse(left.resolved_at ?? ""))[0];
+                return Promise.resolve({ data: row ?? null, error: null });
+              }
+              if (name === "fn_update_web_pending_proposal") {
+                assert.deepEqual(Object.keys(args).sort(), [
+                  "p_conversation_key", "p_expected_version", "p_household_id",
+                  "p_operation_type", "p_payload", "p_proposal_id",
+                ]);
+                const row = proposals.find((candidate) =>
+                  candidate.id === args.p_proposal_id &&
+                  candidate.household_id === args.p_household_id &&
+                  candidate.conversation_key === args.p_conversation_key &&
+                  (candidate.source ?? candidate.payload?.source) === "WEB" &&
+                  candidate.operation_type === args.p_operation_type &&
+                  candidate.status === "AWAITING_CONFIRMATION",
+                );
+                if (!row) return Promise.resolve({ data: null, error: null });
+                if (row.version !== String(args.p_expected_version)) {
+                  return Promise.resolve({ data: null, error: { code: "40001" } });
+                }
+                const nextUpdatedAt = new Date(Math.max(Date.now(), Date.parse(row.updated_at) + 1)).toISOString();
+                Object.assign(row, {
+                  payload: { ...args.p_payload, actorMemberId: row.actor_member_id, source: "WEB" },
+                  updated_at: nextUpdatedAt,
+                });
+                bumpProposalVersion(row);
+                return Promise.resolve({ data: row, error: null });
+              }
+              if (name === "fn_compensate_web_pending_proposal") {
+                assert.deepEqual(Object.keys(args).sort(), [
+                  "p_conversation_key", "p_expected_created_at", "p_expected_version",
+                  "p_household_id", "p_operation_type", "p_proposal_id",
+                ]);
+                if (pendingProposalDeletionFailure) {
+                  return Promise.resolve({ data: null, error: { code: "PROPOSAL_DELETE_FAILURE" } });
+                }
+                const row = proposals.find((candidate) =>
+                  candidate.id === args.p_proposal_id &&
+                  candidate.household_id === args.p_household_id &&
+                  candidate.conversation_key === args.p_conversation_key &&
+                  (candidate.source ?? candidate.payload?.source) === "WEB" &&
+                  candidate.operation_type === args.p_operation_type,
+                );
+                if (!row) return Promise.resolve({ data: { status: "NOT_FOUND" }, error: null });
+                if (row.status !== "AWAITING_CONFIRMATION" ||
+                    row.created_at !== args.p_expected_created_at ||
+                    row.version !== String(args.p_expected_version)) {
+                  return Promise.resolve({ data: { status: "VERSION_CONFLICT" }, error: null });
+                }
+                proposals = proposals.filter((candidate) => candidate !== row);
+                return Promise.resolve({ data: { status: "REMOVED" }, error: null });
+              }
               if (name === "fn_reject_web_pending_proposal") {
                 assert.deepEqual(Object.keys(args).sort(), [
                   "p_household_id",
@@ -898,7 +1046,7 @@ function createLoader(overrides = new Map()) {
                   "p_proposal_id",
                 ]);
                 if (rejectionFailure) {
-                  return Promise.resolve({ data: null, error: { code: "40001" } });
+                  return Promise.resolve({ data: null, error: { code: "58000" } });
                 }
                 const proposal = proposals.find(
                   (row) =>
@@ -952,6 +1100,7 @@ function createLoader(overrides = new Map()) {
                   expense_id: null,
                   income_id: null,
                 });
+                bumpProposalVersion(proposal);
                 return Promise.resolve({
                   data: { status: "REJECTED", expense_id: null, income_id: null },
                   error: null,
@@ -964,7 +1113,7 @@ function createLoader(overrides = new Map()) {
               };
               assert.ok(rpcKinds[name], `Unexpected authenticated RPC: ${name}`);
               assert.deepEqual(Object.keys(args).sort(), [
-                "p_expected_updated_at",
+                "p_expected_version",
                 "p_household_id",
                 "p_proposal_id",
               ]);
@@ -1002,6 +1151,7 @@ function createLoader(overrides = new Map()) {
                   },
                 };
                 proposal.updated_at = "2026-08-12T12:02:00.000Z";
+                bumpProposalVersion(proposal);
               }
               if (proposal.operation_type !== rpcKinds[name]) {
                 return Promise.resolve({
@@ -1014,7 +1164,7 @@ function createLoader(overrides = new Map()) {
               }
               if (
                 proposal.status === "AWAITING_CONFIRMATION" &&
-                args.p_expected_updated_at !== proposal.updated_at
+                String(args.p_expected_version) !== proposal.version
               ) {
                 return Promise.resolve({ data: null, error: { code: "40001" } });
               }
@@ -1069,6 +1219,7 @@ function createLoader(overrides = new Map()) {
                   income_id: null,
                   resolved_at: "2026-08-12T12:00:00.000Z",
                 });
+                bumpProposalVersion(proposal);
                 return Promise.resolve({
                   data: { status: "CREATED", expense_id: expenseId },
                   error: null,
@@ -1088,6 +1239,7 @@ function createLoader(overrides = new Map()) {
                 income_id: incomeId,
                 resolved_at: "2026-08-12T12:00:00.000Z",
               });
+              bumpProposalVersion(proposal);
               return Promise.resolve({
                 data: { status: "CREATED", income_id: incomeId },
                 error: null,
@@ -2172,8 +2324,40 @@ async function main() {
     "PASS inactive categories block Expense and Income confirmation before financial writes",
   );
 
+  const webProposalCreateOpsStart = operations.length;
   const proposal = await tool.createExpenseTool(contextA, expenseInput);
+  const webProposalCreateOps = operations.slice(webProposalCreateOpsStart);
+  assert.ok(webProposalCreateOps.some(
+    ({ type, name }) => type === "auth_rpc" && name === "fn_create_web_pending_proposal",
+  ));
+  assert.equal(webProposalCreateOps.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false, "Web proposal creation must not use the admin table client");
   assert.equal(proposal.status, "AWAITING_CONFIRMATION");
+  assert.equal(typeof proposal.createdAt, "string");
+  assert.equal(typeof proposal.updatedAt, "string");
+  assert.equal(proposal.version, "1");
+  const createWithoutSessionContext = {
+    ...contextA,
+    conversationKey: "agent-web-proposal-create-no-session",
+  };
+  const createWithoutSessionOpsStart = operations.length;
+  authClientCreationFailure = true;
+  try {
+    await expectAgentError(
+      tool.createExpenseTool(createWithoutSessionContext, expenseInput),
+      "PERSISTENCE_ERROR",
+    );
+  } finally {
+    authClientCreationFailure = false;
+  }
+  const createWithoutSessionOps = operations.slice(createWithoutSessionOpsStart);
+  assert.equal(createWithoutSessionOps.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false, "Web proposal creation must not fall back to the admin client");
+  assert.equal(proposals.some(
+    (row) => row.conversation_key === createWithoutSessionContext.conversationKey,
+  ), false);
   assert.equal(
     proposals.filter(
       (row) =>
@@ -2185,12 +2369,41 @@ async function main() {
   );
   console.log("PASS valid intent creates a PendingProposal");
 
+  const webProposalReadOpsStart = operations.length;
   const pending = await agentService.getExpenseProposal(
     contextA,
     proposal.proposalId,
   );
+  const webProposalReadOps = operations.slice(webProposalReadOpsStart);
+  assert.ok(webProposalReadOps.some(
+    ({ type, name }) => type === "auth_rpc" && name === "fn_get_web_pending_proposal",
+  ));
+  assert.equal(webProposalReadOps.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false, "Web proposal reads must not use the admin table client");
   assert.equal(pending.payload.actorMemberId, memberA);
   assert.equal(pending.householdId, householdA);
+  const largeVersionRow = proposals.find((row) => row.id === proposal.proposalId);
+  const originalVersion = largeVersionRow.version;
+  largeVersionRow.version = "9007199254740993";
+  const largeVersionProposal = await pendingProposalRepository.findPendingProposal(
+    proposal.proposalId,
+    contextA.householdId,
+    contextA.conversationKey,
+    "WEB",
+  );
+  assert.equal(largeVersionProposal.version, "9007199254740993");
+  largeVersionRow.version = Number.MAX_SAFE_INTEGER + 1;
+  await assert.rejects(
+    () => pendingProposalRepository.findPendingProposal(
+      proposal.proposalId,
+      contextA.householdId,
+      contextA.conversationKey,
+      "WEB",
+    ),
+    (error) => error.kind === "PERSISTENCE",
+  );
+  largeVersionRow.version = originalVersion;
   console.log("PASS pending proposal is retrieved with controlled ownership");
 
   const conditionalContext = {
@@ -2208,6 +2421,7 @@ async function main() {
     conditionalCreated.proposalId,
     conditionalContext.householdId,
     conditionalContext.conversationKey,
+    "WEB",
   );
   assert.ok(conditionalBefore);
   const financialWritesBeforeConditionalUpdate = createdExpenses.length;
@@ -2219,6 +2433,7 @@ async function main() {
       description: "Updated conditional proposal",
     },
   };
+  const webProposalUpdateOpsStart = operations.length;
   const updatedConditional =
     await pendingProposalRepository.updatePendingProposalConditionally({
       id: conditionalBefore.id,
@@ -2228,10 +2443,22 @@ async function main() {
       source: conditionalContext.source,
       operationType: "CREATE_EXPENSE",
       payload: updatedPayload,
-      expectedUpdatedAt: conditionalBefore.updatedAt,
+      webConfirmationSnapshot: await agentService.prepareWebPendingProposalSnapshot(
+        conditionalContext,
+        updatedPayload,
+      ),
+      expectedVersion: conditionalBefore.version,
     });
+  const webProposalUpdateOps = operations.slice(webProposalUpdateOpsStart);
+  assert.ok(webProposalUpdateOps.some(
+    ({ type, name }) => type === "auth_rpc" && name === "fn_update_web_pending_proposal",
+  ));
+  assert.equal(webProposalUpdateOps.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false, "Web proposal correction must not use the admin table client");
   assert.ok(updatedConditional);
   assert.equal(updatedConditional.id, conditionalBefore.id);
+  assert.equal(updatedConditional.version, (BigInt(conditionalBefore.version) + 1n).toString());
   assert.notEqual(updatedConditional.updatedAt, conditionalBefore.updatedAt);
   assert.equal(updatedConditional.operationType, "CREATE_EXPENSE");
   assert.equal(updatedConditional.status, "AWAITING_CONFIRMATION");
@@ -2270,7 +2497,11 @@ async function main() {
     source: conditionalContext.source,
     operationType: "CREATE_EXPENSE",
     payload: updatedConditional.payload,
-    expectedUpdatedAt: updatedConditional.updatedAt,
+    webConfirmationSnapshot: await agentService.prepareWebPendingProposalSnapshot(
+      conditionalContext,
+      updatedConditional.payload,
+    ),
+    expectedVersion: updatedConditional.version,
   };
   for (const invalidAttempt of [
     { ...updateAttempt, householdId: householdB },
@@ -2298,8 +2529,8 @@ async function main() {
   conditionalRow.status = statusBeforeInvalidAttempt;
   console.log("PASS PendingProposal update enforces ownership, operation and status");
 
-  const staleResult =
-    await pendingProposalRepository.updatePendingProposalConditionally({
+  await assert.rejects(
+    () => pendingProposalRepository.updatePendingProposalConditionally({
       ...updateAttempt,
       payload: {
         ...updateAttempt.payload,
@@ -2308,14 +2539,16 @@ async function main() {
           totalAmount: 999,
         },
       },
-      expectedUpdatedAt: conditionalBefore.updatedAt,
-    });
-  assert.equal(staleResult, null);
+      expectedVersion: conditionalBefore.version,
+    }),
+    (error) => error.kind === "VERSION_CONFLICT",
+  );
   const conditionalAfterStaleAttempt =
     await pendingProposalRepository.findPendingProposal(
       conditionalBefore.id,
       conditionalContext.householdId,
       conditionalContext.conversationKey,
+      "WEB",
     );
   assert.ok(conditionalAfterStaleAttempt);
   assert.equal(conditionalAfterStaleAttempt.payload.expense.totalAmount, 200);
@@ -2327,6 +2560,7 @@ async function main() {
     ...contextA,
     conversationKey: "agent-conditional-income-proposal",
   };
+  const webIncomeCreateOpsStart = operations.length;
   const conditionalIncomeCreated = await agentService.createIncomeProposal(
     conditionalIncomeContext,
     {
@@ -2337,11 +2571,19 @@ async function main() {
       categoryId: "category-income-salary",
     },
   );
+  const webIncomeCreateOps = operations.slice(webIncomeCreateOpsStart);
+  assert.ok(webIncomeCreateOps.some(
+    ({ type, name }) => type === "auth_rpc" && name === "fn_create_web_pending_proposal",
+  ));
+  assert.equal(webIncomeCreateOps.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false);
   const conditionalIncomeBefore =
     await pendingProposalRepository.findPendingIncomeProposal(
       conditionalIncomeCreated.proposalId,
       conditionalIncomeContext.householdId,
       conditionalIncomeContext.conversationKey,
+      "WEB",
     );
   assert.ok(conditionalIncomeBefore);
   const updatedIncomePayload = {
@@ -2351,6 +2593,7 @@ async function main() {
       description: "Updated conditional income",
     },
   };
+  const webIncomeUpdateOpsStart = operations.length;
   const updatedConditionalIncome =
     await pendingProposalRepository.updatePendingProposalConditionally({
       id: conditionalIncomeBefore.id,
@@ -2360,10 +2603,25 @@ async function main() {
       source: conditionalIncomeContext.source,
       operationType: "CREATE_INCOME",
       payload: updatedIncomePayload,
-      expectedUpdatedAt: conditionalIncomeBefore.updatedAt,
+      webConfirmationSnapshot: await agentService.prepareWebPendingProposalSnapshot(
+        conditionalIncomeContext,
+        updatedIncomePayload,
+      ),
+      expectedVersion: conditionalIncomeBefore.version,
     });
+  const webIncomeUpdateOps = operations.slice(webIncomeUpdateOpsStart);
+  assert.ok(webIncomeUpdateOps.some(
+    ({ type, name }) => type === "auth_rpc" && name === "fn_update_web_pending_proposal",
+  ));
+  assert.equal(webIncomeUpdateOps.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false);
   assert.ok(updatedConditionalIncome);
   assert.equal(updatedConditionalIncome.id, conditionalIncomeBefore.id);
+  assert.equal(
+    updatedConditionalIncome.version,
+    (BigInt(conditionalIncomeBefore.version) + 1n).toString(),
+  );
   assert.notEqual(
     updatedConditionalIncome.updatedAt,
     conditionalIncomeBefore.updatedAt,
@@ -2529,7 +2787,7 @@ async function main() {
   assert.equal(typeof rejectedRow.resolved_at, "string");
   assert.equal(rejectedRow.expense_id, null);
   assert.equal(rejectedRow.income_id, null);
-  assert.equal(rejectedRow.created_at, "2026-08-12T12:00:00.000Z");
+  assert.equal(rejectedRow.created_at, rejectedProposal.createdAt);
   assert.equal(rejectedRow.payload.expense.description, "Rejected proposal");
   const rejectedResolvedAt = rejectedRow.resolved_at;
   const rejectedUpdatedAt = rejectedRow.updated_at;
@@ -2540,7 +2798,7 @@ async function main() {
   assert.equal(repeatedRejection.status, "REJECTED");
   assert.equal(rejectedRow.resolved_at, rejectedResolvedAt);
   assert.equal(rejectedRow.updated_at, rejectedUpdatedAt);
-  assert.equal(rejectedRow.created_at, "2026-08-12T12:00:00.000Z");
+  assert.equal(rejectedRow.created_at, rejectedProposal.createdAt);
   assert.equal(rejectedRow.payload.expense.description, "Rejected proposal");
   console.log("PASS rejection persists terminal Expense proposal idempotently");
 
@@ -3816,6 +4074,7 @@ async function main() {
     message: "Household",
   });
   const doubleFailureExpensesBefore = createdExpenses.length;
+  const webProposalCompensationOpsStart = operations.length;
   categoryDraftDeletionFailure = true;
   pendingProposalDeletionFailure = true;
   try {
@@ -3831,6 +4090,13 @@ async function main() {
     categoryDraftRestorationFailure = false;
     draftRestoreFailureArmed = false;
   }
+  const webProposalCompensationOps = operations.slice(webProposalCompensationOpsStart);
+  assert.ok(webProposalCompensationOps.some(
+    ({ type, name }) => type === "auth_rpc" && name === "fn_compensate_web_pending_proposal",
+  ));
+  assert.equal(webProposalCompensationOps.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false, "Web proposal compensation must not use the admin table client");
   const doubleFailureProposal = proposals.find(
     (row) =>
       row.conversation_key === doubleFailureContext.conversationKey &&
@@ -4022,6 +4288,8 @@ async function main() {
     id: "62000000-0000-4000-8000-000000000907",
     household_id: terminalCleanupContext.householdId,
     conversation_key: terminalCleanupContext.conversationKey,
+    actor_member_id: terminalCleanupContext.actorMemberId,
+    source: terminalCleanupContext.source,
     operation_type: "CREATE_EXPENSE",
     status: "COMPLETED",
     payload: {
@@ -5533,6 +5801,8 @@ async function main() {
       id: `62000000-0000-4000-8000-${suffix}`,
       household_id: context.householdId,
       conversation_key: context.conversationKey,
+      actor_member_id: context.actorMemberId,
+      source: context.source,
       operation_type: "CREATE_EXPENSE",
       status: "AWAITING_CONFIRMATION",
       payload: {
@@ -8365,26 +8635,31 @@ async function main() {
   assert.equal(proposals.length, fallbackBefore.proposalCount);
   assert.equal(createdExpenses.length, fallbackBefore.expenseCount);
   assert.equal(createdIncomes.length, fallbackBefore.incomeCount);
+  const fallbackOperations = operations.slice(fallbackOperationStart);
   assert.equal(
-    operations
-      .slice(fallbackOperationStart)
-      .filter(
-        (operation) =>
-          operation.type === "from" &&
-          operation.table === "tb_pending_proposals",
-      ).length,
-    2,
-  );
-  assert.equal(
-    operations
-      .slice(fallbackOperationStart)
-      .filter(
-        (operation) =>
-          operation.type === "update" &&
-          operation.table === "tb_pending_proposals",
-      ).length,
+    fallbackOperations.filter(
+      ({ type, name }) => type === "auth_rpc" && name === "fn_get_web_active_pending_proposal",
+    ).length,
     1,
   );
+  assert.equal(
+    fallbackOperations.filter(
+      ({ type, name }) => type === "auth_rpc" && name === "fn_update_web_pending_proposal",
+    ).length,
+    1,
+  );
+  assert.equal(fallbackOperations.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false);
+  assert.equal(fallbackOperations.some(
+    ({ type, table }) => type === "update" && table === "tb_pending_proposals",
+  ), false);
+  assert.equal(fallbackOperations.some(
+    ({ type, table }) => type === "insert" && table === "tb_pending_proposals",
+  ), false);
+  assert.equal(fallbackOperations.some(
+    ({ type, table }) => type === "delete" && table === "tb_pending_proposals",
+  ), false);
   await conversation.processAgentMessage(fallbackPendingContext, {
     message: "no",
   });
@@ -8414,16 +8689,16 @@ async function main() {
   assert.equal(proposals.length, noPendingBefore.proposalCount);
   assert.equal(createdExpenses.length, noPendingBefore.expenseCount);
   assert.equal(createdIncomes.length, noPendingBefore.incomeCount);
+  const noPendingOperations = operations.slice(noPendingOperationStart);
   assert.equal(
-    operations
-      .slice(noPendingOperationStart)
-      .filter(
-        (operation) =>
-          operation.type === "select" &&
-          operation.table === "tb_pending_proposals",
-      ).length,
+    noPendingOperations.filter(
+      ({ type, name }) => type === "auth_rpc" && name === "fn_get_web_active_pending_proposal",
+    ).length,
     1,
   );
+  assert.equal(noPendingOperations.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false);
   console.log("PASS contextual CORRECTION fallback without proposal is non-mutating");
 
   const normalNoFallbackContext = {
@@ -8446,30 +8721,16 @@ async function main() {
     { message: "Registré 70000 en Normal Market" },
   );
   assert.equal(normalNoFallback.type, "PROPOSAL_CREATED");
-  assert.equal(
-    operations
-      .slice(normalNoFallbackOperationStart)
-      .filter(
-        (operation) =>
-          operation.type === "from" &&
-          operation.table === "tb_pending_proposals",
-      ).length -
-      operations
-        .slice(normalNoFallbackOperationStart)
-        .filter(
-          (operation) =>
-            operation.type === "insert" &&
-            operation.table === "tb_pending_proposals",
-        ).length -
-      operations
-        .slice(normalNoFallbackOperationStart)
-        .filter(
-          (operation) =>
-            operation.type === "update" &&
-            operation.table === "tb_pending_proposals",
-        ).length,
-    0,
-  );
+  const normalNoFallbackOperations = operations.slice(normalNoFallbackOperationStart);
+  assert.equal(normalNoFallbackOperations.filter(
+    ({ type, name }) => type === "auth_rpc" && name === "fn_create_web_pending_proposal",
+  ).length, 1);
+  assert.equal(normalNoFallbackOperations.some(
+    ({ type, name }) => type === "auth_rpc" && name === "fn_get_web_active_pending_proposal",
+  ), false);
+  assert.equal(normalNoFallbackOperations.some(
+    ({ type, table }) => type === "from" && table === "tb_pending_proposals",
+  ), false);
   await conversation.processAgentMessage(normalNoFallbackContext, {
     message: "no",
   });
@@ -9140,12 +9401,17 @@ async function main() {
   };
   proposals.push(ownershipHardeningForeignActorProposal);
   categoryDrafts.push(ownershipHardeningForeignActorDraft);
+  const ownershipHardeningForeignActorExpenses = createdExpenses.length;
+  const ownershipHardeningForeignActorIncomes = createdIncomes.length;
   const ownershipHardeningForeignActorResult =
     await conversation.processAgentMessage(
       ownershipHardeningForeignActorContext,
       { message: "" },
     );
-  assert.equal(ownershipHardeningForeignActorResult.type, "UNSUPPORTED");
+  assert.equal(
+    ownershipHardeningForeignActorResult.type,
+    "CLARIFICATION_REQUIRED",
+  );
   assert.equal(
     categoryDrafts.some(
       (row) => row.id === ownershipHardeningForeignActorDraft.id,
@@ -9158,6 +9424,8 @@ async function main() {
     ).status,
     "AWAITING_CONFIRMATION",
   );
+  assert.equal(createdExpenses.length, ownershipHardeningForeignActorExpenses);
+  assert.equal(createdIncomes.length, ownershipHardeningForeignActorIncomes);
 
   const ownershipHardeningForeignSourceContext = withWhatsAppExecution({
     ...contextA,

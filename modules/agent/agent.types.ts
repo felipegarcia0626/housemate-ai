@@ -61,6 +61,7 @@ export interface PendingExpenseProposal {
   incomeId: string | null;
   createdAt: string;
   updatedAt: string;
+  version: string;
 }
 
 export interface PendingIncomeProposalPayload {
@@ -83,6 +84,7 @@ export interface PendingIncomeProposal {
   incomeId: string | null;
   createdAt: string;
   updatedAt: string;
+  version: string;
 }
 
 export type PendingProposalStatus =
@@ -136,6 +138,15 @@ export interface ExpenseRejectionResult {
 export interface IncomeProposalResult {
   proposalId: string;
   status: "AWAITING_CONFIRMATION";
+}
+
+/** Internal creation version used only for compare-and-delete compensation. */
+export interface PendingProposalCreationResult {
+  proposalId: string;
+  status: "AWAITING_CONFIRMATION";
+  createdAt: string;
+  updatedAt: string;
+  version: string;
 }
 
 export interface IncomeConfirmationResult {

@@ -52,8 +52,9 @@
   descartable con migraciones hasta 0053. Ese harness simula claims PostgreSQL;
   no prueba JWT firmado ni transporte PostgREST para estas seis RPC. 0052 está
   publicados en Git; no se ha verificado su aplicación en el esquema remoto.
-- **Separación de confirmaciones (0054, local):** se preparan entradas Web con
-  JWT para confirmar Expense/Income y rechazar propuestas. Derivan actor y
+- **Separación de confirmaciones (0054, publicado en Git como
+  `e2c2f343d379ca4924f83e47d4d53bf2316d5c7b`; aplicación remota no verificada):**
+  las entradas Web con JWT confirman Expense/Income y rechazan propuestas. Derivan actor y
   conversación desde `auth.uid()`/membership y consumen una instantánea de los
   datos presentados junto con los valores preparados por el servicio. La
   migración también revoca el acceso directo a propuestas de `PUBLIC`, `anon` y
@@ -64,13 +65,34 @@
   activas anteriores a 0054 no tienen la instantánea y fallan cerradas; antes
   del despliegue deben resolverse o recrearse en un corte controlado.
   `npm run test:sql`, los harnesses funcionales Agent/WhatsApp, typecheck,
-  ESLint focal y `git diff --check` pasan localmente. La suite SQL usa claims
-  simulados: no prueba JWT firmado ni transporte PostgREST, aplicación remota
-  de la migración ni consumidores desplegados.
-- **Límite:** el último commit publicado en Git conocido (0053) aún contiene
-  confirmaciones Web mediante `service_role`; el despliegue activo no está
-  verificado. El cambio local 0054 reemplaza esos tres callers por entradas JWT,
-  pero todavía no está publicado ni aplicado. Las funciones
+  ESLint focal y `git diff --check` pasaron localmente durante 0054. La suite SQL
+  usa claims simulados: no prueba JWT firmado ni transporte PostgREST, aplicación
+  remota de la migración ni consumidores desplegados.
+- **Separación del ciclo de vida Web (0055, local; validación aislada):**
+  la migración propuesta añade entradas autenticadas para crear, consultar,
+  corregir y compensar propuestas Web, manteniendo revocado el DML directo de
+  roles de aplicación. WhatsApp conserva sus lecturas privilegiadas y wrappers
+  0047; no se revocan los grants de `service_role` ni se afirma que el runtime
+  desplegado ya use estas entradas. Las validaciones reportadas antes de 0056
+  no cubrían la versión monotónica añadida después. Los claims SQL son simulados;
+  no prueban el transporte JWT firmado por Next.js/PostgREST.
+- **Token de concurrencia de propuestas (0056, local; regresión local PASS):**
+  0054/0055 usaban `updated_at` como compare-and-swap, pero el trigger asigna
+  `now()`, estable dentro de una transacción. 0056 añade `tb_pending_proposals.version`
+  (`bigint` positiva): el trigger la fija en 1 al insertar y cada UPDATE la
+  incrementa desde `OLD.version + 1`, incluidos los cambios de estado. Corrección,
+  confirmación Web y compensación reciben la versión observada; los resultados
+  Web la transportan como texto decimal para evitar pérdida de precisión en
+  JavaScript. En la validación local más reciente, 0055/0056 se aplicaron solo
+  al PostgreSQL embebido temporal. Pasaron `phase-4-web-pending-proposal-lifecycle.sql`,
+  `web-pending-proposal-concurrency.cjs`, `whatsapp-authorization-concurrency.cjs`,
+  `whatsapp-linking-http-sql.cjs`, `whatsapp-event-recovery-concurrency.cjs`,
+  `whatsapp-event-http-sql.cjs` y `npm run test:sql`. Esta evidencia no valida una
+  base remota ni el transporte JWT firmado por Next.js/PostgREST. La aplicación
+  remota y la compatibilidad con el runtime desplegado siguen sin verificarse.
+- **Límite:** el último commit publicado en Git conocido contiene 0054; el
+  despliegue activo y la aplicación remota no están verificados. 0055 todavía no
+  está publicada ni aplicada. Las funciones
   genéricas conservan EXECUTE para `service_role` por compatibilidad con
   WhatsApp/consumidores antiguos, así que sigue pendiente retirar esa vía después
   de verificar el runtime y ACL efectivos. También falta probar el transporte

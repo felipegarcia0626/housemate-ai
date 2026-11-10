@@ -105,8 +105,8 @@ DECLARE
   generic_income regprocedure := 'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::regprocedure;
   generic_reject regprocedure := 'public.fn_reject_pending_proposal(uuid,uuid,text,uuid,public.expense_source,public.pending_operation_type)'::regprocedure;
   entries regprocedure[] := ARRAY[
-    'public.fn_confirm_web_pending_expense(uuid,uuid,timestamp with time zone)'::regprocedure,
-    'public.fn_confirm_web_pending_income(uuid,uuid,timestamp with time zone)'::regprocedure,
+    'public.fn_confirm_web_pending_expense(uuid,uuid,bigint)'::regprocedure,
+    'public.fn_confirm_web_pending_income(uuid,uuid,bigint)'::regprocedure,
     'public.fn_reject_web_pending_proposal(uuid,uuid,public.pending_operation_type)'::regprocedure
   ];
 BEGIN
@@ -140,6 +140,11 @@ BEGIN
       RAISE EXCEPTION 'Web proposal RPC exposes caller authority/data args: %',entry;
     END IF;
   END LOOP;
+
+  IF pg_catalog.to_regprocedure('public.fn_confirm_web_pending_expense(uuid,uuid,timestamp with time zone)') IS NOT NULL
+     OR pg_catalog.to_regprocedure('public.fn_confirm_web_pending_income(uuid,uuid,timestamp with time zone)') IS NOT NULL THEN
+    RAISE EXCEPTION 'Timestamp-based Web confirmation overload remains callable';
+  END IF;
 
   IF has_function_privilege('authenticated',helper,'EXECUTE')
      OR has_function_privilege('anon',helper,'EXECUTE')
@@ -245,7 +250,7 @@ DECLARE
   result jsonb;
   sqlstate_text text;
   case_row record;
-  expected_version timestamptz;
+  expected_version bigint;
   before_expenses bigint;
   before_incomes bigint;
   before_items bigint;
@@ -315,7 +320,8 @@ BEGIN
   PERFORM set_config('request.jwt.claim.sub',actor_auth_id::text,true);
 
   result := public.fn_confirm_web_pending_expense(
-    expense_proposal_id,'54000000-0054-4000-8000-000000000010','2026-11-06 10:00:00+00'
+    expense_proposal_id,'54000000-0054-4000-8000-000000000010',
+    (SELECT version FROM public.tb_pending_proposals WHERE id=expense_proposal_id)
   );
   IF result->>'status' IS DISTINCT FROM 'CREATED' THEN
     RAISE EXCEPTION 'Valid Web Expense confirmation failed: %',result;
@@ -327,11 +333,12 @@ BEGIN
        AND created_by=actor_member_id AND source='WEB' AND total_amount=12.50
   ) OR (SELECT count(*) FROM public.tb_expense_items WHERE expense_id=v_expense_id) <> 1
     OR (SELECT count(*) FROM public.tb_expense_distributions WHERE expense_id=v_expense_id) <> 1
-    OR (SELECT status FROM public.tb_pending_proposals WHERE id=expense_proposal_id) <> 'COMPLETED' THEN
+    OR (SELECT status FROM public.tb_pending_proposals WHERE id=expense_proposal_id) <> 'COMPLETED'
+    OR (SELECT version FROM public.tb_pending_proposals WHERE id=expense_proposal_id) <> 2 THEN
     RAISE EXCEPTION 'Web Expense confirmation did not persist one atomic result';
   END IF;
   result := public.fn_confirm_web_pending_expense(
-    expense_proposal_id,'54000000-0054-4000-8000-000000000010','1900-01-01 00:00:00+00'
+    expense_proposal_id,'54000000-0054-4000-8000-000000000010',-1::bigint
   );
   IF result->>'status' IS DISTINCT FROM 'ALREADY_COMPLETED'
      OR result->>'expense_id' IS DISTINCT FROM v_expense_id::text
@@ -342,13 +349,13 @@ BEGIN
   -- Different household, actor proposal, and arbitrary conversation remain
   -- indistinguishable from an absent proposal to this authenticated actor.
   result := public.fn_confirm_web_pending_expense(
-    other_proposal_id,'54000000-0054-4000-8000-000000000010','2026-11-06 10:00:00+00'
+    other_proposal_id,'54000000-0054-4000-8000-000000000010',NULL::bigint
   );
   IF result->>'status' IS DISTINCT FROM 'NOT_FOUND' THEN
     RAISE EXCEPTION 'Other actor proposal was visible: %',result;
   END IF;
   result := public.fn_confirm_web_pending_expense(
-    wrong_conversation_proposal_id,'54000000-0054-4000-8000-000000000010','2026-11-06 10:00:00+00'
+    wrong_conversation_proposal_id,'54000000-0054-4000-8000-000000000010',NULL::bigint
   );
   IF result->>'status' IS DISTINCT FROM 'NOT_FOUND' THEN
     RAISE EXCEPTION 'Non-canonical conversation proposal was visible: %',result;
@@ -376,14 +383,16 @@ BEGIN
     'AWAITING_CONFIRMATION','2026-11-06 10:01:00+00','2026-11-06 10:01:00+00'
   );
   result := public.fn_confirm_web_pending_expense(
-    income_proposal_id,'54000000-0054-4000-8000-000000000010','2026-11-06 10:01:00+00'
+    income_proposal_id,'54000000-0054-4000-8000-000000000010',
+    (SELECT version FROM public.tb_pending_proposals WHERE id=income_proposal_id)
   );
   IF result->>'status' IS DISTINCT FROM 'INVALID_OPERATION'
      OR (SELECT count(*) FROM public.tb_incomes WHERE description='0054 confirmed income') <> 0 THEN
     RAISE EXCEPTION 'Incompatible operation did not fail closed';
   END IF;
   result := public.fn_confirm_web_pending_income(
-    income_proposal_id,'54000000-0054-4000-8000-000000000010','2026-11-06 10:01:00+00'
+    income_proposal_id,'54000000-0054-4000-8000-000000000010',
+    (SELECT version FROM public.tb_pending_proposals WHERE id=income_proposal_id)
   );
   IF result->>'status' IS DISTINCT FROM 'CREATED' THEN
     RAISE EXCEPTION 'Valid Web Income confirmation failed: %',result;
@@ -394,11 +403,12 @@ BEGIN
      WHERE id=v_income_id AND household_id='54000000-0054-4000-8000-000000000010'
        AND created_by=actor_member_id AND member_id=actor_member_id
        AND amount=27.75 AND category_id=income_category_id
-  ) OR (SELECT status FROM public.tb_pending_proposals WHERE id=income_proposal_id) <> 'COMPLETED' THEN
+  ) OR (SELECT status FROM public.tb_pending_proposals WHERE id=income_proposal_id) <> 'COMPLETED'
+    OR (SELECT version FROM public.tb_pending_proposals WHERE id=income_proposal_id) <> 2 THEN
     RAISE EXCEPTION 'Web Income confirmation did not persist one atomic result';
   END IF;
   result := public.fn_confirm_web_pending_income(
-    income_proposal_id,'54000000-0054-4000-8000-000000000010','1900-01-01 00:00:00+00'
+    income_proposal_id,'54000000-0054-4000-8000-000000000010',-1::bigint
   );
   IF result->>'status' IS DISTINCT FROM 'ALREADY_COMPLETED'
      OR result->>'income_id' IS DISTINCT FROM v_income_id::text
@@ -420,6 +430,7 @@ BEGIN
   );
   IF result->>'status' IS DISTINCT FROM 'REJECTED'
      OR (SELECT status FROM public.tb_pending_proposals WHERE id=reject_proposal_id) <> 'REJECTED'
+     OR (SELECT version FROM public.tb_pending_proposals WHERE id=reject_proposal_id) <> 2
      OR (SELECT count(*) FROM public.tb_expenses) <> 1 THEN
     RAISE EXCEPTION 'Web rejection wrote a movement or did not resolve the proposal';
   END IF;
@@ -427,6 +438,7 @@ BEGIN
     reject_proposal_id,'54000000-0054-4000-8000-000000000010','CREATE_EXPENSE'
   );
   IF result->>'status' IS DISTINCT FROM 'REJECTED'
+     OR (SELECT version FROM public.tb_pending_proposals WHERE id=reject_proposal_id) <> 2
      OR (SELECT count(*) FROM public.tb_expenses) <> 1 THEN
     RAISE EXCEPTION 'Repeated Web rejection was not idempotent';
   END IF;
@@ -470,7 +482,7 @@ BEGIN
     PERFORM public.fn_confirm_web_pending_expense(
       receipt_rollback_proposal_id,
       '54000000-0054-4000-8000-000000000010',
-      (SELECT updated_at FROM public.tb_pending_proposals WHERE id=receipt_rollback_proposal_id)
+      (SELECT version FROM public.tb_pending_proposals WHERE id=receipt_rollback_proposal_id)
     );
   EXCEPTION WHEN OTHERS THEN
     GET STACKED DIAGNOSTICS sqlstate_text = RETURNED_SQLSTATE;
@@ -510,7 +522,7 @@ BEGIN
     PERFORM public.fn_confirm_web_pending_income(
       income_rollback_proposal_id,
       '54000000-0054-4000-8000-000000000010',
-      (SELECT updated_at FROM public.tb_pending_proposals WHERE id=income_rollback_proposal_id)
+      (SELECT version FROM public.tb_pending_proposals WHERE id=income_rollback_proposal_id)
     );
   EXCEPTION WHEN OTHERS THEN
     GET STACKED DIAGNOSTICS sqlstate_text = RETURNED_SQLSTATE;
@@ -868,7 +880,7 @@ BEGIN
     IF case_value ->> 'expected_state' = 'CREATED' THEN
       result := public.fn_confirm_web_pending_expense(
         proposal_id,household_id,
-        (SELECT updated_at FROM public.tb_pending_proposals WHERE id=proposal_id)
+        (SELECT version FROM public.tb_pending_proposals WHERE id=proposal_id)
       );
       IF result ->> 'status' IS DISTINCT FROM 'CREATED' THEN
         RAISE EXCEPTION 'Valid split snapshot failed (%): %',case_value ->> 'label',result;
@@ -908,7 +920,7 @@ BEGIN
       BEGIN
         PERFORM public.fn_confirm_web_pending_expense(
           proposal_id,household_id,
-          (SELECT updated_at FROM public.tb_pending_proposals WHERE id=proposal_id)
+          (SELECT version FROM public.tb_pending_proposals WHERE id=proposal_id)
         );
       EXCEPTION WHEN OTHERS THEN
         GET STACKED DIAGNOSTICS state_text = RETURNED_SQLSTATE;
@@ -1021,7 +1033,7 @@ BEGIN
     IF case_value ->> 'expected_state' = 'CREATED' THEN
       result := public.fn_confirm_web_pending_income(
         proposal_id,household_id,
-        (SELECT updated_at FROM public.tb_pending_proposals WHERE id=proposal_id)
+        (SELECT version FROM public.tb_pending_proposals WHERE id=proposal_id)
       );
       IF result ->> 'status' IS DISTINCT FROM 'CREATED' THEN
         RAISE EXCEPTION 'Valid finite Income snapshot failed (%): %',case_value ->> 'label',result;
@@ -1038,7 +1050,7 @@ BEGIN
       BEGIN
         PERFORM public.fn_confirm_web_pending_income(
           proposal_id,household_id,
-          (SELECT updated_at FROM public.tb_pending_proposals WHERE id=proposal_id)
+          (SELECT version FROM public.tb_pending_proposals WHERE id=proposal_id)
         );
       EXCEPTION WHEN OTHERS THEN
         GET STACKED DIAGNOSTICS state_text = RETURNED_SQLSTATE;
@@ -1069,7 +1081,7 @@ DECLARE
   mutation record;
   state_text text;
   before_count bigint;
-  expected_version timestamptz;
+  expected_version bigint;
 BEGIN
   raw_expense := jsonb_build_object(
     'paidByMemberId',actor_member_id,'totalAmount',8.00,'expenseDate','2026-11-05',
@@ -1117,7 +1129,7 @@ BEGIN
     UPDATE public.tb_pending_proposals
        SET payload=jsonb_set(original_payload,mutation.path,mutation.value)
      WHERE id=proposal_id;
-    SELECT updated_at INTO expected_version FROM public.tb_pending_proposals WHERE id=proposal_id;
+    SELECT version INTO expected_version FROM public.tb_pending_proposals WHERE id=proposal_id;
     state_text := NULL;
     BEGIN
       PERFORM public.fn_confirm_web_pending_expense(proposal_id,household_id,expected_version);
@@ -1133,7 +1145,7 @@ BEGIN
   UPDATE public.tb_pending_proposals SET payload=original_payload WHERE id=proposal_id;
   state_text := NULL;
   BEGIN
-    PERFORM public.fn_confirm_web_pending_expense(proposal_id,household_id,'1900-01-01 00:00:00+00');
+    PERFORM public.fn_confirm_web_pending_expense(proposal_id,household_id,-1::bigint);
   EXCEPTION WHEN OTHERS THEN
     GET STACKED DIAGNOSTICS state_text = RETURNED_SQLSTATE;
   END;
@@ -1160,7 +1172,7 @@ BEGIN
   BEGIN
     PERFORM public.fn_confirm_web_pending_expense(
       proposal_id,household_id,
-      (SELECT updated_at FROM public.tb_pending_proposals WHERE id=proposal_id)
+      (SELECT version FROM public.tb_pending_proposals WHERE id=proposal_id)
     );
   EXCEPTION WHEN OTHERS THEN
     GET STACKED DIAGNOSTICS state_text = RETURNED_SQLSTATE;
@@ -1284,12 +1296,12 @@ DECLARE r jsonb;
 BEGIN
   r := public.fn_confirm_web_pending_expense(
     '54000000-0054-4000-8000-000000000101',
-    '54000000-0054-4000-8000-000000000010','1900-01-01 00:00:00+00'
+    '54000000-0054-4000-8000-000000000010',-1::bigint
   );
   IF r->>'status' IS DISTINCT FROM 'ALREADY_COMPLETED' THEN RAISE EXCEPTION 'authenticated Expense RPC denied: %',r; END IF;
   r := public.fn_confirm_web_pending_income(
     '54000000-0054-4000-8000-000000000104',
-    '54000000-0054-4000-8000-000000000010','1900-01-01 00:00:00+00'
+    '54000000-0054-4000-8000-000000000010',-1::bigint
   );
   IF r->>'status' IS DISTINCT FROM 'ALREADY_COMPLETED' THEN RAISE EXCEPTION 'authenticated Income RPC denied: %',r; END IF;
   r := public.fn_reject_web_pending_proposal(

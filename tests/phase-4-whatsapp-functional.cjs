@@ -2418,6 +2418,7 @@ async function runHarness() {
       status,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      version: "1",
       resolved_at: status === "AWAITING_CONFIRMATION" ? null : new Date().toISOString(),
       expense_id: null,
       income_id: null,

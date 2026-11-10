@@ -20,16 +20,15 @@ import {
   type AgentContext,
   type ExpenseConfirmationResult,
   type ExpenseProposalInput,
-  type ExpenseProposalResult,
   type ExpenseRejectionResult,
   type PendingExpenseProposal,
   type PendingExpenseProposalPayload,
   type PendingProposal,
   type IncomeConfirmationResult,
-  type IncomeProposalResult,
   type IncomeRejectionResult,
   type PendingIncomeProposal,
   type PendingIncomeProposalPayload,
+  type PendingProposalCreationResult,
 } from "./agent.types";
 import {
   confirmPendingExpense,
@@ -176,11 +175,30 @@ function ensureProposalOwnership(
 function mapRepositoryError(error: unknown): AgentDomainError {
   if (
     error instanceof PendingProposalRepositoryError &&
+    error.kind === "ACCOUNT_NOT_ELIGIBLE"
+  ) {
+    return new AgentDomainError(
+      "ACCOUNT_NOT_ELIGIBLE",
+      "Financial access is unavailable.",
+    );
+  }
+  if (
+    error instanceof PendingProposalRepositoryError &&
     error.kind === "CONFLICT"
   ) {
     return new AgentDomainError(
       "PENDING_PROPOSAL_EXISTS",
       "A pending proposal already exists for this conversation.",
+    );
+  }
+  if (
+    error instanceof PendingProposalRepositoryError &&
+    error.kind === "VERSION_CONFLICT"
+  ) {
+    return new AgentDomainError(
+      "PROPOSAL_NOT_AVAILABLE",
+      "The pending proposal changed before the operation completed.",
+      error,
     );
   }
   return persistenceError();
@@ -230,7 +248,7 @@ export async function createExpenseProposal(
   context: AgentContext,
   input: ExpenseProposalInput,
   draftId?: string,
-): Promise<ExpenseProposalResult> {
+): Promise<PendingProposalCreationResult> {
   await assertWhatsAppExecutionCurrent(context);
   validateContext(context);
   validateProposalShape(input);
@@ -249,7 +267,7 @@ export async function createExpenseProposal(
       payload,
     );
     const proposal = await createPendingProposal({
-      id: randomUUID(),
+      ...(context.source === "WHATSAPP" ? { id: randomUUID() } : {}),
       householdId: context.householdId,
       conversationKey: context.conversationKey,
       operationType: "CREATE_EXPENSE",
@@ -257,7 +275,13 @@ export async function createExpenseProposal(
       webConfirmationSnapshot,
       whatsappLease: whatsappLease(context),
     });
-    return { proposalId: proposal.id, status: "AWAITING_CONFIRMATION" };
+    return {
+      proposalId: proposal.id,
+      status: "AWAITING_CONFIRMATION",
+      createdAt: proposal.createdAt,
+      updatedAt: proposal.updatedAt,
+      version: proposal.version,
+    };
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
     if (error instanceof ExpenseDomainError) throw error;
@@ -269,7 +293,7 @@ export async function createIncomeProposal(
   context: AgentContext,
   input: IncomeCreateInput,
   draftId?: string,
-): Promise<IncomeProposalResult> {
+): Promise<PendingProposalCreationResult> {
   await assertWhatsAppExecutionCurrent(context);
   validateContext(context);
   await requireActiveMicroCategory(input.categoryId, "INCOME");
@@ -285,14 +309,20 @@ export async function createIncomeProposal(
       payload,
     );
     const proposal = await createPendingIncomeProposal({
-      id: randomUUID(),
+      ...(context.source === "WHATSAPP" ? { id: randomUUID() } : {}),
       householdId: context.householdId,
       conversationKey: context.conversationKey,
       payload,
       webConfirmationSnapshot,
       whatsappLease: whatsappLease(context),
     });
-    return { proposalId: proposal.id, status: "AWAITING_CONFIRMATION" };
+    return {
+      proposalId: proposal.id,
+      status: "AWAITING_CONFIRMATION",
+      createdAt: proposal.createdAt,
+      updatedAt: proposal.updatedAt,
+      version: proposal.version,
+    };
   } catch (error) {
     if (error instanceof AgentDomainError) throw error;
     if (error instanceof IncomeDomainError) throw error;
@@ -310,6 +340,7 @@ async function getOwnedIncomeProposal(
     proposalId,
     context.householdId,
     context.conversationKey,
+    context.source,
   );
   if (!proposal) throw new AgentDomainError("NOT_FOUND", "Proposal not found.");
   ensureProposalOwnership(
@@ -364,6 +395,7 @@ export async function confirmIncomeProposal(
       conversationKey: context.conversationKey,
       actorMemberId: context.actorMemberId,
       source: context.source,
+      expectedVersion: proposal?.version ?? null,
       expectedUpdatedAt: proposal?.updatedAt ?? null,
       income: persistenceInput,
       whatsappLease: whatsappLease(context),
@@ -450,6 +482,7 @@ async function getOwnedProposal(
     proposalId,
     context.householdId,
     context.conversationKey,
+    context.source,
   );
   if (!proposal) throw new AgentDomainError("NOT_FOUND", "Proposal not found.");
   ensureProposalOwnership(context, proposal);
@@ -613,6 +646,7 @@ export async function confirmExpenseProposal(
       conversationKey: context.conversationKey,
       actorMemberId: context.actorMemberId,
       source: context.source,
+      expectedVersion: proposal?.version ?? null,
       expectedUpdatedAt: proposal?.updatedAt ?? null,
       expense: persistenceInput,
       whatsappLease: whatsappLease(context),

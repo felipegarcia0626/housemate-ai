@@ -31,7 +31,7 @@ module.exports = async function webPendingProposalConcurrency(postgres) {
     );
   }
 
-  async function insertProposal(operation, proposalId, description) {
+  function proposalPayload(operation, description) {
     const presented = operation === "CREATE_EXPENSE"
       ? {
           paidByMemberId: memberId,
@@ -79,18 +79,22 @@ module.exports = async function webPendingProposalConcurrency(postgres) {
           description,
           categoryId: incomeCategoryId,
         };
-    const payload = {
+    return {
       actorMemberId: memberId,
       source: "WEB",
       [operation === "CREATE_EXPENSE" ? "expense" : "income"]: presented,
       _web_confirmation: { presented, persistence },
     };
+  }
+
+  async function insertProposal(operation, proposalId, description) {
+    const payload = proposalPayload(operation, description);
     const result = await observer.query(
       `INSERT INTO public.tb_pending_proposals(
          id,household_id,conversation_key,actor_member_id,source,
          operation_type,payload,status,created_at,updated_at
        ) VALUES($1,$2,$3,$4,'WEB',$5,$6::jsonb,'AWAITING_CONFIRMATION',now(),now())
-       RETURNING updated_at::text AS updated_at`,
+       RETURNING version::text AS version`,
       [
         proposalId,
         householdId,
@@ -100,16 +104,16 @@ module.exports = async function webPendingProposalConcurrency(postgres) {
         JSON.stringify(payload),
       ],
     );
-    return result.rows[0].updated_at;
+    return result.rows[0].version;
   }
 
-  async function callConfirmation(client, operation, proposalId, updatedAt) {
+  async function callConfirmation(client, operation, proposalId, expectedVersion) {
     const functionName = operation === "CREATE_EXPENSE"
       ? "fn_confirm_web_pending_expense"
       : "fn_confirm_web_pending_income";
     const result = await client.query(
       `SELECT public.${functionName}($1,$2,$3) AS result`,
-      [proposalId, householdId, updatedAt],
+      [proposalId, householdId, expectedVersion],
     );
     return result.rows[0].result;
   }
@@ -118,6 +122,32 @@ module.exports = async function webPendingProposalConcurrency(postgres) {
     const result = await client.query(
       "SELECT public.fn_reject_web_pending_proposal($1,$2,'CREATE_EXPENSE') AS result",
       [proposalId, householdId],
+    );
+    return result.rows[0].result;
+  }
+
+  async function callCorrection(client, proposalId, expectedVersion, description) {
+    const result = await client.query(
+      `SELECT public.fn_update_web_pending_proposal(
+        $1,$2,$3,'CREATE_EXPENSE',$4::bigint,$5::jsonb
+      ) AS result`,
+      [
+        proposalId,
+        householdId,
+        `web:${householdId}:${memberId}`,
+        expectedVersion,
+        JSON.stringify(proposalPayload("CREATE_EXPENSE", description)),
+      ],
+    );
+    return result.rows[0].result;
+  }
+
+  async function callCompensation(client, proposalId, createdAt, expectedVersion) {
+    const result = await client.query(
+      `SELECT public.fn_compensate_web_pending_proposal(
+        $1,$2,$3,'CREATE_EXPENSE',$4::timestamptz,$5::bigint
+      ) AS result`,
+      [proposalId, householdId, `web:${householdId}:${memberId}`, createdAt, expectedVersion],
     );
     return result.rows[0].result;
   }
@@ -209,6 +239,9 @@ module.exports = async function webPendingProposalConcurrency(postgres) {
           IF NEW.status='REJECTED'
              AND current_setting('housemate.test_pause',true)='reject' THEN
             PERFORM pg_catalog.pg_advisory_xact_lock(2054,54);
+          ELSIF NEW.payload IS DISTINCT FROM OLD.payload
+             AND current_setting('housemate.test_pause',true)='correction' THEN
+            PERFORM pg_catalog.pg_advisory_xact_lock(2054,54);
           END IF;
         END IF;
         RETURN NEW;
@@ -296,6 +329,194 @@ module.exports = async function webPendingProposalConcurrency(postgres) {
     assert.equal(rejected.expense_id, confirmed.expense_id);
     assert.equal((await count("tb_expenses")) - beforeConfirmReject, 1);
     console.log("PASS Web proposal confirmation wins deterministic confirm/reject race");
+
+    const correctionConfirmId = randomUUID();
+    const correctionConfirmVersion = await insertProposal(
+      "CREATE_EXPENSE",
+      correctionConfirmId,
+      "0055 correction-confirm race original",
+    );
+    const beforeCorrectionConfirm = await count("tb_expenses");
+    await holdPauseLock();
+    await authenticate(first);
+    await first.query("SELECT set_config('housemate.test_pause','correction',true)");
+    const correctionPid = await pid(first);
+    const correctionFirst = callCorrection(
+      first,
+      correctionConfirmId,
+      correctionConfirmVersion,
+      "0055 correction-confirm race corrected",
+    );
+    await waitForBlocker(correctionPid, await pid(observer), "correction-confirm update");
+    await authenticate(second);
+    const confirmAfterCorrectionPid = await pid(second);
+    const confirmAfterCorrection = callConfirmation(
+      second,
+      "CREATE_EXPENSE",
+      correctionConfirmId,
+      correctionConfirmVersion,
+    );
+    await waitForBlocker(
+      confirmAfterCorrectionPid,
+      correctionPid,
+      "correction-confirm stale confirmation",
+    );
+    await releasePauseLock();
+    await correctionFirst;
+    await first.query("COMMIT");
+    await assert.rejects(
+      () => confirmAfterCorrection,
+      (error) => error.code === "40001",
+    );
+    await second.query("ROLLBACK");
+    const correctedProposal = await observer.query(
+      `SELECT status,version::text AS version,payload -> 'expense' ->> 'description' AS description
+         FROM public.tb_pending_proposals WHERE id=$1`,
+      [correctionConfirmId],
+    );
+    assert.equal(correctedProposal.rows[0].status, "AWAITING_CONFIRMATION");
+    assert.equal(correctedProposal.rows[0].version, "2");
+    assert.equal(correctedProposal.rows[0].description, "0055 correction-confirm race corrected");
+    assert.equal((await count("tb_expenses")) - beforeCorrectionConfirm, 0);
+    await observer.query(
+      "DELETE FROM public.tb_pending_proposals WHERE id=$1",
+      [correctionConfirmId],
+    );
+    console.log("PASS Web correction fences a concurrent confirmation using the stale proposal version");
+
+    const sameTokenId = randomUUID();
+    const sameTokenVersion = await insertProposal(
+      "CREATE_EXPENSE",
+      sameTokenId,
+      "0056 same-token correction race original",
+    );
+    await holdPauseLock();
+    await authenticate(first);
+    await first.query("SELECT set_config('housemate.test_pause','correction',true)");
+    const firstCorrectionPid = await pid(first);
+    const firstCorrection = callCorrection(
+      first,
+      sameTokenId,
+      sameTokenVersion,
+      "0056 correction winner",
+    );
+    await waitForBlocker(firstCorrectionPid, await pid(observer), "same-token first correction");
+    await authenticate(second);
+    const secondCorrectionPid = await pid(second);
+    const secondCorrection = callCorrection(
+      second,
+      sameTokenId,
+      sameTokenVersion,
+      "0056 correction loser",
+    );
+    await waitForBlocker(secondCorrectionPid, firstCorrectionPid, "same-token correction contender");
+    await releasePauseLock();
+    const firstCorrectionResult = await firstCorrection;
+    assert.equal(firstCorrectionResult.version, "2");
+    await first.query("COMMIT");
+    await assert.rejects(
+      () => secondCorrection,
+      (error) => error.code === "40001",
+    );
+    await second.query("ROLLBACK");
+    const sameTokenRow = await observer.query(
+      `SELECT version::text AS version,payload -> 'expense' ->> 'description' AS description
+         FROM public.tb_pending_proposals WHERE id=$1`,
+      [sameTokenId],
+    );
+    assert.equal(sameTokenRow.rows[0].version, "2");
+    assert.equal(sameTokenRow.rows[0].description, "0056 correction winner");
+    await observer.query("DELETE FROM public.tb_pending_proposals WHERE id=$1", [sameTokenId]);
+    console.log("PASS concurrent corrections with one token allow exactly one winner");
+
+    const correctionCompensationId = randomUUID();
+    const correctionCompensationVersion = await insertProposal(
+      "CREATE_EXPENSE",
+      correctionCompensationId,
+      "0056 correction-compensation race original",
+    );
+    const correctionCompensationCreation = await observer.query(
+      "SELECT created_at::text AS created_at FROM public.tb_pending_proposals WHERE id=$1",
+      [correctionCompensationId],
+    );
+    await holdPauseLock();
+    await authenticate(first);
+    await first.query("SELECT set_config('housemate.test_pause','correction',true)");
+    const correctionForCompPid = await pid(first);
+    const correctionForComp = callCorrection(
+      first,
+      correctionCompensationId,
+      correctionCompensationVersion,
+      "0056 correction wins compensation race",
+    );
+    await waitForBlocker(correctionForCompPid, await pid(observer), "correction-compensation update");
+    await authenticate(second);
+    const compensationPid = await pid(second);
+    const compensationAfterCorrection = callCompensation(
+      second,
+      correctionCompensationId,
+      correctionCompensationCreation.rows[0].created_at,
+      correctionCompensationVersion,
+    );
+    await waitForBlocker(compensationPid, correctionForCompPid, "compensation waits for correction");
+    await releasePauseLock();
+    await correctionForComp;
+    await first.query("COMMIT");
+    assert.equal((await compensationAfterCorrection).status, "VERSION_CONFLICT");
+    await second.query("COMMIT");
+    const preservedAfterComp = await observer.query(
+      "SELECT version::text AS version,status FROM public.tb_pending_proposals WHERE id=$1",
+      [correctionCompensationId],
+    );
+    assert.equal(preservedAfterComp.rows[0].version, "2");
+    assert.equal(preservedAfterComp.rows[0].status, "AWAITING_CONFIRMATION");
+    await observer.query("DELETE FROM public.tb_pending_proposals WHERE id=$1", [correctionCompensationId]);
+    console.log("PASS stale compensation cannot delete a proposal corrected concurrently");
+
+    const confirmationCompensationId = randomUUID();
+    const confirmationCompensationVersion = await insertProposal(
+      "CREATE_EXPENSE",
+      confirmationCompensationId,
+      "0056 confirmation-compensation race",
+    );
+    const confirmationCreation = await observer.query(
+      "SELECT created_at::text AS created_at FROM public.tb_pending_proposals WHERE id=$1",
+      [confirmationCompensationId],
+    );
+    const beforeConfirmCompensation = await count("tb_expenses");
+    await holdPauseLock();
+    await authenticate(first);
+    await first.query("SELECT set_config('housemate.test_pause','expense',true)");
+    const confirmationForCompPid = await pid(first);
+    const confirmationForComp = callConfirmation(
+      first,
+      "CREATE_EXPENSE",
+      confirmationCompensationId,
+      confirmationCompensationVersion,
+    );
+    await waitForBlocker(confirmationForCompPid, await pid(observer), "confirmation-compensation financial write");
+    await authenticate(second);
+    const compensationAfterConfirmationPid = await pid(second);
+    const compensationAfterConfirmation = callCompensation(
+      second,
+      confirmationCompensationId,
+      confirmationCreation.rows[0].created_at,
+      confirmationCompensationVersion,
+    );
+    await waitForBlocker(compensationAfterConfirmationPid, confirmationForCompPid, "compensation waits for confirmation");
+    await releasePauseLock();
+    assert.equal((await confirmationForComp).status, "CREATED");
+    await first.query("COMMIT");
+    assert.equal((await compensationAfterConfirmation).status, "VERSION_CONFLICT");
+    await second.query("COMMIT");
+    const preservedAfterConfirmation = await observer.query(
+      "SELECT version::text AS version,status FROM public.tb_pending_proposals WHERE id=$1",
+      [confirmationCompensationId],
+    );
+    assert.equal(preservedAfterConfirmation.rows[0].version, "2");
+    assert.equal(preservedAfterConfirmation.rows[0].status, "COMPLETED");
+    assert.equal((await count("tb_expenses")) - beforeConfirmCompensation, 1);
+    console.log("PASS compensation cannot remove a proposal completed concurrently");
 
     const rejectConfirmId = randomUUID();
     const rejectConfirmVersion = await insertProposal(

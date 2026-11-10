@@ -165,6 +165,14 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
     assert.equal(movement.created_by, uid(n));
     assert.equal(movement[isIncome ? "member_id" : "paid_by"], uid(n));
     assert.equal(movement[isIncome ? "amount" : "total_amount"], 9);
+    const expectedVersion = (
+      BigInt(String(before.proposals[0].version)) + 1n
+    ).toString();
+    assert.equal(
+      String(proposal.version),
+      expectedVersion,
+      "the successful confirmation increments the proposal version exactly once, including when a concurrent replay follows",
+    );
     assert.deepEqual(
       {
         ...proposal,
@@ -173,6 +181,7 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
         expense_id: before.proposals[0].expense_id,
         income_id: before.proposals[0].income_id,
         updated_at: before.proposals[0].updated_at,
+        version: before.proposals[0].version,
       },
       before.proposals[0],
     );

@@ -16,7 +16,7 @@ import type {
 } from "./agent.types";
 import type { PersistenceDiagnosticContext } from "@/infrastructure/database/persistence-diagnostic";
 
-type RepositoryErrorKind = "ACCOUNT_NOT_ELIGIBLE" | "CONFLICT" | "PERSISTENCE";
+type RepositoryErrorKind = "ACCOUNT_NOT_ELIGIBLE" | "CONFLICT" | "VERSION_CONFLICT" | "PERSISTENCE";
 
 export class PendingProposalRepositoryError extends Error {
   readonly kind: RepositoryErrorKind;
@@ -52,12 +52,14 @@ interface PendingProposalRow {
   status: "AWAITING_CONFIRMATION" | "COMPLETED" | "REJECTED";
   created_at: string;
   updated_at: string;
+  version: unknown;
   resolved_at: string | null;
   expense_id: string | null;
   income_id: string | null;
 }
 
 function mapRow(row: PendingProposalRow): PendingProposal {
+  const version = parseProposalVersion(row.version);
   const actorMemberId = row.actor_member_id ?? row.payload.actorMemberId;
   const source = row.source ?? row.payload.source;
   if (!actorMemberId || !source) {
@@ -83,6 +85,7 @@ function mapRow(row: PendingProposalRow): PendingProposal {
       status: row.status,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      version,
       resolvedAt: row.resolved_at ?? null,
       expenseId: row.expense_id ?? null,
       incomeId: row.income_id ?? null,
@@ -101,10 +104,25 @@ function mapRow(row: PendingProposalRow): PendingProposal {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    version,
     resolvedAt: row.resolved_at ?? null,
     expenseId: row.expense_id ?? null,
     incomeId: row.income_id ?? null,
   } satisfies PendingExpenseProposal;
+}
+
+function parseProposalVersion(value: unknown): string {
+  if (typeof value === "string" && /^[1-9][0-9]*$/.test(value)) return value;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return String(value);
+  }
+  throw new PendingProposalRepositoryError(
+    "PERSISTENCE",
+    "Pending proposal version is missing or cannot be represented safely.",
+    null,
+    "map_pending_proposal_version",
+    "tb_pending_proposals",
+  );
 }
 
 function persistenceError(
@@ -120,7 +138,22 @@ function persistenceError(
       && "details" in error && error.details === "HOUSEMATE_FINANCIAL_ELIGIBILITY_V1") {
     return new PendingProposalRepositoryError("ACCOUNT_NOT_ELIGIBLE", "Financial access is unavailable.", error, operation, tableOrRpc ?? pendingProposalTableOrRpc(operation));
   }
-  if (code === "23505") {
+  if (
+    code === "40001" &&
+    (tableOrRpc === "fn_update_web_pending_proposal" ||
+      tableOrRpc === "fn_compensate_web_pending_proposal" ||
+      tableOrRpc === "fn_confirm_web_pending_expense" ||
+      tableOrRpc === "fn_confirm_web_pending_income")
+  ) {
+    return new PendingProposalRepositoryError(
+      "VERSION_CONFLICT",
+      `Pending proposal version changed during ${operation}.`,
+      error,
+      operation,
+      tableOrRpc,
+    );
+  }
+  if (code === "23505" || code === "40001") {
     return new PendingProposalRepositoryError(
       "CONFLICT",
       `Pending proposal conflict during ${operation}.`,
@@ -202,8 +235,31 @@ function pendingProposalTableOrRpc(operation: string): string {
   return "tb_pending_proposals";
 }
 
+async function callWebProposalRpc(
+  rpcName: string,
+  args: Record<string, unknown>,
+  operation: string,
+): Promise<unknown> {
+  try {
+    const client = await createSupabaseAuthServerClient();
+    const { data, error } = await client.rpc(rpcName, args);
+    if (error) throw persistenceError(operation, error, rpcName);
+    return data;
+  } catch (error) {
+    if (error instanceof PendingProposalRepositoryError) throw error;
+    throw persistenceError(operation, error, rpcName);
+  }
+}
+
+function requireProposalRow(data: unknown, operation: string, rpcName: string): PendingProposalRow {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw persistenceError(operation, new Error("Invalid RPC result"), rpcName);
+  }
+  return data as PendingProposalRow;
+}
+
 export async function createPendingProposal(input: {
-  id: string;
+  id?: string;
   householdId: string;
   conversationKey: string;
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
@@ -217,7 +273,7 @@ export async function createPendingProposal(input: {
   };
 }): Promise<PendingExpenseProposal> {
   if (input.payload.source === "WHATSAPP") {
-    if (!input.whatsappLease) {
+    if (!input.id || !input.whatsappLease) {
       throw persistenceError("create WhatsApp proposal", new Error("Missing execution lease"));
     }
     const { data, error } = await getSupabaseAdminClient().rpc(
@@ -235,30 +291,27 @@ export async function createPendingProposal(input: {
     }
     return mapRow(data as PendingProposalRow) as PendingExpenseProposal;
   }
-
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_pending_proposals")
-    .insert({
-      id: input.id,
-      household_id: input.householdId,
-      conversation_key: input.conversationKey,
-      actor_member_id: input.payload.actorMemberId,
-      source: input.payload.source,
-      operation_type: input.operationType,
-      payload: storagePayload(input.payload, input.webConfirmationSnapshot),
-      status: "AWAITING_CONFIRMATION",
-    })
-    .select(
-      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
-    )
-    .single();
-
-  if (error || !data) throw persistenceError("create", error);
-  return mapRow(data as PendingProposalRow) as PendingExpenseProposal;
+  if (input.payload.source !== "WEB" || !input.webConfirmationSnapshot) {
+    throw persistenceError(
+      "create proposal",
+      new Error("Only authenticated Web or fenced WhatsApp proposals are supported"),
+    );
+  }
+  const data = await callWebProposalRpc(
+    "fn_create_web_pending_proposal",
+    {
+      p_household_id: input.householdId,
+      p_conversation_key: input.conversationKey,
+      p_operation_type: input.operationType,
+      p_payload: storagePayload(input.payload, input.webConfirmationSnapshot),
+    },
+    "create Web proposal",
+  );
+  return mapRow(requireProposalRow(data, "create Web proposal", "fn_create_web_pending_proposal")) as PendingExpenseProposal;
 }
 
 export async function createPendingIncomeProposal(input: {
-  id: string;
+  id?: string;
   householdId: string;
   conversationKey: string;
   payload: PendingIncomeProposalPayload;
@@ -286,7 +339,8 @@ export async function updatePendingProposalConditionally(input: {
   operationType: "CREATE_EXPENSE" | "CREATE_INCOME";
   payload: PendingExpenseProposalPayload | PendingIncomeProposalPayload;
   webConfirmationSnapshot?: WebProposalConfirmationSnapshot;
-  expectedUpdatedAt: string;
+  expectedVersion?: string;
+  expectedUpdatedAt?: string;
   whatsappLease?: {
     userId: string;
     leaseId: string;
@@ -295,7 +349,7 @@ export async function updatePendingProposalConditionally(input: {
   };
 }): Promise<PendingProposal | null> {
   if (input.source === "WHATSAPP") {
-    if (!input.whatsappLease) {
+    if (!input.whatsappLease || !input.expectedUpdatedAt) {
       throw persistenceError("update WhatsApp proposal", new Error("Missing execution lease"));
     }
     const { data, error } = await getSupabaseAdminClient().rpc(
@@ -316,36 +370,53 @@ export async function updatePendingProposalConditionally(input: {
     }
     return mapRow(data as PendingProposalRow);
   }
-
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_pending_proposals")
-    .update({ payload: storagePayload(input.payload, input.webConfirmationSnapshot) })
-    .eq("id", input.id)
-    .eq("household_id", input.householdId)
-    .eq("conversation_key", input.conversationKey)
-    .eq("actor_member_id", input.actorMemberId)
-    .eq("source", input.source)
-    .eq("operation_type", input.operationType)
-    .eq("status", "AWAITING_CONFIRMATION")
-    .eq("updated_at", input.expectedUpdatedAt)
-    .select(
-      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
-    )
-    .maybeSingle();
-
-  if (error) throw persistenceError("update", error);
-  return data ? mapRow(data as PendingProposalRow) : null;
+  if (input.source !== "WEB" || !input.webConfirmationSnapshot || !input.expectedVersion) {
+    throw persistenceError(
+      "update proposal",
+      new Error("Only authenticated Web or fenced WhatsApp proposals are supported"),
+    );
+  }
+  const data = await callWebProposalRpc(
+    "fn_update_web_pending_proposal",
+    {
+      p_proposal_id: input.id,
+      p_household_id: input.householdId,
+      p_conversation_key: input.conversationKey,
+      p_operation_type: input.operationType,
+      p_expected_version: input.expectedVersion,
+      p_payload: storagePayload(input.payload, input.webConfirmationSnapshot),
+    },
+    "update Web proposal",
+  );
+  return data ? mapRow(requireProposalRow(data, "update Web proposal", "fn_update_web_pending_proposal")) : null;
 }
 
 export async function findPendingProposal(
   id: string,
   householdId: string,
   conversationKey: string,
+  source: ExpenseSource,
 ): Promise<PendingExpenseProposal | null> {
+  if (source === "WEB") {
+    const data = await callWebProposalRpc(
+      "fn_get_web_pending_proposal",
+      {
+        p_proposal_id: id,
+        p_household_id: householdId,
+        p_conversation_key: conversationKey,
+        p_operation_type: "CREATE_EXPENSE",
+      },
+      "read Web proposal",
+    );
+    return data ? (mapRow(requireProposalRow(data, "read Web proposal", "fn_get_web_pending_proposal")) as PendingExpenseProposal) : null;
+  }
+  if (source !== "WHATSAPP") {
+    throw persistenceError("read proposal", new Error("Receipt proposals have no authorized reader"));
+  }
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,version::text,resolved_at,expense_id,income_id",
     )
     .eq("id", id)
     .eq("household_id", householdId)
@@ -364,11 +435,28 @@ export async function findPendingIncomeProposal(
   id: string,
   householdId: string,
   conversationKey: string,
+  source: ExpenseSource,
 ): Promise<PendingIncomeProposal | null> {
+  if (source === "WEB") {
+    const data = await callWebProposalRpc(
+      "fn_get_web_pending_proposal",
+      {
+        p_proposal_id: id,
+        p_household_id: householdId,
+        p_conversation_key: conversationKey,
+        p_operation_type: "CREATE_INCOME",
+      },
+      "read Web income proposal",
+    );
+    return data ? (mapRow(requireProposalRow(data, "read Web income proposal", "fn_get_web_pending_proposal")) as PendingIncomeProposal) : null;
+  }
+  if (source !== "WHATSAPP") {
+    throw persistenceError("read income proposal", new Error("Receipt proposals have no authorized reader"));
+  }
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,version::text,resolved_at,expense_id,income_id",
     )
     .eq("id", id)
     .eq("household_id", householdId)
@@ -389,10 +477,21 @@ export async function findPendingProposalForConversation(
   actorMemberId: string,
   source: PendingExpenseProposalPayload["source"],
 ): Promise<PendingProposal | null> {
+  if (source === "WEB") {
+    const data = await callWebProposalRpc(
+      "fn_get_web_active_pending_proposal",
+      { p_household_id: householdId, p_conversation_key: conversationKey },
+      "read active Web proposal",
+    );
+    return data ? mapRow(requireProposalRow(data, "read active Web proposal", "fn_get_web_active_pending_proposal")) : null;
+  }
+  if (source !== "WHATSAPP") {
+    throw persistenceError("read conversation proposal", new Error("Receipt proposals have no authorized reader"));
+  }
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,version::text,resolved_at,expense_id,income_id",
     )
     .eq("household_id", householdId)
     .eq("conversation_key", conversationKey)
@@ -419,10 +518,21 @@ export async function findLatestTerminalProposalForConversation(
   actorMemberId: string,
   source: PendingExpenseProposalPayload["source"],
 ): Promise<PendingProposal | null> {
+  if (source === "WEB") {
+    const data = await callWebProposalRpc(
+      "fn_get_web_latest_terminal_pending_proposal",
+      { p_household_id: householdId, p_conversation_key: conversationKey },
+      "read latest terminal Web proposal",
+    );
+    return data ? mapRow(requireProposalRow(data, "read latest terminal Web proposal", "fn_get_web_latest_terminal_pending_proposal")) : null;
+  }
+  if (source !== "WHATSAPP") {
+    throw persistenceError("read terminal proposal", new Error("Receipt proposals have no authorized reader"));
+  }
   const { data, error } = await getSupabaseAdminClient()
     .from("tb_pending_proposals")
     .select(
-      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
+      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,version::text,resolved_at,expense_id,income_id",
     )
     .eq("household_id", householdId)
     .eq("conversation_key", conversationKey)
@@ -433,9 +543,7 @@ export async function findLatestTerminalProposalForConversation(
 
   const terminalRows = (Array.isArray(data) ? data : [])
     .filter(
-      (row): row is PendingProposalRow =>
-        (row as PendingProposalRow).status === "COMPLETED" ||
-        (row as PendingProposalRow).status === "REJECTED",
+      (row) => row.status === "COMPLETED" || row.status === "REJECTED",
     )
     .filter(
       (row) =>
@@ -528,6 +636,7 @@ export async function confirmPendingExpense(input: {
   conversationKey: string;
   actorMemberId: string;
   source: "WEB" | "WHATSAPP" | "RECEIPT";
+  expectedVersion: string | null;
   expectedUpdatedAt: string | null;
   expense: ExpenseCreatePersistenceInput | null;
   whatsappLease?: {
@@ -579,7 +688,7 @@ export async function confirmPendingExpense(input: {
       const result = await client.rpc(rpcName, {
         p_proposal_id: input.proposalId,
         p_household_id: input.householdId,
-        p_expected_updated_at: input.expectedUpdatedAt,
+        p_expected_version: input.expectedVersion,
       });
       data = result.data;
       error = result.error;
@@ -674,6 +783,7 @@ export async function confirmPendingIncome(input: {
   conversationKey: string;
   actorMemberId: string;
   source: "WEB" | "WHATSAPP" | "RECEIPT";
+  expectedVersion: string | null;
   expectedUpdatedAt: string | null;
   income: IncomeCreatePersistenceInput | null;
   whatsappLease?: {
@@ -725,7 +835,7 @@ export async function confirmPendingIncome(input: {
       const result = await client.rpc(rpcName, {
         p_proposal_id: input.proposalId,
         p_household_id: input.householdId,
-        p_expected_updated_at: input.expectedUpdatedAt,
+        p_expected_version: input.expectedVersion,
       });
       data = result.data;
       error = result.error;
@@ -921,6 +1031,63 @@ async function compensateWhatsAppProposal(
     );
 }
 
+async function compensateWebProposal(
+  id: string,
+  householdId: string,
+  conversationKey: string,
+  operation: "CREATE_EXPENSE" | "CREATE_INCOME",
+  expectedCreatedAt: string | undefined,
+  expectedVersion: string | undefined,
+): Promise<void> {
+  if (!expectedCreatedAt || !expectedVersion) {
+    throw persistenceError(
+      "compensate Web proposal",
+      new Error("Missing proposal creation version"),
+      "fn_compensate_web_pending_proposal",
+    );
+  }
+  const data = await callWebProposalRpc(
+    "fn_compensate_web_pending_proposal",
+    {
+      p_proposal_id: id,
+      p_household_id: householdId,
+      p_conversation_key: conversationKey,
+      p_operation_type: operation,
+      p_expected_created_at: expectedCreatedAt,
+      p_expected_version: expectedVersion,
+    },
+    "compensate Web proposal",
+  );
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data)
+  ) {
+    throw persistenceError(
+      "compensate Web proposal",
+      new Error("Invalid proposal compensation result"),
+      "fn_compensate_web_pending_proposal",
+    );
+  }
+  const status = (data as { status?: string }).status;
+  if (status === "VERSION_CONFLICT") {
+    throw new PendingProposalRepositoryError(
+      "VERSION_CONFLICT",
+      "The proposal changed before compensation.",
+      null,
+      "compensate Web proposal",
+      "fn_compensate_web_pending_proposal",
+    );
+  }
+  if (status !== "REMOVED" && status !== "NOT_FOUND") {
+    throw persistenceError(
+      "compensate Web proposal",
+      new Error("Unexpected proposal compensation result"),
+      "fn_compensate_web_pending_proposal",
+    );
+  }
+}
+
 /**
  * Consumes a proposal atomically. The partial unique index prevents a second
  * active proposal for the same conversation, and this conditional delete
@@ -930,9 +1097,10 @@ export async function consumePendingProposal(
   id: string,
   householdId: string,
   conversationKey: string,
-  actorMemberId: string,
   source: ExpenseSource,
   event?: WhatsAppEventFence,
+  expectedCreatedAt?: string,
+  expectedVersion?: string,
 ): Promise<PendingExpenseProposal | null> {
   if (source === "WHATSAPP") {
     await compensateWhatsAppProposal(
@@ -943,34 +1111,28 @@ export async function consumePendingProposal(
     );
     return null;
   }
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_pending_proposals")
-    .delete()
-    .eq("id", id)
-    .eq("household_id", householdId)
-    .eq("conversation_key", conversationKey)
-    .eq("actor_member_id", actorMemberId)
-    .eq("source", source)
-    .eq("operation_type", "CREATE_EXPENSE")
-    .eq("status", "AWAITING_CONFIRMATION")
-    .select(
-      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
-    )
-    .maybeSingle();
-
-  if (error) throw persistenceError("consume", error);
-  return data
-    ? (mapRow(data as PendingProposalRow) as PendingExpenseProposal)
-    : null;
+  if (source !== "WEB") {
+    throw persistenceError("compensate proposal", new Error("Receipt proposal compensation is unavailable"));
+  }
+  await compensateWebProposal(
+    id,
+    householdId,
+    conversationKey,
+    "CREATE_EXPENSE",
+    expectedCreatedAt,
+    expectedVersion,
+  );
+  return null;
 }
 
 export async function consumePendingIncomeProposal(
   id: string,
   householdId: string,
   conversationKey: string,
-  actorMemberId: string,
   source: ExpenseSource,
   event?: WhatsAppEventFence,
+  expectedCreatedAt?: string,
+  expectedVersion?: string,
 ): Promise<PendingIncomeProposal | null> {
   if (source === "WHATSAPP") {
     await compensateWhatsAppProposal(
@@ -981,25 +1143,18 @@ export async function consumePendingIncomeProposal(
     );
     return null;
   }
-  const { data, error } = await getSupabaseAdminClient()
-    .from("tb_pending_proposals")
-    .delete()
-    .eq("id", id)
-    .eq("household_id", householdId)
-    .eq("conversation_key", conversationKey)
-    .eq("actor_member_id", actorMemberId)
-    .eq("source", source)
-    .eq("operation_type", "CREATE_INCOME")
-    .eq("status", "AWAITING_CONFIRMATION")
-    .select(
-      "id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status,created_at,updated_at,resolved_at,expense_id,income_id",
-    )
-    .maybeSingle();
-
-  if (error) throw persistenceError("consume income", error);
-  return data
-    ? (mapRow(data as PendingProposalRow) as PendingIncomeProposal)
-    : null;
+  if (source !== "WEB") {
+    throw persistenceError("compensate income proposal", new Error("Receipt proposal compensation is unavailable"));
+  }
+  await compensateWebProposal(
+    id,
+    householdId,
+    conversationKey,
+    "CREATE_INCOME",
+    expectedCreatedAt,
+    expectedVersion,
+  );
+  return null;
 }
 
 export async function restorePendingProposal(
