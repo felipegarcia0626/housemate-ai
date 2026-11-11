@@ -151,6 +151,9 @@ async function main() {
     await bootstrapClient.end();
 
     for (const migrationPath of await sqlFiles(migrationDirectory)) {
+      const isForensicEvidenceMigration =
+        path.basename(migrationPath) ===
+        "0059_whatsapp_ambiguous_receipt_evidence.sql";
       if (path.basename(migrationPath) === "0030_household_membership_lifecycle.sql") {
         const fixturePath = path.join(fixtureDirectory, "0030_household_legacy_fixture.sql");
         const fixtureClient = postgres.getPgClient("housemate_test");
@@ -161,6 +164,66 @@ async function main() {
           await fixtureClient.end();
         }
       }
+      if (isForensicEvidenceMigration) {
+        // Backfill fixtures must not leave permanent UNKNOWN/UNCERTAIN blockers
+        // in the shared suite database. Exercise the pre-migration backfill in
+        // a database clone of the 0058 schema, then discard that whole test DB.
+        const forensicDatabase = "housemate_forensic_0059_test";
+        const forensicFixturePath = path.join(
+          fixtureDirectory,
+          "0059_whatsapp_ambiguous_receipts.sql",
+        );
+        const forensicTestPath = path.join(
+          testDirectory,
+          "phase-4-whatsapp-receipt-forensic-retention.sql",
+        );
+        let forensicClient;
+        let forensicDatabaseCreated = false;
+        try {
+          const maintenanceClient = postgres.getPgClient("postgres");
+          await maintenanceClient.connect();
+          try {
+            await maintenanceClient.query(
+              `CREATE DATABASE ${forensicDatabase} TEMPLATE housemate_test`,
+            );
+            forensicDatabaseCreated = true;
+          } finally {
+            await maintenanceClient.end();
+          }
+
+          forensicClient = postgres.getPgClient(forensicDatabase);
+          await forensicClient.connect();
+          await runSqlFile(
+            forensicClient,
+            forensicFixturePath,
+            "migration fixture 0059_whatsapp_ambiguous_receipts.sql",
+          );
+          await runSqlFile(
+            forensicClient,
+            migrationPath,
+            `migration ${path.basename(migrationPath)} with historical fixtures`,
+          );
+          await runSqlFile(
+            forensicClient,
+            forensicTestPath,
+            `SQL test ${path.basename(forensicTestPath)} with historical fixtures`,
+          );
+        } finally {
+          if (forensicClient) await forensicClient.end();
+          if (forensicDatabaseCreated) {
+            const maintenanceClient = postgres.getPgClient("postgres");
+            await maintenanceClient.connect();
+            try {
+              await maintenanceClient.query(
+                `DROP DATABASE ${forensicDatabase}`,
+              );
+            } finally {
+              await maintenanceClient.end();
+            }
+          }
+        }
+      }
+
       const client = postgres.getPgClient("housemate_test");
       await client.connect();
       try {
@@ -409,6 +472,12 @@ async function main() {
     }
 
     for (const testPath of await sqlFiles(testDirectory)) {
+      if (
+        path.basename(testPath) ===
+        "phase-4-whatsapp-receipt-forensic-retention.sql"
+      ) {
+        continue;
+      }
       const client = postgres.getPgClient("housemate_test");
       await client.connect();
       try {

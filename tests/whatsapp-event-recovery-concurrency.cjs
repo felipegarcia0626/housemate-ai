@@ -1385,6 +1385,68 @@ module.exports = async function eventRecovery(postgres) {
       "PASS retention removes expired payload and preserves deduplication tombstone",
     );
 
+    const forensicEvent = "recovery-forensic-unknown-" + randomUUID();
+    const forensicRequestDigest = await result(
+      inspect,
+      "SELECT public.fn_whatsapp_event_fingerprint($1,$2,'123456',$3) AS result",
+      [forensicEvent, sender(13), digest],
+    );
+    const forensicProcessedEvent = randomUUID();
+    await inspect.query(
+      "INSERT INTO public.tb_processed_whatsapp_events(id,external_event_id,processed_at) VALUES($1,$2,clock_timestamp()-interval '31 days')",
+      [forensicProcessedEvent, forensicEvent],
+    );
+    await inspect.query(
+      [
+        "INSERT INTO public.tb_whatsapp_event_receipts(",
+        "external_event_id,request_digest,event_kind,processing_state,delivery_state,",
+        "identity_snapshot,admission_selection,conversation_digest,business_result,",
+        "operation_digest,artifacts,reply_template,reply_text,reply_guard,reply_expires_at,",
+        "delivery_epoch,delivery_attempts,http_status,provider_code,created_at,updated_at",
+        ") VALUES($1,$2,'MESSAGE','COMPLETED','UNKNOWN',",
+        "'{\"message\":\"recovery-forensic-sensitive-sentinel\"}',",
+        "'{\"selection\":\"recovery-forensic-sensitive-sentinel\"}',$3,",
+        "'{\"status\":\"CREATED\",\"expense_id\":\"59000000-0059-4000-8000-000000000901\"}',",
+        "$4,'{}','TEXT_V1','recovery-forensic-sensitive-sentinel',",
+        "'{\"financial\":true}',clock_timestamp()-interval '1 day',2,3,503,131047,",
+        "clock_timestamp()-interval '31 days',clock_timestamp()-interval '30 days')",
+      ].join(" "),
+      [forensicEvent, forensicRequestDigest, "c".repeat(64), "d".repeat(64)],
+    );
+    assert.ok(
+      (
+        await inspect.query(
+          "SELECT public.fn_purge_whatsapp_event_payloads(1000) AS n",
+        )
+      ).rows[0].n >= 1,
+    );
+    const forensicEvidence = await result(
+      inspect,
+      "SELECT to_jsonb(e) AS result FROM public.tb_whatsapp_event_forensic_evidence e WHERE processed_event_id=$1",
+      [forensicProcessedEvent],
+    );
+    assert.equal(forensicEvidence.capture_method, "PURGER");
+    assert.equal(forensicEvidence.delivery_state_before_purge, "UNKNOWN");
+    assert.equal(forensicEvidence.delivery_state_after_purge, "UNKNOWN");
+    assert.equal(forensicEvidence.http_status, 503);
+    assert.equal(forensicEvidence.provider_code, 131047);
+    assert.equal(forensicEvidence.business_result_status, "CREATED");
+    assert.equal(
+      JSON.stringify(forensicEvidence).includes(
+        "recovery-forensic-sensitive-sentinel",
+      ),
+      false,
+    );
+    const forensicReceiptBeforeReplay = await receipt(forensicEvent);
+    assert.equal(
+      (await claim(first, 13, forensicEvent, randomUUID())).status,
+      "UNKNOWN",
+    );
+    assert.deepEqual(await receipt(forensicEvent), forensicReceiptBeforeReplay);
+    console.log(
+      "PASS UNKNOWN purge stores redacted forensic evidence and redelivery remains closed",
+    );
+
     for (const [n, change] of [
       [7, "MEMBERSHIP"],
       [8, "HOUSEHOLD"],

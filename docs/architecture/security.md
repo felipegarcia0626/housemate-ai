@@ -295,7 +295,8 @@ invocación del Agent. `npm run test:sql` pasó el 2026-11-10 en PostgreSQL
 embebido descartable con 0057. Esto no es evidencia de migración remota, de
 transporte JWT firmado, ni de entrega real por Meta.
 
-El cambio local 0058 extiende ese patrón a la compensación. El wrapper creador
+El incremento 0058, publicado en Git mediante `ed9cdad` pero no aplicado remotamente,
+extiende ese patrón a la compensación. El wrapper creador
 guarda la versión monotónica de 0056 como texto decimal en el artefacto del evento;
 la compensación exige ese token, bloquea la propuesta y compara la versión antes
 de eliminarla, repitiendo el CAS en el `DELETE`. Los artefactos previos a 0058 que
@@ -314,8 +315,8 @@ la validación local más reciente, `npm run test:sql` terminó en PASS
 (`SQL_EXIT=0`): las migraciones 0001–0058 se aplicaron en PostgreSQL embebido y
 aislado, y `whatsapp-event-recovery-concurrency.cjs` y
 `whatsapp-event-http-sql.cjs` terminaron en PASS. También pasaron `git diff --check`
-y `node --check` en ambos harnesses. 0058 sigue siendo local y no se ha
-aplicado remotamente. Estas pruebas no demuestran ACL remotas, runtime desplegado,
+y `node --check` en ambos harnesses. 0058 está publicado en Git mediante `ed9cdad`,
+pero no se ha aplicado remotamente. Estas pruebas no demuestran ACL remotas, runtime desplegado,
 transporte JWT firmado ni entrega real de Meta; las funciones tampoco impiden DML
 privilegiado directo.
 
@@ -326,6 +327,31 @@ entrega real de Meta siguen pendientes; el hallazgo permanece `IN_PROGRESS`.
 La asociación de recibos con gastos se mantiene dentro de la creación protegida;
 en el corte también debe retirarse el UPDATE directo de `tb_receipts.expense_id`
 sin eliminar los permisos de análisis de recibos que el repositorio aún necesita.
+
+## Preservación forense de receipts ambiguos — 0059 local
+
+La migración local 0059 añade una proyección privada y redactada de receipts
+`UNKNOWN`/`UNCERTAIN` antes de que el purger borre campos sensibles. La captura y
+la purga son atómicas; los fallos de captura revierten ambas. La evidencia se
+identifica por el UUID interno del evento, no conserva payload, texto, teléfono,
+tokens, respuesta original ni contenido o importes financieros, y no tiene
+expiración automática. Los timestamps provienen de columnas locales del
+receipt/evento, no de una marca temporal provista por Meta. No hay grants para
+`PUBLIC`, `anon`, `authenticated` ni `service_role`. Los triggers rechazan `UPDATE` y `DELETE`, por
+lo que la evidencia es append-only frente a los roles de aplicación bajo estos
+privilegios. No es inmutable frente al propietario de PostgreSQL o un administrador
+con capacidad para cambiar el DDL: `TRUNCATE` no activa triggers por fila. No se
+identificó una ruta de aplicación para alterar la evidencia.
+
+El backfill disponible queda marcado como `PARTIAL_HISTORICAL`; causas no
+presentes en el receipt se registran como `NOT_RECORDED`. La proyección no es una
+resolución, no autoriza reintentos ni entregas, y no cambia el estado o el conteo
+de blockers: `UNKNOWN` y `UNCERTAIN` siguen impidiendo `LINK_ONLY`. Aún no existe
+un procedimiento de resolución. `npm run test:sql` terminó con PASS (exit code 0)
+en PostgreSQL local embebido y aislado: migraciones 0001–0059, fixture histórico,
+backfill, prueba de retención y harnesses posteriores de recuperación,
+concurrencia y HTTP. 0059 sigue local y no está aplicada remotamente; no se han
+verificado ACL remotas, transporte JWT real, runtime desplegado ni entrega de Meta.
 
 ## 1. Propósito
 

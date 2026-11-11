@@ -207,7 +207,27 @@ Reproducir una sola vez, retirar la instrumentación inmediatamente y verificar
 que el working tree vuelva al estado inicial. Nunca registrar claves, tokens,
 body, prompts, mensajes completos ni respuestas crudas de OpenAI.
 
-## 8. Regla de seguridad y cierre
+## 8. Receipts `UNKNOWN`/`UNCERTAIN` y evidencia 0059
+
+0059 añade localmente evidencia forense mínima antes de que el purger redacte un
+receipt ambiguo. La evidencia conserva estados, timestamps y epochs disponibles,
+UUIDs internos de correlación, estado de resultado allowlisted, códigos técnicos
+estructurados y referencias allowlist de propuesta/operación/versión cuando
+existan. Los timestamps son de registro local, no de Meta. Excluye el ID externo,
+texto, número telefónico, tokens, respuesta original, payload e importes o
+contenido financiero.
+Los registros no tienen TTL; el backfill que ya tenía datos purgados se marca
+`PARTIAL_HISTORICAL`, y no se inventan causas ausentes (`NOT_RECORDED`).
+
+Esta evidencia no resuelve un evento ni autoriza reejecutar el Agent, repetir una
+mutación o reenviar una respuesta. `UNKNOWN` y `UNCERTAIN` siguen bloqueando la
+transición a `LINK_ONLY`. No existe todavía un procedimiento de resolución
+autorizada: ante evidencia insuficiente o contradictoria, conservar el estado y
+solicitar una decisión a un responsable autorizado; no modificar receipts ni
+movimientos con SQL manual. 0059 solo está en el checkout local hasta su publicación/aplicación;
+las pruebas locales no acreditan comportamiento remoto.
+
+## 9. Regla de seguridad y cierre
 
 - No relajar HMAC.
 - No aceptar `householdId`, `actorMemberId` o `conversationKey` desde WhatsApp.

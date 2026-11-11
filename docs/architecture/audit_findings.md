@@ -278,7 +278,8 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 - **Criterio de resolución:** Auditar la recuperación local de respuestas y completar la reconciliación operativa de `UNKNOWN`/`UNCERTAIN`; demostrar el bloqueo y drenaje de instancias, verificar el runtime desplegado y validar la entrega real de Meta sin repetir mutaciones financieras.
 - **Implementación local:** 0046–0047 separan resultado/entrega, checkpoint atómico
   Expense/Income, begin único, fences independientes y permisos de envío revalidados.
-  0058 refuerza localmente la compensación de propuestas con la versión monotónica
+  0058, publicado en Git mediante `ed9cdad` y pendiente de aplicación remota,
+  refuerza la compensación de propuestas con la versión monotónica
   de 0056 y checkpoint para `REMOVED`/`NOT_FOUND`; no se garantiza que DML
   privilegiado directo pase por esos wrappers. UNKNOWN/UNCERTAIN son cierres
   deliberados, sin reintento automático. No se promete exactly-once HTTP ni
@@ -305,7 +306,7 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
   SQL y comprueba que la redelivery no reinvoca el Agent. `npm run test:sql`
   terminó con exit 0 el 2026-11-10 sobre PostgreSQL embebido descartable e incluyó
   la migración 0057 y ambos harnesses. Esto no prueba JWT/PostgREST real ni Meta.
-- **Checkpoint de compensación (0058, cambio local no aplicado remotamente):** el
+- **Checkpoint de compensación (0058, publicado en Git en `ed9cdad`; no aplicado remotamente):** el
   wrapper creador guarda la versión monotónica como texto decimal en el artefacto.
   La compensación rechaza artefactos anteriores sin versión o con token inválido,
   compara la versión bajo `FOR UPDATE` y la repite en el `DELETE`. `REMOVED` y un
@@ -320,6 +321,28 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
   `whatsapp-event-http-sql.cjs` terminaron en PASS. También pasaron `git diff --check`
   y `node --check` en ambos harnesses. Esta evidencia no demuestra
   aplicación remota, ACL remotas, runtime desplegado ni entrega real de Meta.
+- **Preservación forense (0059, implementación local):** antes de purgar un receipt
+  `UNKNOWN`/`UNCERTAIN`, el purger conserva una proyección tipada y redactada,
+  identificada por el UUID interno del evento. Incluye estados antes/después,
+  timestamps disponibles (incluido `processed_at`, hora local de registro y no
+  timestamp de Meta), epochs/generación, presencia (no valores) de tokens y
+  leases, UUIDs de contexto/resultados, estado de resultado allowlisted, códigos
+  HTTP/proveedor y referencias allowlist de propuestas con operación/versión. No
+  copia el ID externo, texto, teléfono, tokens, respuesta, JSON completo ni
+  contenido/importes financieros. El backfill
+  marca como `PARTIAL_HISTORICAL` la evidencia existente; causas no disponibles
+  se registran como `NOT_RECORDED`. La evidencia no tiene TTL y el purger no la
+  sobrescribe ni elimina. La captura y la redacción son atómicas: si falla la
+  captura, también se revierte la purga. Los receipts conservan su estado ambiguo
+  y siguen contando como blockers de `LINK_ONLY`; preservar datos no reconcilia
+  ni autoriza retry/entrega. Todavía no existe una operación o procedimiento de
+  resolución autorizada. `npm run test:sql` terminó con PASS (exit code 0) en
+  PostgreSQL local embebido y aislado: se aplicaron las migraciones 0001–0059,
+  completaron el fixture histórico y el backfill 0059, y pasó
+  `phase-4-whatsapp-receipt-forensic-retention.sql`, junto con los harnesses
+  posteriores de recuperación, concurrencia y HTTP. Esta evidencia local no
+  demuestra aplicación en Supabase remoto, ACL remotas, transporte JWT real,
+  runtime desplegado ni entrega de Meta.
 - **Pendiente:** reconciliación manual de `UNKNOWN`/`UNCERTAIN`, evidencia externa
   de bloqueo y drenaje de invocaciones antes de `LINK_ONLY`, aplicación y runtime
   desplegados, y prueba de entrega real de Meta. No se consultó ni modificó ningún
