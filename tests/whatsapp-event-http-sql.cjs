@@ -33,6 +33,7 @@ module.exports = async function eventHttpSql(postgres) {
     provider = "success",
     revokeBeforeDelivery = false;
   const logs = [];
+  const sentTexts = [];
   const rpc = async (name, args) => {
     assert.match(name, /^fn_[a-z_]+$/);
     assert.ok(
@@ -51,6 +52,7 @@ module.exports = async function eventHttpSql(postgres) {
         "fn_assert_whatsapp_active_context",
         "fn_release_whatsapp_context_lease",
         "fn_confirm_whatsapp_income_event",
+        "fn_reject_whatsapp_proposal_event",
       ].includes(name),
     );
     try {
@@ -72,8 +74,10 @@ module.exports = async function eventHttpSql(postgres) {
       );
       const sql = `SELECT to_jsonb(public.${name}(${entries.map(([key], i) => `${key}=>$${i + 1}`).join(",")})) AS result`;
       const value = (await db.query(sql, values)).rows[0].result;
-      if (dropRpc === name) {
-        dropRpc = null;
+      const shouldDrop =
+        dropRpc instanceof Set ? dropRpc.delete(name) : dropRpc === name;
+      if (shouldDrop) {
+        if (!(dropRpc instanceof Set)) dropRpc = null;
         return { data: null, error: { code: "08006" } };
       }
       return { data: value, error: null };
@@ -179,6 +183,26 @@ module.exports = async function eventHttpSql(postgres) {
           income: {},
         };
       }
+      if (mode === "reject") {
+        const repository = load(
+          path.join(root, "modules/agent/pending-proposal.repository.ts"),
+        );
+        const rejected = await repository.rejectPendingProposal({
+          proposalId: proposal.id,
+          householdId: hh,
+          conversationKey: `whatsapp:${emitter}:${sender}`,
+          actorMemberId: user,
+          source: "WHATSAPP",
+          operationType: "CREATE_INCOME",
+          whatsappLease: context.whatsappExecution,
+        });
+        assert.equal(rejected.status, "REJECTED");
+        return {
+          type: "REJECTED",
+          proposalId: proposal.id,
+          status: "REJECTED",
+        };
+      }
       return {
         type: "UNSUPPORTED",
         message: "Respuesta persistida de prueba.",
@@ -225,8 +249,12 @@ module.exports = async function eventHttpSql(postgres) {
     process.env.WHATSAPP_ACCESS_TOKEN = "local-event-token";
     process.env.WHATSAPP_PHONE_NUMBER_ID = emitter;
     console.info = (...args) => logs.push(args);
-    global.fetch = async () => {
+    global.fetch = async (_url, init) => {
       sends++;
+      if (typeof init?.body === "string") {
+        const payload = JSON.parse(init.body);
+        sentTexts.push(payload.text?.body);
+      }
       if (provider === "timeout")
         throw new DOMException("private-timeout", "TimeoutError");
       return { ok: true, status: 200 };
@@ -337,6 +365,63 @@ module.exports = async function eventHttpSql(postgres) {
     const afterFinancial = { agentCalls, sends };
     assert.equal((await post("http-financial-commit-lost", "sí")).status, 200);
     assert.deepEqual({ agentCalls, sends }, afterFinancial);
+
+    const rejectedProposalId = randomUUID();
+    proposal = (
+      await inspect.query(
+        "INSERT INTO public.tb_pending_proposals(id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status) VALUES($1,$2,$3,$4,'WHATSAPP','CREATE_INCOME',$5,'AWAITING_CONFIRMATION') RETURNING to_jsonb(tb_pending_proposals) AS row",
+        [
+          rejectedProposalId,
+          hh,
+          `whatsapp:${emitter}:${sender}`,
+          user,
+          JSON.stringify({ actorMemberId: user, source: "WHATSAPP" }),
+        ],
+      )
+    ).rows[0].row;
+    mode = "reject";
+    const rejectionEvent = "http-rejection-response-lost";
+    const beforeRejectionAgentCalls = agentCalls,
+      beforeRejectionSends = sends;
+    // Simulate a committed reject whose response and fail-event response are
+    // both lost. The next webhook delivery must use the stored receipt text.
+    dropRpc = new Set([
+      "fn_reject_whatsapp_proposal_event",
+      "fn_fail_whatsapp_event",
+    ]);
+    assert.equal((await post(rejectionEvent, "no")).status, 500);
+    const rejectedReceipt = await eventReceipt(rejectionEvent);
+    const rejectedProposal = (
+      await inspect.query(
+        "SELECT to_jsonb(p) AS row FROM public.tb_pending_proposals p WHERE p.id=$1",
+        [rejectedProposalId],
+      )
+    ).rows[0].row;
+    assert.equal(rejectedReceipt.business_result.status, "REJECTED");
+    assert.equal(rejectedReceipt.reply_text, "Operación rechazada.");
+    assert.equal(rejectedReceipt.delivery_state, "READY");
+    assert.equal(rejectedReceipt.processing_state, "COMPLETED");
+    assert.equal(rejectedProposal.status, "REJECTED");
+    assert.equal(rejectedProposal.version, 2);
+    assert.equal(agentCalls, beforeRejectionAgentCalls + 1);
+    assert.equal(sends, beforeRejectionSends);
+    assert.equal(dropRpc.size, 0);
+
+    assert.equal((await post(rejectionEvent, "no")).status, 200);
+    const afterRejectionRetry = await eventReceipt(rejectionEvent);
+    const rejectedProposalAfterRetry = (
+      await inspect.query(
+        "SELECT to_jsonb(p) AS row FROM public.tb_pending_proposals p WHERE p.id=$1",
+        [rejectedProposalId],
+      )
+    ).rows[0].row;
+    assert.equal(afterRejectionRetry.delivery_state, "ACCEPTED");
+    assert.equal(afterRejectionRetry.reply_text, "Operación rechazada.");
+    assert.equal(rejectedProposalAfterRetry.status, "REJECTED");
+    assert.equal(rejectedProposalAfterRetry.version, 2);
+    assert.equal(agentCalls, beforeRejectionAgentCalls + 1);
+    assert.equal(sends, beforeRejectionSends + 1);
+    assert.equal(sentTexts.at(-1), "Operación rechazada.");
 
     mode = "read";
     revokeBeforeDelivery = true;

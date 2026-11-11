@@ -473,6 +473,119 @@ module.exports = async function eventRecovery(postgres) {
       );
     }
 
+    const rejected = await prepare(8, "CREATE_INCOME");
+    const rejectConversation = `whatsapp:123456:${sender(8)}`;
+    const reject = (client) =>
+      result(
+        client,
+        "SELECT public.fn_reject_whatsapp_proposal_event($1,$2,1,$3,$4,'CREATE_INCOME') AS result",
+        [rejected.event, rejected.token, rejected.proposal.id, rejectConversation],
+      );
+    const beforeRejectedCheckpoint = await state(8, rejected.event);
+
+    await inspect.query(`CREATE FUNCTION public.test_rejection_checkpoint_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.business_result IS NOT NULL AND OLD.business_result IS NULL THEN RAISE EXCEPTION 'injected rejection checkpoint failure' USING ERRCODE='P0001'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER test_rejection_checkpoint_failure BEFORE UPDATE ON public.tb_whatsapp_event_receipts FOR EACH ROW EXECUTE FUNCTION public.test_rejection_checkpoint_failure()`);
+    await assert.rejects(
+      reject(first),
+      (err) =>
+        err.code === "P0001" &&
+        err.message === "injected rejection checkpoint failure",
+    );
+    assert.deepEqual(
+      await state(8, rejected.event),
+      beforeRejectedCheckpoint,
+    );
+    await inspect.query(
+      "DROP TRIGGER test_rejection_checkpoint_failure ON public.tb_whatsapp_event_receipts; DROP FUNCTION public.test_rejection_checkpoint_failure()",
+    );
+
+    // A concurrent duplicate wrapper call blocks behind the checkpoint
+    // transaction and then returns its immutable result without rejecting twice.
+    await first.query("BEGIN");
+    const rejectionOutcome = await reject(first);
+    assert.equal(rejectionOutcome.status, "REJECTED");
+    const waitConcurrentReject = await waiting(second);
+    const concurrentRejection = reject(second);
+    await waitConcurrentReject();
+    await first.query("COMMIT");
+    assert.deepEqual(await concurrentRejection, rejectionOutcome);
+
+    const afterRejectedCheckpoint = await state(8, rejected.event);
+    const rejectedProposal = afterRejectedCheckpoint.proposals.find(
+      (row) => row.id === rejected.proposal.id,
+    );
+    assert.equal(rejectedProposal.status, "REJECTED");
+    assert.equal(rejectedProposal.version, 2);
+    assert.equal(
+      afterRejectedCheckpoint.receipt.business_result.status,
+      "REJECTED",
+    );
+    assert.equal(
+      afterRejectedCheckpoint.receipt.reply_text,
+      "Operación rechazada.",
+    );
+    assert.equal(afterRejectedCheckpoint.receipt.reply_template, "TEXT_V1");
+    assert.equal(afterRejectedCheckpoint.receipt.delivery_state, "READY");
+    assert.equal(afterRejectedCheckpoint.receipt.processing_state, "RUNNING");
+    assert.equal(afterRejectedCheckpoint.receipt.operation_digest.length, 64);
+    assert.equal(afterRejectedCheckpoint.incomes.length, 0);
+    assert.deepEqual(await state(8, rejected.event), afterRejectedCheckpoint);
+
+    assert.equal(
+      (
+        await result(
+          first,
+          "SELECT public.fn_finish_whatsapp_event($1,$2,1,'TEXT_V1','Operación rechazada.','{\"financial\":true}') AS result",
+          [rejected.event, rejected.token],
+        )
+      ).status,
+      "COMPLETED",
+    );
+    await first.query(
+      "SELECT public.fn_release_whatsapp_context_lease($1,$2,$3)",
+      [uid(8), rejected.admission.leaseId, rejected.admission.contextEpoch],
+    );
+    assert.equal(
+      (await claim(second, 8, rejected.event, randomUUID())).status,
+      "READY",
+    );
+    const rejectionDeliveryToken = randomUUID();
+    const rejectionDelivery = await result(
+      second,
+      "SELECT public.fn_prepare_whatsapp_delivery($1,$2,'123456',$3,$4) AS result",
+      [
+        rejected.event,
+        sender(8),
+        digest,
+        rejectionDeliveryToken,
+      ],
+    );
+    assert.equal(rejectionDelivery.status, "SEND");
+    assert.equal(rejectionDelivery.text, "Operación rechazada.");
+    assert.equal(
+      (
+        await result(
+          second,
+          "SELECT public.fn_finish_whatsapp_delivery($1,$2,$3,'ACCEPTED',200,NULL) AS result",
+          [rejected.event, rejectionDeliveryToken, rejectionDelivery.epoch],
+        )
+      ).status,
+      "ACCEPTED",
+    );
+    assert.equal(
+      (await claim(first, 8, rejected.event, randomUUID())).status,
+      "DUPLICATE",
+    );
+    assert.equal(
+      (await state(8, rejected.event)).proposals.find(
+        (row) => row.id === rejected.proposal.id,
+      ).version,
+      2,
+    );
+    console.log(
+      "PASS WhatsApp proposal rejection checkpoint rollback, concurrent replay, stored-response redelivery and single mutation",
+    );
+
     const p = await prepare(4, "CREATE_INCOME");
     await first.query(
       "SELECT public.fn_update_whatsapp_proposal_event($1,$2,1,$3,$4,'CREATE_INCOME','{}',$5)",
@@ -937,8 +1050,15 @@ module.exports = async function eventRecovery(postgres) {
       ),
       true,
     );
-    const rejectId = randomUUID(),
-      compensateId = randomUUID();
+    const missingProposalOutcome = await result(
+      first,
+      "SELECT public.fn_confirm_whatsapp_income_event($1,$2,2,$3,$4,NULL,$5,NULL,NULL,NULL,NULL) AS result",
+      [reserved, newToken, randomUUID(), conversation, uid(10)],
+    );
+    assert.equal(missingProposalOutcome.status, "NOT_FOUND");
+    assert.equal((await receipt(reserved)).business_result, null);
+
+    const rejectId = randomUUID();
     const createArgs = [
       reserved,
       newToken,
@@ -960,32 +1080,42 @@ module.exports = async function eventRecovery(postgres) {
       ).status,
       "REJECTED",
     );
-    for (const [proposalId, expected] of [
-      [rejectId, "REJECTED"],
-      [randomUUID(), "NOT_FOUND"],
-    ]) {
-      const rejectedOutcome = await result(
-        first,
-        "SELECT public.fn_confirm_whatsapp_income_event($1,$2,2,$3,$4,NULL,$5,NULL,NULL,NULL,NULL) AS result",
-        [reserved, newToken, proposalId, conversation, uid(10)],
-      );
-      assert.equal(rejectedOutcome.status, expected);
-      assert.equal((await receipt(reserved)).business_result, null);
-    }
-    createArgs[2] = compensateId;
-    await first.query(
-      "SELECT public.fn_create_whatsapp_proposal_event($1,$2,2,$3,$4,'CREATE_INCOME',$5)",
-      createArgs,
+    const rejectedCheckpoint = await receipt(reserved);
+    assert.equal(rejectedCheckpoint.business_result.status, "REJECTED");
+    assert.equal(rejectedCheckpoint.reply_text, "Operación rechazada.");
+    await assert.rejects(
+      first.query(
+        "SELECT public.fn_confirm_whatsapp_income_event($1,$2,2,$3,$4,NULL,$5,NULL,NULL,NULL,NULL)",
+        [reserved, newToken, rejectId, conversation, uid(10)],
+      ),
+      (err) =>
+        err.code === "40001" && err.message === "Event operation changed",
     );
+    assert.deepEqual(await receipt(reserved), rejectedCheckpoint);
+
+    const compensation = await prepare(8, "CREATE_INCOME");
     assert.equal(
       (
         await result(
           first,
-          "SELECT public.fn_compensate_whatsapp_proposal_event($1,$2,2,$3,$4,'CREATE_INCOME') AS result",
-          createArgs.slice(0, 4),
+          "SELECT public.fn_compensate_whatsapp_proposal_event($1,$2,1,$3,$4,'CREATE_INCOME') AS result",
+          [
+            compensation.event,
+            compensation.token,
+            compensation.proposal.id,
+            `whatsapp:123456:${sender(8)}`,
+          ],
         )
       ).status,
       "REMOVED",
+    );
+    await first.query(
+      "SELECT public.fn_finish_whatsapp_event($1,$2,1,'TEXT_V1','Fixture compensation','{}')",
+      [compensation.event, compensation.token],
+    );
+    await first.query(
+      "SELECT public.fn_release_whatsapp_context_lease($1,$2,$3)",
+      [uid(8), compensation.admission.leaseId, compensation.admission.contextEpoch],
     );
     const macro = (
       await inspect.query(

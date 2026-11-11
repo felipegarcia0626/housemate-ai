@@ -274,7 +274,29 @@ Mapa de sustitución para el corte (solo después de verificar el despliegue):
 | --- | --- | --- |
 | `expense.repository.ts` | `fn_create_web_expense`, `fn_update_web_expense`, `fn_delete_web_expense` para mutaciones Web; lecturas y validaciones auxiliares conservan algunos accesos `service_role` | `fn_create_expense_eligible`, `fn_update_expense_eligible`, `fn_delete_expense_eligible` no tienen EXECUTE para `service_role`; las funciones base y DML directo están cerrados por 0052 |
 | `income.repository.ts` | `fn_create_web_income`, `fn_update_web_income`, `fn_delete_web_income` para mutaciones Web; lecturas conservan `service_role` | Las tres RPC genéricas de CRUD no tienen EXECUTE para `service_role`; DML directo está cerrado por 0052 |
-| `pending-proposal.repository.ts` | 0054 está publicado en Git como `e2c2f343d379ca4924f83e47d4d53bf2316d5c7b` y define confirmación/rechazo Web con JWT. 0055/0056 son cambios locales: 0055 migra el ciclo Web a RPC autenticadas y 0056 usa `version` `bigint` serializada como texto decimal para las operaciones Web de corrección, confirmación y compensación. El trigger fija `version = 1` al insertar y cada UPDATE establece `OLD.version + 1`, incluidos cambios de estado. Un UPDATE de `service_role` no puede elegir el valor; borrar y recrear privilegiadamente una fila con el mismo UUID reiniciaría la versión. No se identificó un caller actual que haga ese ciclo ni evidencia de explotación por `authenticated`. WhatsApp conserva sus wrappers 0047 y su contrato basado en `updated_at`. En la validación local más reciente, las migraciones 0055/0056 se aplicaron solo al PostgreSQL embebido temporal y pasaron `phase-4-web-pending-proposal-lifecycle.sql`, `web-pending-proposal-concurrency.cjs`, `whatsapp-authorization-concurrency.cjs`, `whatsapp-linking-http-sql.cjs`, `whatsapp-event-recovery-concurrency.cjs`, `whatsapp-event-http-sql.cjs` y `npm run test:sql`. Estas pruebas no validan JWT firmado por Next.js/PostgREST. No se han aplicado las migraciones remotamente ni verificado el runtime activo. | 0055 conserva `service_role` sobre la tabla y funciones heredadas por compatibilidad con WhatsApp y consumidores anteriores. `restorePendingProposal` y `restorePendingIncomeProposal` siguen exportadas sin callers encontrados en el checkout. La comprobación de privilegios heredados y el corte requieren verificar runtime desplegado y ACL efectivas. `updated_at` sigue siendo auditoría/ordenamiento, no un token CAS fiable porque `fn_set_updated_at()` usa `now()`, estable dentro de una transacción. |
+| `pending-proposal.repository.ts` | 0054 está publicado en Git como `e2c2f343d379ca4924f83e47d4d53bf2316d5c7b` y define confirmación/rechazo Web con JWT. 0055/0056 están versionadas en Git desde `b5d9610d0740e2e7f740a904fe5104281fda37c9`: 0055 migra el ciclo Web a RPC autenticadas y 0056 usa `version` `bigint` serializada como texto decimal para las operaciones Web de corrección, confirmación y compensación. El trigger fija `version = 1` al insertar y cada UPDATE establece `OLD.version + 1`, incluidos cambios de estado. Un UPDATE de `service_role` no puede elegir el valor; borrar y recrear privilegiadamente una fila con el mismo UUID reiniciaría la versión. No se identificó un caller actual que haga ese ciclo ni evidencia de explotación por `authenticated`. WhatsApp conserva sus wrappers 0047 y su contrato basado en `updated_at`. En la validación local más reciente, las migraciones 0055/0056 se aplicaron solo al PostgreSQL embebido temporal y pasaron `phase-4-web-pending-proposal-lifecycle.sql`, `web-pending-proposal-concurrency.cjs`, `whatsapp-authorization-concurrency.cjs`, `whatsapp-linking-http-sql.cjs`, `whatsapp-event-recovery-concurrency.cjs`, `whatsapp-event-http-sql.cjs` y `npm run test:sql`. Estas pruebas no validan JWT firmado por Next.js/PostgREST. No se han aplicado las migraciones remotamente ni verificado el runtime activo. | 0055 conserva `service_role` sobre la tabla y funciones heredadas por compatibilidad con WhatsApp y consumidores anteriores. `restorePendingProposal` y `restorePendingIncomeProposal` siguen exportadas sin callers encontrados en el checkout. La comprobación de privilegios heredados y el corte requieren verificar runtime desplegado y ACL efectivas. `updated_at` sigue siendo auditoría/ordenamiento, no un token CAS fiable porque `fn_set_updated_at()` usa `now()`, estable dentro de una transacción. |
+
+## Recuperación del rechazo de propuestas WhatsApp — FINDING-012 / 0057
+
+La migración local 0057 reemplaza `fn_reject_whatsapp_proposal_event` para que,
+cuando el resultado sea `REJECTED`, la mutación y su checkpoint ocurran en la
+misma transacción PostgreSQL. El receipt guarda `business_result`, digest,
+respuesta `TEXT_V1` y guard financiero. Un fallo al persistir el checkpoint
+revierte también el rechazo. El runtime existente maneja un receipt `READY`
+entregando la respuesta guardada; la redelivery no vuelve a invocar el Agent ni
+a mutar la propuesta.
+
+`whatsapp-event-recovery-concurrency.cjs` prueba el rollback conjunto, replay
+concurrente, estado de propuesta y receipt, y una sola mutación. El harness local
+`whatsapp-event-http-sql.cjs` simula la pérdida de respuestas SQL después del
+commit y verifica que la redelivery use el texto persistido sin una segunda
+invocación del Agent. `npm run test:sql` pasó el 2026-11-10 en PostgreSQL
+embebido descartable con 0057. Esto no es evidencia de migración remota, de
+transporte JWT firmado, ni de entrega real por Meta.
+
+La reconciliación operativa de `UNKNOWN` y `UNCERTAIN`, la evidencia externa de
+bloqueo/drenaje de invocaciones antes de `LINK_ONLY`, el runtime desplegado y la
+entrega real de Meta siguen pendientes; el hallazgo permanece `IN_PROGRESS`.
 
 La asociación de recibos con gastos se mantiene dentro de la creación protegida;
 en el corte también debe retirarse el UPDATE directo de `tb_receipts.expense_id`
@@ -507,28 +529,34 @@ Cuando el evento proporcione un identificador único, se deberá utilizar para e
 
 El backend persistirá ese valor en `ProcessedWhatsAppEvent.external_event_id`, que tendrá una restricción de unicidad en PostgreSQL. La deduplicación no dependerá de memoria del proceso.
 
-La inserción del identificador será atómica. Un conflicto de unicidad indicará un reintento y se responderá sin ejecutar nuevamente el agente o las operaciones financieras.
+La admisión, el resultado del negocio y el estado de entrega se registran en
+receipts persistentes con lease y fencing. Si el receipt tiene una respuesta
+recuperable en `READY` o `RETRYABLE`, una redelivery puede volver a entregar el
+texto guardado sin ejecutar otra vez el Agent ni la mutación financiera. La
+migración 0057 extiende ese checkpoint atómico al rechazo de propuestas.
 
-WhatsApp adquiere primero el lease de contexto por usuario y luego reserva el
-evento. Si un envío outbound falla después de reservar el evento, una redelivery
-con el mismo identificador seguirá siendo duplicada y no reintentará la
-respuesta; el usuario deberá enviar un nuevo mensaje. El lease evita procesar
-en paralelo eventos distintos del mismo usuario, pero no sustituye una cola de
-reintentos.
+Un permiso de envío que vence en `SENDING` se clasifica como `UNKNOWN`, y un
+resultado de negocio incierto queda `UNCERTAIN`; ninguno se reintenta
+automáticamente. Estos estados requieren reconciliación. El lease evita procesar
+en paralelo eventos distintos del mismo usuario, pero no demuestra por sí solo
+que no queden invocaciones externas activas ni sustituye el control de drenaje.
 
 Conceptualmente:
 
 WhatsApp Event
 │
 ▼
-¿Ya fue procesado?
+¿Existe un receipt para el identificador?
 ┌──┴──┐
 Sí No
 │ │
 ▼ ▼
-Ignorar Procesar
+Recuperar estado y Procesar una vez
+respuesta guardada
 
-Si el identificador ya existe, el backend responderá al reintento sin volver a ejecutar el agente, tools ni operaciones financieras.
+La redelivery no vuelve a ejecutar el Agent ni las operaciones financieras. Un
+receipt duplicado sin respuesta recuperable no genera un envío nuevo; `UNKNOWN`
+y `UNCERTAIN` permanecen cerrados hasta su reconciliación.
 
 Este mecanismo debe mantenerse sencillo.
 

@@ -270,20 +270,39 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 
 - **Fecha:** 2026-10-25
 - **Área:** WhatsApp / idempotencia de respuesta outbound
-- **Descripción:** El webhook reserva persistentemente el ID del evento antes de resolver el hogar y procesar el mensaje. Si el procesamiento o el envío outbound falla después de esa reserva, una redelivery del mismo evento se clasifica como duplicada y no vuelve a procesar ni enviar la respuesta.
-- **Impacto:** Un fallo transitorio posterior a la reserva puede dejar al usuario sin respuesta aunque Meta reintente la entrega. La reserva sigue evitando que una redelivery repita mutaciones financieras.
+- **Descripción:** El webhook registra persistentemente el evento antes de resolver el hogar y procesar el mensaje. Si el receipt conserva un `business_result` y una respuesta recuperable, una redelivery puede recuperar y entregar el texto guardado sin volver a ejecutar el Agent ni la mutación financiera. Si no existe un resultado recuperable, no es seguro repetir el procesamiento; `UNKNOWN` y `UNCERTAIN` no se reintentan automáticamente.
+- **Impacto:** Un fallo puede dejar al usuario sin respuesta cuando no hay resultado recuperable o la entrega queda incierta. La recuperación tampoco tiene que ocurrir en la primera redelivery: un evento todavía vigente o en procesamiento puede seguir ocupado hasta finalizar o expirar. La reserva evita que una redelivery repita mutaciones financieras.
 - **Prioridad:** MEDIUM
-- **Estado:** IN_PROGRESS (implementado localmente; pendiente de auditoría y corte operativo).
+- **Estado:** IN_PROGRESS (0057 implementada localmente; pendiente de auditoría y corte operativo).
 - **Origen/detección:** Revisión del orden `reserveWhatsAppEvent()` → resolución/Agent → `sendWhatsAppReply()` en `modules/whatsapp/whatsapp.service.ts`; el incidente de producción reportado anteriormente mostró una redelivery clasificada como duplicada tras fallar el envío outbound.
-- **Criterio de resolución:** Diseñar un incremento independiente de recuperación de entregas que permita reintentar respuestas sin volver a aplicar operaciones financieras, con pruebas de fallos antes y después de cualquier mutación.
+- **Criterio de resolución:** Auditar la recuperación local de respuestas y completar la reconciliación operativa de `UNKNOWN`/`UNCERTAIN`; demostrar el bloqueo y drenaje de instancias, verificar el runtime desplegado y validar la entrega real de Meta sin repetir mutaciones financieras.
 - **Implementación local:** 0046–0047 separan resultado/entrega, checkpoint atómico
   Expense/Income, begin único, fences independientes, compensación con versión y
   permisos de envío revalidados. UNKNOWN/UNCERTAIN son cierres deliberados, sin
   reintento automático. No se promete exactly-once HTTP ni reparación de históricos.
+- **Checkpoint de rechazo (0057, local; no aplicado remotamente):**
+  `fn_reject_whatsapp_proposal_event` persiste en la misma transacción el resultado
+  `REJECTED`, el `operation_digest` y la respuesta `TEXT_V1` recuperable. El digest
+  identifica la operación mediante el nombre de operación, la propuesta, la
+  conversación y el tipo de operación; no es un hash de `business_result` ni de
+  `reply_text`. Si falla el checkpoint, PostgreSQL revierte también el rechazo.
+  Un replay directo con el mismo digest devuelve el resultado mientras el wrapper
+  aún acepta el token y estado del evento; otro digest sobre el mismo receipt
+  produce conflicto. La redelivery posterior recuperable usa la ruta `READY` para
+  entregar el texto persistido, sin volver a invocar el Agent ni repetir la mutación.
 - **Evidencia:** phase-4-whatsapp-event-receipts.sql,
   whatsapp-event-recovery-concurrency.cjs y whatsapp-event-http-sql.cjs prueban
   rollback del checkpoint/vínculo, COMMIT con respuesta perdida, redelivery,
   revocación, retención, permisos y carreras con lifecycle de memberships.
   El harness WhatsApp cubre HMAC, secretos, timeout y una sola llamada outbound.
-- **Pendiente:** auditoría independiente, corte verificable de consumidores
-  antiguos, aplicación/despliegue autorizados y pruebas manuales posteriores.
+- **Evidencia de 0057:** `whatsapp-event-recovery-concurrency.cjs` prueba rollback
+  conjunto ante fallo inyectado del checkpoint, rechazo concurrente/replay,
+  resultado y respuesta persistidos, entrega del texto guardado y ausencia de una
+  segunda mutación. `whatsapp-event-http-sql.cjs` simula la pérdida de respuestas
+  SQL y comprueba que la redelivery no reinvoca el Agent. `npm run test:sql`
+  terminó con exit 0 el 2026-11-10 sobre PostgreSQL embebido descartable e incluyó
+  la migración 0057 y ambos harnesses. Esto no prueba JWT/PostgREST real ni Meta.
+- **Pendiente:** reconciliación manual de `UNKNOWN`/`UNCERTAIN`, evidencia externa
+  de bloqueo y drenaje de invocaciones antes de `LINK_ONLY`, aplicación y runtime
+  desplegados, y prueba de entrega real de Meta. No se consultó ni modificó ningún
+  entorno remoto.
