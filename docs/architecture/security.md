@@ -276,9 +276,10 @@ Mapa de sustitución para el corte (solo después de verificar el despliegue):
 | `income.repository.ts` | `fn_create_web_income`, `fn_update_web_income`, `fn_delete_web_income` para mutaciones Web; lecturas conservan `service_role` | Las tres RPC genéricas de CRUD no tienen EXECUTE para `service_role`; DML directo está cerrado por 0052 |
 | `pending-proposal.repository.ts` | 0054 está publicado en Git como `e2c2f343d379ca4924f83e47d4d53bf2316d5c7b` y define confirmación/rechazo Web con JWT. 0055/0056 están versionadas en Git desde `b5d9610d0740e2e7f740a904fe5104281fda37c9`: 0055 migra el ciclo Web a RPC autenticadas y 0056 usa `version` `bigint` serializada como texto decimal para las operaciones Web de corrección, confirmación y compensación. El trigger fija `version = 1` al insertar y cada UPDATE establece `OLD.version + 1`, incluidos cambios de estado. Un UPDATE de `service_role` no puede elegir el valor; borrar y recrear privilegiadamente una fila con el mismo UUID reiniciaría la versión. No se identificó un caller actual que haga ese ciclo ni evidencia de explotación por `authenticated`. WhatsApp conserva sus wrappers 0047 y su contrato basado en `updated_at`. En la validación local más reciente, las migraciones 0055/0056 se aplicaron solo al PostgreSQL embebido temporal y pasaron `phase-4-web-pending-proposal-lifecycle.sql`, `web-pending-proposal-concurrency.cjs`, `whatsapp-authorization-concurrency.cjs`, `whatsapp-linking-http-sql.cjs`, `whatsapp-event-recovery-concurrency.cjs`, `whatsapp-event-http-sql.cjs` y `npm run test:sql`. Estas pruebas no validan JWT firmado por Next.js/PostgREST. No se han aplicado las migraciones remotamente ni verificado el runtime activo. | 0055 conserva `service_role` sobre la tabla y funciones heredadas por compatibilidad con WhatsApp y consumidores anteriores. `restorePendingProposal` y `restorePendingIncomeProposal` siguen exportadas sin callers encontrados en el checkout. La comprobación de privilegios heredados y el corte requieren verificar runtime desplegado y ACL efectivas. `updated_at` sigue siendo auditoría/ordenamiento, no un token CAS fiable porque `fn_set_updated_at()` usa `now()`, estable dentro de una transacción. |
 
-## Recuperación del rechazo de propuestas WhatsApp — FINDING-012 / 0057
+## Recuperación de rechazo y compensación de propuestas WhatsApp — FINDING-012 / 0057–0058
 
-La migración local 0057 reemplaza `fn_reject_whatsapp_proposal_event` para que,
+La migración 0057, publicada en Git en `94c456a` pero no aplicada remotamente,
+reemplaza `fn_reject_whatsapp_proposal_event` para que,
 cuando el resultado sea `REJECTED`, la mutación y su checkpoint ocurran en la
 misma transacción PostgreSQL. El receipt guarda `business_result`, digest,
 respuesta `TEXT_V1` y guard financiero. Un fallo al persistir el checkpoint
@@ -293,6 +294,30 @@ commit y verifica que la redelivery use el texto persistido sin una segunda
 invocación del Agent. `npm run test:sql` pasó el 2026-11-10 en PostgreSQL
 embebido descartable con 0057. Esto no es evidencia de migración remota, de
 transporte JWT firmado, ni de entrega real por Meta.
+
+El cambio local 0058 extiende ese patrón a la compensación. El wrapper creador
+guarda la versión monotónica de 0056 como texto decimal en el artefacto del evento;
+la compensación exige ese token, bloquea la propuesta y compara la versión antes
+de eliminarla, repitiendo el CAS en el `DELETE`. Los artefactos previos a 0058 que
+no contienen versión fallan cerrados con `VERSION_CONFLICT`; `updated_at` no se
+usa como sustituto. `REMOVED` y `NOT_FOUND` dentro del contexto del evento guardan
+`business_result`, digest y respuesta `TEXT_V1` en una transacción. `NOT_FOUND`
+no altera una propuesta. Un replay idéntico recupera el resultado; un digest
+distinto entra en conflicto. Si falla el checkpoint tras `REMOVED`, PostgreSQL
+revierte también la eliminación. El EXECUTE existente de `service_role` se
+conserva; 0058 no cambia los wrappers 0047 de confirmación o rechazo.
+
+Las regresiones se ampliaron para el CAS obsoleto dentro de una sola transacción,
+versiones de artefacto ausentes, resultados `REMOVED`/`NOT_FOUND`, replay,
+conflictos de digest, rollback y recuperación HTTP tras perder la respuesta. En
+la validación local más reciente, `npm run test:sql` terminó en PASS
+(`SQL_EXIT=0`): las migraciones 0001–0058 se aplicaron en PostgreSQL embebido y
+aislado, y `whatsapp-event-recovery-concurrency.cjs` y
+`whatsapp-event-http-sql.cjs` terminaron en PASS. También pasaron `git diff --check`
+y `node --check` en ambos harnesses. 0058 sigue siendo local y no se ha
+aplicado remotamente. Estas pruebas no demuestran ACL remotas, runtime desplegado,
+transporte JWT firmado ni entrega real de Meta; las funciones tampoco impiden DML
+privilegiado directo.
 
 La reconciliación operativa de `UNKNOWN` y `UNCERTAIN`, la evidencia externa de
 bloqueo/drenaje de invocaciones antes de `LINK_ONLY`, el runtime desplegado y la

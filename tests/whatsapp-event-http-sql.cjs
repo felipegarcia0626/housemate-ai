@@ -26,6 +26,7 @@ module.exports = async function eventHttpSql(postgres) {
   ];
   const oldEnv = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   let agentCalls = 0,
+    compensationCalls = 0,
     sends = 0,
     dropRpc = null,
     mode = "read",
@@ -53,8 +54,12 @@ module.exports = async function eventHttpSql(postgres) {
         "fn_release_whatsapp_context_lease",
         "fn_confirm_whatsapp_income_event",
         "fn_reject_whatsapp_proposal_event",
+        "fn_create_whatsapp_proposal_event",
+        "fn_compensate_whatsapp_proposal_event",
       ].includes(name),
     );
+    if (name === "fn_compensate_whatsapp_proposal_event")
+      compensationCalls++;
     try {
       if (name === "fn_prepare_whatsapp_delivery" && revokeBeforeDelivery) {
         revokeBeforeDelivery = false;
@@ -203,6 +208,46 @@ module.exports = async function eventHttpSql(postgres) {
           status: "REJECTED",
         };
       }
+      if (mode === "compensate" || mode === "compensate-not-found") {
+        const repository = load(
+          path.join(root, "modules/agent/pending-proposal.repository.ts"),
+        );
+        const conversationKey = `whatsapp:${emitter}:${sender}`;
+        const created = await repository.createPendingIncomeProposal({
+          id: randomUUID(),
+          householdId: hh,
+          conversationKey,
+          payload: {
+            actorMemberId: user,
+            source: "WHATSAPP",
+            income: {
+              memberId: user,
+              amount: 42,
+              incomeDate: "2026-10-29",
+              description: "HTTP SQL compensation fixture",
+              categoryId: null,
+            },
+          },
+          whatsappLease: context.whatsappExecution,
+        });
+        proposal = created;
+        if (mode === "compensate-not-found") {
+          // Test-only privileged fixture mutation: the event artifact remains,
+          // while the proposal row is genuinely absent before compensation.
+          await inspect.query(
+            "DELETE FROM public.tb_pending_proposals WHERE id=$1",
+            [created.id],
+          );
+        }
+        await repository.consumePendingIncomeProposal(
+          created.id,
+          hh,
+          conversationKey,
+          "WHATSAPP",
+          context.whatsappExecution.event,
+        );
+        throw new Error("Injected failure after proposal compensation");
+      }
       return {
         type: "UNSUPPORTED",
         message: "Respuesta persistida de prueba.",
@@ -282,6 +327,8 @@ module.exports = async function eventHttpSql(postgres) {
         )
       ).rows[0].row;
 
+    mode = "compensate";
+    const beforeUncertain = { agentCalls, compensationCalls };
     dropRpc = "fn_begin_whatsapp_event";
     assert.equal((await post("http-begin-response-lost")).status, 500);
     assert.equal(agentCalls, 0);
@@ -292,7 +339,14 @@ module.exports = async function eventHttpSql(postgres) {
     );
     assert.equal((await post("http-begin-response-lost")).status, 200);
     assert.equal(agentCalls, 0);
+    assert.equal(compensationCalls, beforeUncertain.compensationCalls);
     assert.equal(sends, 0);
+    mode = "read";
+    assert.deepEqual(
+      { agentCalls, compensationCalls },
+      beforeUncertain,
+      "UNCERTAIN must not retry the Agent or compensation",
+    );
 
     delete process.env.WHATSAPP_ACCESS_TOKEN;
     assert.equal((await post("http-retryable")).status, 500);
@@ -423,6 +477,113 @@ module.exports = async function eventHttpSql(postgres) {
     assert.equal(sends, beforeRejectionSends + 1);
     assert.equal(sentTexts.at(-1), "Operación rechazada.");
 
+    mode = "compensate";
+    const compensationEvent = "http-compensation-response-lost";
+    const beforeCompensationAgentCalls = agentCalls,
+      beforeCompensationCalls = compensationCalls,
+      beforeCompensationSends = sends;
+    dropRpc = new Set([
+      "fn_compensate_whatsapp_proposal_event",
+      "fn_fail_whatsapp_event",
+    ]);
+    assert.equal((await post(compensationEvent, "crear ingreso")).status, 500);
+    const compensatedReceipt = await eventReceipt(compensationEvent);
+    const compensatedProposal = (
+      await inspect.query(
+        "SELECT to_jsonb(p) AS row FROM public.tb_pending_proposals p WHERE p.id=$1",
+        [proposal.id],
+      )
+    ).rows[0];
+    assert.equal(compensatedReceipt.business_result.status, "REMOVED");
+    assert.equal(compensatedReceipt.business_result.proposal_id, proposal.id);
+    assert.equal(
+      compensatedReceipt.business_result.operation,
+      "COMPENSATE_PROPOSAL",
+    );
+    assert.equal(compensatedReceipt.reply_template, "TEXT_V1");
+    assert.equal(
+      compensatedReceipt.reply_text,
+      "No se pudo completar la solicitud. La propuesta fue cancelada.",
+    );
+    assert.equal(compensatedReceipt.delivery_state, "READY");
+    assert.equal(compensatedReceipt.processing_state, "COMPLETED");
+    assert.equal(compensatedProposal, undefined);
+    assert.equal(agentCalls, beforeCompensationAgentCalls + 1);
+    assert.equal(compensationCalls, beforeCompensationCalls + 1);
+    assert.equal(sends, beforeCompensationSends);
+    assert.equal(dropRpc.size, 0);
+
+    assert.equal((await post(compensationEvent, "crear ingreso")).status, 200);
+    const compensationAfterRetry = await eventReceipt(compensationEvent);
+    assert.equal(compensationAfterRetry.delivery_state, "ACCEPTED");
+    assert.equal(
+      compensationAfterRetry.reply_text,
+      "No se pudo completar la solicitud. La propuesta fue cancelada.",
+    );
+    assert.equal(agentCalls, beforeCompensationAgentCalls + 1);
+    assert.equal(compensationCalls, beforeCompensationCalls + 1);
+    assert.equal(sends, beforeCompensationSends + 1);
+    assert.equal(
+      sentTexts.at(-1),
+      "No se pudo completar la solicitud. La propuesta fue cancelada.",
+    );
+
+    mode = "compensate-not-found";
+    const notFoundCompensationEvent = "http-compensation-not-found-response-lost";
+    const beforeNotFoundAgentCalls = agentCalls,
+      beforeNotFoundCompensationCalls = compensationCalls,
+      beforeNotFoundSends = sends;
+    dropRpc = new Set([
+      "fn_compensate_whatsapp_proposal_event",
+      "fn_fail_whatsapp_event",
+    ]);
+    assert.equal(
+      (await post(notFoundCompensationEvent, "crear ingreso")).status,
+      500,
+    );
+    const notFoundReceipt = await eventReceipt(notFoundCompensationEvent);
+    const missingCompensatedProposal = (
+      await inspect.query(
+        "SELECT to_jsonb(p) AS row FROM public.tb_pending_proposals p WHERE p.id=$1",
+        [proposal.id],
+      )
+    ).rows[0];
+    assert.equal(notFoundReceipt.business_result.status, "NOT_FOUND");
+    assert.equal(
+      notFoundReceipt.business_result.proposal_id,
+      proposal.id,
+    );
+    assert.equal(notFoundReceipt.reply_template, "TEXT_V1");
+    assert.equal(
+      notFoundReceipt.reply_text,
+      "No se encontró una propuesta pendiente para cancelar.",
+    );
+    assert.equal(notFoundReceipt.delivery_state, "READY");
+    assert.equal(notFoundReceipt.processing_state, "COMPLETED");
+    assert.equal(missingCompensatedProposal, undefined);
+    assert.equal(agentCalls, beforeNotFoundAgentCalls + 1);
+    assert.equal(compensationCalls, beforeNotFoundCompensationCalls + 1);
+    assert.equal(sends, beforeNotFoundSends);
+    assert.equal(dropRpc.size, 0);
+
+    assert.equal(
+      (await post(notFoundCompensationEvent, "crear ingreso")).status,
+      200,
+    );
+    const afterNotFoundRetry = await eventReceipt(notFoundCompensationEvent);
+    assert.equal(afterNotFoundRetry.delivery_state, "ACCEPTED");
+    assert.equal(
+      afterNotFoundRetry.reply_text,
+      "No se encontró una propuesta pendiente para cancelar.",
+    );
+    assert.equal(agentCalls, beforeNotFoundAgentCalls + 1);
+    assert.equal(compensationCalls, beforeNotFoundCompensationCalls + 1);
+    assert.equal(sends, beforeNotFoundSends + 1);
+    assert.equal(
+      sentTexts.at(-1),
+      "No se encontró una propuesta pendiente para cancelar.",
+    );
+
     mode = "read";
     revokeBeforeDelivery = true;
     const beforeRevokeSends = sends;
@@ -448,6 +609,6 @@ module.exports = async function eventHttpSql(postgres) {
     await Promise.all([db.end(), inspect.end()]);
   }
   console.log(
-    "PASS real webhook/repository SQL: saved reply recovery, lost SQL confirmation, UNKNOWN timeout, and revocation before delivery",
+    "PASS real webhook/repository SQL: saved reply recovery, lost SQL compensation response, UNKNOWN/UNCERTAIN no-retry, and revocation before delivery",
   );
 };

@@ -48,7 +48,7 @@ module.exports = async function eventRecovery(postgres) {
       ).rows.map(({ row }) => row);
     return output;
   }
-  async function prepare(n, kind) {
+  async function prepare(n, kind, { verifyArtifact = true } = {}) {
     const event = `recovery-financial-${n}-${randomUUID()}`,
       token = randomUUID();
     const admission = await claim(first, n, event, token);
@@ -74,6 +74,15 @@ module.exports = async function eventRecovery(postgres) {
         JSON.stringify({ actorMemberId: uid(n), source: "WHATSAPP" }),
       ],
     );
+    if (verifyArtifact) {
+      const artifact = await result(
+        inspect,
+        "SELECT artifacts -> $2 AS result FROM public.tb_whatsapp_event_receipts WHERE external_event_id=$1",
+        [event, proposal.id],
+      );
+      assert.equal(artifact.version, String(proposal.version));
+      assert.equal(artifact.operation, kind);
+    }
     return { event, token, proposal, n, kind, admission };
   }
   function confirm(client, p) {
@@ -96,6 +105,23 @@ module.exports = async function eventRecovery(postgres) {
           "SELECT public.fn_confirm_whatsapp_expense_event($1,$2,1,$3,$4,$5,$6,NULL,NULL,NULL,9,current_date,NULL,'[]',jsonb_build_array(jsonb_build_object('householdMemberId',$6::uuid,'amount',9,'percentage',100))) AS result",
           args,
         );
+  }
+  function compensate(
+    client,
+    p,
+    {
+      proposalId = p.proposal.id,
+      operationType = p.kind,
+      token = p.token,
+      epoch = 1,
+      conversationKey = `whatsapp:123456:${sender(p.n)}`,
+    } = {},
+  ) {
+    return result(
+      client,
+      "SELECT public.fn_compensate_whatsapp_proposal_event($1,$2,$3,$4,$5,$6) AS result",
+      [p.event, token, epoch, proposalId, conversationKey, operationType],
+    );
   }
   async function waiting(client) {
     const pid = (await client.query("SELECT pg_backend_pid() AS pid")).rows[0]
@@ -586,6 +612,524 @@ module.exports = async function eventRecovery(postgres) {
       "PASS WhatsApp proposal rejection checkpoint rollback, concurrent replay, stored-response redelivery and single mutation",
     );
 
+    await inspect.query(
+      "INSERT INTO public.tb_whatsapp_links(id,user_id,sender,status,authorization_version,verified_at) VALUES($1,$1,$2,'ACTIVE',1,now())",
+      [uid(16), sender(16)],
+    );
+    const compensated = await prepare(16, "CREATE_INCOME");
+    const compensationBefore = await state(16, compensated.event);
+    const compensationAcl = (
+      await inspect.query(`
+        SELECT p.prosecdef AS security_definer,
+               pg_get_userbyid(p.proowner) AS owner,
+               p.proconfig AS function_config,
+               has_function_privilege('service_role', p.oid, 'EXECUTE') AS service_role_execute,
+               has_function_privilege('anon', p.oid, 'EXECUTE') AS anon_execute,
+               has_function_privilege('authenticated', p.oid, 'EXECUTE') AS authenticated_execute,
+               EXISTS (
+                 SELECT 1
+                   FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
+                  WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+               ) AS public_execute
+          FROM pg_proc AS p
+         WHERE p.oid = 'public.fn_compensate_whatsapp_proposal_event(text,uuid,bigint,uuid,text,public.pending_operation_type)'::regprocedure
+      `)
+    ).rows[0];
+    assert.deepEqual(compensationAcl, {
+      security_definer: true,
+      owner: "postgres",
+      function_config: ["search_path=pg_catalog"],
+      service_role_execute: true,
+      anon_execute: false,
+      authenticated_execute: false,
+      public_execute: false,
+    });
+
+    const foreignActor = randomUUID(),
+      foreignHousehold = randomUUID(),
+      foreignMember = randomUUID();
+    await inspect.query(
+      "INSERT INTO auth.users(id,email,email_confirmed_at) VALUES($1,'compensation-foreign@example.test',now())",
+      [foreignActor],
+    );
+    await inspect.query(
+      "INSERT INTO public.tb_users(id,auth_user_id,external_identifier,display_name) VALUES($1,$1,$2,'Foreign compensation fixture')",
+      [foreignActor, `supabase:${foreignActor}`],
+    );
+    await inspect.query(
+      "INSERT INTO public.tb_households(id,name) VALUES($1,'Foreign compensation household')",
+      [foreignHousehold],
+    );
+    await inspect.query(
+      "INSERT INTO public.tb_household_members(id,user_id,household_id,display_name,role,status) VALUES($1,$1,$2,'Foreign actor','MEMBER','ACTIVE'),($3,$1,$4,'Foreign household member','MEMBER','ACTIVE')",
+      [foreignActor, household, foreignMember, foreignHousehold],
+    );
+    const foreignActorProposalId = randomUUID(),
+      foreignHouseholdProposalId = randomUUID(),
+      compensationConversation = `whatsapp:123456:${sender(16)}`;
+    const foreignActorProposal = (
+      await inspect.query(
+        "INSERT INTO public.tb_pending_proposals(id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status) VALUES($1,$2,$3,$4,'WHATSAPP','CREATE_INCOME',$5,'AWAITING_CONFIRMATION') RETURNING updated_at,version",
+        [
+          foreignActorProposalId,
+          household,
+          compensationConversation,
+          foreignActor,
+          JSON.stringify({ actorMemberId: foreignActor, source: "WHATSAPP" }),
+        ],
+      )
+    ).rows[0];
+    const foreignHouseholdProposal = (
+      await inspect.query(
+        "INSERT INTO public.tb_pending_proposals(id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status) VALUES($1,$2,$3,$4,'WHATSAPP','CREATE_INCOME',$5,'AWAITING_CONFIRMATION') RETURNING updated_at,version",
+        [
+          foreignHouseholdProposalId,
+          foreignHousehold,
+          compensationConversation,
+          foreignMember,
+          JSON.stringify({ actorMemberId: foreignMember, source: "WHATSAPP" }),
+        ],
+      )
+    ).rows[0];
+    await inspect.query("BEGIN");
+    try {
+      await inspect.query("SAVEPOINT foreign_actor_result");
+      await inspect.query(
+        "UPDATE public.tb_whatsapp_event_receipts SET artifacts=artifacts || $2::jsonb WHERE external_event_id=$1",
+        [
+          compensated.event,
+          JSON.stringify({
+            [foreignActorProposalId]: {
+              updatedAt: foreignActorProposal.updated_at,
+              version: String(foreignActorProposal.version),
+              operation: "CREATE_INCOME",
+            },
+          }),
+        ],
+      );
+      await inspect.query("SET LOCAL ROLE service_role");
+      assert.deepEqual(await compensate(inspect, compensated, {
+        proposalId: foreignActorProposalId,
+      }), {
+        status: "NOT_FOUND",
+        proposal_id: foreignActorProposalId,
+        operation: "COMPENSATE_PROPOSAL",
+      });
+      await inspect.query("RESET ROLE");
+      let checkpoint = await receipt(compensated.event);
+      assert.equal(checkpoint.business_result.status, "NOT_FOUND");
+      assert.equal(checkpoint.reply_template, "TEXT_V1");
+      assert.equal(checkpoint.delivery_state, "READY");
+      assert.equal(
+        (
+          await inspect.query(
+            "SELECT count(*)::int AS n FROM public.tb_pending_proposals WHERE id=$1",
+            [foreignActorProposalId],
+          )
+        ).rows[0].n,
+        1,
+      );
+
+      await inspect.query("ROLLBACK TO SAVEPOINT foreign_actor_result");
+      await inspect.query("RELEASE SAVEPOINT foreign_actor_result");
+      await inspect.query("SAVEPOINT foreign_household_result");
+      await inspect.query(
+        "UPDATE public.tb_whatsapp_event_receipts SET artifacts=artifacts || $2::jsonb WHERE external_event_id=$1",
+        [
+          compensated.event,
+          JSON.stringify({
+            [foreignHouseholdProposalId]: {
+              updatedAt: foreignHouseholdProposal.updated_at,
+              version: String(foreignHouseholdProposal.version),
+              operation: "CREATE_INCOME",
+            },
+          }),
+        ],
+      );
+      await inspect.query("SET LOCAL ROLE service_role");
+      assert.deepEqual(await compensate(inspect, compensated, {
+        proposalId: foreignHouseholdProposalId,
+      }), {
+        status: "NOT_FOUND",
+        proposal_id: foreignHouseholdProposalId,
+        operation: "COMPENSATE_PROPOSAL",
+      });
+      await inspect.query("RESET ROLE");
+      checkpoint = await receipt(compensated.event);
+      assert.equal(checkpoint.business_result.status, "NOT_FOUND");
+      assert.equal(checkpoint.reply_template, "TEXT_V1");
+      assert.equal(checkpoint.delivery_state, "READY");
+      assert.equal(
+        (
+          await inspect.query(
+            "SELECT count(*)::int AS n FROM public.tb_pending_proposals WHERE id=$1",
+            [foreignHouseholdProposalId],
+          )
+        ).rows[0].n,
+        1,
+      );
+      await inspect.query("ROLLBACK TO SAVEPOINT foreign_household_result");
+      await inspect.query("RELEASE SAVEPOINT foreign_household_result");
+    } finally {
+      await inspect.query("ROLLBACK");
+    }
+    assert.deepEqual(await state(16, compensated.event), compensationBefore);
+
+    const missingActor = uid(18),
+      missingSender = sender(18);
+    await inspect.query(
+      "INSERT INTO auth.users(id,email,email_confirmed_at) VALUES($1,'compensation-not-found@example.test',now())",
+      [missingActor],
+    );
+    await inspect.query(
+      "INSERT INTO public.tb_users(id,auth_user_id,external_identifier,display_name) VALUES($1,$1,$2,'Compensation not found fixture')",
+      [missingActor, `supabase:${missingActor}`],
+    );
+    await inspect.query(
+      "INSERT INTO public.tb_household_members(id,user_id,household_id,display_name,role,status) VALUES($1,$1,$2,'Compensation not found','MEMBER','ACTIVE')",
+      [missingActor, household],
+    );
+    await inspect.query(
+      "INSERT INTO public.tb_whatsapp_links(id,user_id,sender,status,authorization_version,verified_at) VALUES($1,$2,$3,'ACTIVE',1,now())",
+      [randomUUID(), missingActor, missingSender],
+    );
+    const missingCompensation = await prepare(18, "CREATE_INCOME");
+    await inspect.query(
+      "DELETE FROM public.tb_pending_proposals WHERE id=$1",
+      [missingCompensation.proposal.id],
+    );
+    const beforeNotFoundCheckpoint = await state(
+      18,
+      missingCompensation.event,
+    );
+    await inspect.query(`CREATE FUNCTION public.test_compensation_checkpoint_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.business_result IS NOT NULL AND OLD.business_result IS NULL THEN RAISE EXCEPTION 'injected compensation checkpoint failure' USING ERRCODE='P0001'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER test_compensation_checkpoint_failure BEFORE UPDATE ON public.tb_whatsapp_event_receipts FOR EACH ROW EXECUTE FUNCTION public.test_compensation_checkpoint_failure()`);
+    try {
+      await assert.rejects(
+        compensate(first, missingCompensation),
+        (err) =>
+          err.code === "P0001" &&
+          err.message === "injected compensation checkpoint failure",
+      );
+      const afterFailedNotFoundCheckpoint = await state(
+        18,
+        missingCompensation.event,
+      );
+      assert.deepEqual(
+        afterFailedNotFoundCheckpoint,
+        beforeNotFoundCheckpoint,
+      );
+      assert.equal(
+        afterFailedNotFoundCheckpoint.receipt.business_result,
+        null,
+      );
+      assert.equal(
+        afterFailedNotFoundCheckpoint.receipt.operation_digest,
+        null,
+      );
+      assert.equal(afterFailedNotFoundCheckpoint.receipt.reply_template, null);
+      assert.equal(afterFailedNotFoundCheckpoint.receipt.reply_text, null);
+      assert.equal(
+        afterFailedNotFoundCheckpoint.receipt.delivery_state,
+        beforeNotFoundCheckpoint.receipt.delivery_state,
+      );
+      assert.equal(
+        afterFailedNotFoundCheckpoint.proposals.some(
+          (row) => row.id === missingCompensation.proposal.id,
+        ),
+        false,
+      );
+    } finally {
+      await inspect.query(
+        "DROP TRIGGER IF EXISTS test_compensation_checkpoint_failure ON public.tb_whatsapp_event_receipts; DROP FUNCTION IF EXISTS public.test_compensation_checkpoint_failure()",
+      );
+    }
+
+    const missingOutcome = await compensate(first, missingCompensation);
+    assert.deepEqual(missingOutcome, {
+      status: "NOT_FOUND",
+      proposal_id: missingCompensation.proposal.id,
+      operation: "COMPENSATE_PROPOSAL",
+    });
+    const afterNotFound = await state(18, missingCompensation.event);
+    assert.equal(
+      afterNotFound.proposals.some(
+        (row) => row.id === missingCompensation.proposal.id,
+      ),
+      false,
+    );
+    assert.deepEqual(afterNotFound.receipt.business_result, missingOutcome);
+    assert.equal(afterNotFound.receipt.operation_digest.length, 64);
+    assert.equal(afterNotFound.receipt.reply_template, "TEXT_V1");
+    assert.equal(
+      afterNotFound.receipt.reply_text,
+      "No se encontró una propuesta pendiente para cancelar.",
+    );
+    assert.equal(afterNotFound.receipt.delivery_state, "READY");
+    assert.deepEqual(
+      await compensate(second, missingCompensation),
+      missingOutcome,
+    );
+    await assert.rejects(
+      compensate(first, missingCompensation, {
+        proposalId: randomUUID(),
+      }),
+      (err) => err.code === "40001" && err.message === "Event operation changed",
+    );
+    assert.deepEqual(await state(18, missingCompensation.event), afterNotFound);
+
+    await inspect.query(`CREATE FUNCTION public.test_compensation_checkpoint_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.business_result IS NOT NULL AND OLD.business_result IS NULL THEN RAISE EXCEPTION 'injected compensation checkpoint failure' USING ERRCODE='P0001'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER test_compensation_checkpoint_failure BEFORE UPDATE ON public.tb_whatsapp_event_receipts FOR EACH ROW EXECUTE FUNCTION public.test_compensation_checkpoint_failure()`);
+    await assert.rejects(
+      compensate(first, compensated),
+      (err) =>
+        err.code === "P0001" &&
+        err.message === "injected compensation checkpoint failure",
+    );
+    assert.deepEqual(await state(16, compensated.event), compensationBefore);
+    await inspect.query(
+      "DROP TRIGGER test_compensation_checkpoint_failure ON public.tb_whatsapp_event_receipts; DROP FUNCTION public.test_compensation_checkpoint_failure()",
+    );
+
+    await assert.rejects(
+      compensate(first, compensated, { token: randomUUID() }),
+      (err) =>
+        err.code === "40001" &&
+        err.message === "WhatsApp event is no longer current",
+    );
+    await assert.rejects(
+      compensate(first, compensated, { epoch: 2 }),
+      (err) =>
+        err.code === "40001" &&
+        err.message === "WhatsApp event is no longer current",
+    );
+    assert.deepEqual(await state(16, compensated.event), compensationBefore);
+
+    await first.query("BEGIN");
+    const compensationOutcome = await compensate(first, compensated);
+    assert.deepEqual(compensationOutcome, {
+      status: "REMOVED",
+      proposal_id: compensated.proposal.id,
+      operation: "COMPENSATE_PROPOSAL",
+    });
+    const waitForDuplicateCompensation = await waiting(second);
+    const duplicateCompensation = compensate(second, compensated);
+    await waitForDuplicateCompensation();
+    await first.query("COMMIT");
+    assert.deepEqual(await duplicateCompensation, compensationOutcome);
+
+    const afterCompensation = await state(16, compensated.event);
+    assert.equal(
+      afterCompensation.proposals.some(
+        (row) => row.id === compensated.proposal.id,
+      ),
+      false,
+    );
+    assert.deepEqual(afterCompensation.receipt.business_result, compensationOutcome);
+    assert.equal(afterCompensation.receipt.operation_digest.length, 64);
+    assert.equal(afterCompensation.receipt.reply_template, "TEXT_V1");
+    assert.equal(
+      afterCompensation.receipt.reply_text,
+      "No se pudo completar la solicitud. La propuesta fue cancelada.",
+    );
+    assert.equal(afterCompensation.receipt.delivery_state, "READY");
+    assert.equal(afterCompensation.receipt.processing_state, "RUNNING");
+
+    await assert.rejects(
+      compensate(first, compensated, {
+        proposalId: randomUUID(),
+        operationType: "CREATE_EXPENSE",
+      }),
+      (err) => err.code === "40001" && err.message === "Event operation changed",
+    );
+    await assert.rejects(
+      first.query(
+        "SELECT public.fn_reject_whatsapp_proposal_event($1,$2,1,$3,$4,'CREATE_INCOME')",
+        [
+          compensated.event,
+          compensated.token,
+          compensated.proposal.id,
+          compensationConversation,
+        ],
+      ),
+      (err) => err.code === "40001" && err.message === "Event operation changed",
+    );
+    assert.deepEqual(await state(16, compensated.event), afterCompensation);
+
+    assert.equal(
+      (
+        await result(
+          first,
+          "SELECT public.fn_fail_whatsapp_event($1,$2,1) AS result",
+          [compensated.event, compensated.token],
+        )
+      ).status,
+      "COMPLETED",
+    );
+    await first.query(
+      "SELECT public.fn_release_whatsapp_context_lease($1,$2,$3)",
+      [uid(16), compensated.admission.leaseId, compensated.admission.contextEpoch],
+    );
+    assert.equal(
+      (await claim(second, 16, compensated.event, randomUUID())).status,
+      "READY",
+    );
+    const compensationDeliveryToken = randomUUID();
+    const compensationDelivery = await result(
+      second,
+      "SELECT public.fn_prepare_whatsapp_delivery($1,$2,'123456',$3,$4) AS result",
+      [compensated.event, sender(16), digest, compensationDeliveryToken],
+    );
+    assert.equal(compensationDelivery.status, "SEND");
+    assert.equal(
+      compensationDelivery.text,
+      "No se pudo completar la solicitud. La propuesta fue cancelada.",
+    );
+    assert.equal(
+      (
+        await result(
+          second,
+          "SELECT public.fn_finish_whatsapp_delivery($1,$2,$3,'ACCEPTED',200,NULL) AS result",
+          [compensated.event, compensationDeliveryToken, compensationDelivery.epoch],
+        )
+      ).status,
+      "ACCEPTED",
+    );
+    assert.equal(
+      (await claim(first, 16, compensated.event, randomUUID())).status,
+      "DUPLICATE",
+    );
+    assert.deepEqual((await state(16, compensated.event)).receipt.business_result, compensationOutcome);
+    console.log(
+      "PASS WhatsApp proposal compensation REMOVED/NOT_FOUND checkpoints, rollback, isolation, fenced replay and concurrent idempotency",
+    );
+
+    // Creation, artifact capture, proposal UPDATE, and stale compensation are
+    // in one transaction. now() keeps updated_at unchanged while 0056 advances
+    // version from 1 to 2.
+    await first.query("BEGIN");
+    try {
+      // inspect cannot see this uncommitted artifact; defer its assertion until
+      // after the RPC caller resets role below, without changing the RPC role.
+      const sameTransaction = await prepare(4, "CREATE_INCOME", {
+        verifyArtifact: false,
+      });
+      await first.query("RESET ROLE");
+      const originalArtifact = await result(
+        first,
+        "SELECT artifacts -> $2 AS result FROM public.tb_whatsapp_event_receipts WHERE external_event_id=$1",
+        [sameTransaction.event, sameTransaction.proposal.id],
+      );
+      assert.equal(originalArtifact.version, "1");
+      assert.equal(originalArtifact.operation, sameTransaction.kind);
+      assert.equal(sameTransaction.proposal.version, 1);
+
+      // A pre-0058 artifact has no version and cannot fall back to updatedAt.
+      await first.query(
+        "UPDATE public.tb_whatsapp_event_receipts SET artifacts=artifacts || jsonb_build_object($2::text,(artifacts -> $2::text) - 'version') WHERE external_event_id=$1",
+        [sameTransaction.event, sameTransaction.proposal.id],
+      );
+      await first.query("SET LOCAL ROLE service_role");
+      assert.equal(
+        (await compensate(first, sameTransaction)).status,
+        "VERSION_CONFLICT",
+      );
+      await first.query("RESET ROLE");
+      let unchanged = await result(
+        first,
+        "SELECT to_jsonb(p) AS result FROM public.tb_pending_proposals p WHERE p.id=$1",
+        [sameTransaction.proposal.id],
+      );
+      assert.equal(unchanged.version, 1);
+      let checkpoint = await result(
+        first,
+        "SELECT to_jsonb(r) AS result FROM public.tb_whatsapp_event_receipts r WHERE external_event_id=$1",
+        [sameTransaction.event],
+      );
+      assert.equal(checkpoint.business_result, null);
+
+      await first.query(
+        "UPDATE public.tb_whatsapp_event_receipts SET artifacts=artifacts || $2::jsonb WHERE external_event_id=$1",
+        [
+          sameTransaction.event,
+          JSON.stringify({
+            [sameTransaction.proposal.id]: {
+              ...originalArtifact,
+              version: "not-a-version",
+            },
+          }),
+        ],
+      );
+      await first.query("SET LOCAL ROLE service_role");
+      assert.equal(
+        (await compensate(first, sameTransaction)).status,
+        "VERSION_CONFLICT",
+      );
+      await first.query("RESET ROLE");
+      unchanged = await result(
+        first,
+        "SELECT to_jsonb(p) AS result FROM public.tb_pending_proposals p WHERE p.id=$1",
+        [sameTransaction.proposal.id],
+      );
+      assert.equal(unchanged.version, 1);
+      checkpoint = await result(
+        first,
+        "SELECT to_jsonb(r) AS result FROM public.tb_whatsapp_event_receipts r WHERE external_event_id=$1",
+        [sameTransaction.event],
+      );
+      assert.equal(checkpoint.business_result, null);
+
+      await first.query(
+        "UPDATE public.tb_whatsapp_event_receipts SET artifacts=artifacts || $2::jsonb WHERE external_event_id=$1",
+        [
+          sameTransaction.event,
+          JSON.stringify({ [sameTransaction.proposal.id]: originalArtifact }),
+        ],
+      );
+      await first.query("SET LOCAL ROLE service_role");
+      await first.query(
+        "SELECT public.fn_update_whatsapp_proposal_event($1,$2,1,$3,$4,'CREATE_INCOME','{}',$5)",
+        [
+          sameTransaction.event,
+          sameTransaction.token,
+          sameTransaction.proposal.id,
+          `whatsapp:123456:${sender(4)}`,
+          sameTransaction.proposal.updated_at,
+        ],
+      );
+      await first.query("RESET ROLE");
+      const modified = await result(
+        first,
+        "SELECT to_jsonb(p) AS result FROM public.tb_pending_proposals p WHERE p.id=$1",
+        [sameTransaction.proposal.id],
+      );
+      assert.equal(modified.version, 2);
+      assert.equal(modified.updated_at, sameTransaction.proposal.updated_at);
+      assert.deepEqual(modified.payload, {});
+
+      await first.query("SET LOCAL ROLE service_role");
+      assert.equal(
+        (await compensate(first, sameTransaction)).status,
+        "VERSION_CONFLICT",
+      );
+      await first.query("RESET ROLE");
+      unchanged = await result(
+        first,
+        "SELECT to_jsonb(p) AS result FROM public.tb_pending_proposals p WHERE p.id=$1",
+        [sameTransaction.proposal.id],
+      );
+      assert.deepEqual(unchanged, modified);
+      checkpoint = await result(
+        first,
+        "SELECT to_jsonb(r) AS result FROM public.tb_whatsapp_event_receipts r WHERE external_event_id=$1",
+        [sameTransaction.event],
+      );
+      assert.equal(checkpoint.business_result, null);
+      assert.equal(checkpoint.delivery_state, "NONE");
+    } finally {
+      await first.query("ROLLBACK");
+    }
+
     const p = await prepare(4, "CREATE_INCOME");
     await first.query(
       "SELECT public.fn_update_whatsapp_proposal_event($1,$2,1,$3,$4,'CREATE_INCOME','{}',$5)",
@@ -598,13 +1142,8 @@ module.exports = async function eventRecovery(postgres) {
       ],
     );
     const modified = await state(4, p.event);
-    const compensate = () =>
-      result(
-        first,
-        "SELECT public.fn_compensate_whatsapp_proposal_event($1,$2,1,$3,$4,'CREATE_INCOME') AS result",
-        [p.event, p.token, p.proposal.id, `whatsapp:123456:${sender(4)}`],
-      );
-    assert.equal((await compensate()).status, "VERSION_CONFLICT");
+    const compensateStaleProposal = () => compensate(first, p);
+    assert.equal((await compensateStaleProposal()).status, "VERSION_CONFLICT");
     assert.deepEqual(await state(4, p.event), modified);
     await inspect.query(
       "UPDATE public.tb_whatsapp_event_receipts SET event_expires_at=clock_timestamp()-interval '1 second' WHERE external_event_id=$1",
@@ -612,7 +1151,7 @@ module.exports = async function eventRecovery(postgres) {
     );
     const expired = await state(4, p.event);
     await assert.rejects(
-      compensate(),
+      compensateStaleProposal(),
       (err) =>
         err.code === "40001" &&
         err.message === "WhatsApp event is no longer current",
@@ -1178,10 +1717,37 @@ module.exports = async function eventRecovery(postgres) {
       "SELECT public.fn_release_whatsapp_context_lease($1,$2,$3)",
       [uid(15), ambiguous.admission.leaseId, ambiguous.admission.contextEpoch],
     );
-    await inspect.query(
-      "UPDATE public.tb_users SET external_identifier=$1 WHERE id=$2",
-      [sender(15), uid(14)],
-    );
+    await inspect.query("BEGIN");
+    try {
+      await inspect.query("SELECT pg_advisory_xact_lock(18443,43)");
+      const legacyOwner = await inspect.query(
+        "UPDATE public.tb_users SET external_identifier=$1 WHERE id=$2 RETURNING id,external_identifier",
+        [sender(15), uid(14)],
+      );
+      assert.equal(legacyOwner.rowCount, 1);
+      assert.equal(legacyOwner.rows[0].id, uid(14));
+      assert.equal(legacyOwner.rows[0].external_identifier, sender(15));
+      const owners = await inspect.query(
+        `SELECT legacy.id AS legacy_owner, linked.user_id AS verified_owner
+         FROM public.tb_users legacy
+         JOIN public.tb_whatsapp_links linked
+           ON linked.sender=$1 AND linked.status='ACTIVE'
+         WHERE legacy.external_identifier=$1`,
+        [sender(15)],
+      );
+      assert.equal(owners.rowCount, 1);
+      assert.equal(owners.rows[0].legacy_owner, uid(14));
+      assert.equal(owners.rows[0].verified_owner, uid(15));
+      const resolution = await inspect.query(
+        "SELECT public.fn_resolve_whatsapp_identity_locked($1) AS identity",
+        [sender(15)],
+      );
+      assert.equal(resolution.rows[0].identity, null);
+      await inspect.query("COMMIT");
+    } catch (error) {
+      await inspect.query("ROLLBACK").catch(() => {});
+      throw error;
+    }
     assert.equal(
       (await claim(first, 15, "recovery-identity-conflict", randomUUID()))
         .status,
@@ -1202,10 +1768,6 @@ module.exports = async function eventRecovery(postgres) {
       "PASS ambiguous legacy/verified ownership blocks admission and saved response without identity disclosure",
     );
 
-    await inspect.query(
-      "INSERT INTO public.tb_whatsapp_links(id,user_id,sender,status,authorization_version,verified_at) VALUES($1,$1,$2,'ACTIVE',1,now())",
-      [uid(16), sender(16)],
-    );
     const initialLease = randomUUID();
     const admitted = await result(
       first,

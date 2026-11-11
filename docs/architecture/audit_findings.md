@@ -273,14 +273,17 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
 - **Descripción:** El webhook registra persistentemente el evento antes de resolver el hogar y procesar el mensaje. Si el receipt conserva un `business_result` y una respuesta recuperable, una redelivery puede recuperar y entregar el texto guardado sin volver a ejecutar el Agent ni la mutación financiera. Si no existe un resultado recuperable, no es seguro repetir el procesamiento; `UNKNOWN` y `UNCERTAIN` no se reintentan automáticamente.
 - **Impacto:** Un fallo puede dejar al usuario sin respuesta cuando no hay resultado recuperable o la entrega queda incierta. La recuperación tampoco tiene que ocurrir en la primera redelivery: un evento todavía vigente o en procesamiento puede seguir ocupado hasta finalizar o expirar. La reserva evita que una redelivery repita mutaciones financieras.
 - **Prioridad:** MEDIUM
-- **Estado:** IN_PROGRESS (0057 implementada localmente; pendiente de auditoría y corte operativo).
+- **Estado:** IN_PROGRESS (0057 auditada y publicada en Git en `94c456a`; la reconciliación y el corte operativo siguen pendientes).
 - **Origen/detección:** Revisión del orden `reserveWhatsAppEvent()` → resolución/Agent → `sendWhatsAppReply()` en `modules/whatsapp/whatsapp.service.ts`; el incidente de producción reportado anteriormente mostró una redelivery clasificada como duplicada tras fallar el envío outbound.
 - **Criterio de resolución:** Auditar la recuperación local de respuestas y completar la reconciliación operativa de `UNKNOWN`/`UNCERTAIN`; demostrar el bloqueo y drenaje de instancias, verificar el runtime desplegado y validar la entrega real de Meta sin repetir mutaciones financieras.
 - **Implementación local:** 0046–0047 separan resultado/entrega, checkpoint atómico
-  Expense/Income, begin único, fences independientes, compensación con versión y
-  permisos de envío revalidados. UNKNOWN/UNCERTAIN son cierres deliberados, sin
-  reintento automático. No se promete exactly-once HTTP ni reparación de históricos.
-- **Checkpoint de rechazo (0057, local; no aplicado remotamente):**
+  Expense/Income, begin único, fences independientes y permisos de envío revalidados.
+  0058 refuerza localmente la compensación de propuestas con la versión monotónica
+  de 0056 y checkpoint para `REMOVED`/`NOT_FOUND`; no se garantiza que DML
+  privilegiado directo pase por esos wrappers. UNKNOWN/UNCERTAIN son cierres
+  deliberados, sin reintento automático. No se promete exactly-once HTTP ni
+  reparación de históricos.
+- **Checkpoint de rechazo (0057, publicado en Git en `94c456a`; no aplicado remotamente):**
   `fn_reject_whatsapp_proposal_event` persiste en la misma transacción el resultado
   `REJECTED`, el `operation_digest` y la respuesta `TEXT_V1` recuperable. El digest
   identifica la operación mediante el nombre de operación, la propuesta, la
@@ -302,6 +305,21 @@ Este documento registra hallazgos reales detectados durante auditorías que no n
   SQL y comprueba que la redelivery no reinvoca el Agent. `npm run test:sql`
   terminó con exit 0 el 2026-11-10 sobre PostgreSQL embebido descartable e incluyó
   la migración 0057 y ambos harnesses. Esto no prueba JWT/PostgREST real ni Meta.
+- **Checkpoint de compensación (0058, cambio local no aplicado remotamente):** el
+  wrapper creador guarda la versión monotónica como texto decimal en el artefacto.
+  La compensación rechaza artefactos anteriores sin versión o con token inválido,
+  compara la versión bajo `FOR UPDATE` y la repite en el `DELETE`. `REMOVED` y un
+  resultado `NOT_FOUND` dentro del contexto cercado guardan resultado, digest y
+  respuesta `TEXT_V1` en la misma transacción; un fallo del checkpoint revierte
+  una eliminación. Un replay con el mismo digest devuelve el resultado guardado;
+  otro digest entra en conflicto. Los harnesses añaden casos de CAS en una sola
+  transacción, artefacto antiguo, ambos resultados, replay, aislamiento, rollback
+  y recuperación HTTP. La validación local más reciente terminó con
+  `npm run test:sql` en PASS (`SQL_EXIT=0`): las migraciones 0001–0058 se aplicaron
+  en PostgreSQL embebido y aislado, y `whatsapp-event-recovery-concurrency.cjs` y
+  `whatsapp-event-http-sql.cjs` terminaron en PASS. También pasaron `git diff --check`
+  y `node --check` en ambos harnesses. Esta evidencia no demuestra
+  aplicación remota, ACL remotas, runtime desplegado ni entrega real de Meta.
 - **Pendiente:** reconciliación manual de `UNKNOWN`/`UNCERTAIN`, evidencia externa
   de bloqueo y drenaje de invocaciones antes de `LINK_ONLY`, aplicación y runtime
   desplegados, y prueba de entrega real de Meta. No se consultó ni modificó ningún
