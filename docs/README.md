@@ -24,7 +24,7 @@ El repositorio contiene un MVP funcional en evolución incremental.
 | Confirmación de operaciones del agente | Implementada mediante propuestas pendientes |
 | WhatsApp Cloud API | Integración textual mediante webhook |
 | Análisis de facturas | Flujo backend de Storage/OCR implementado; UI web pendiente |
-| Autenticación y administración multiusuario | Fuera del MVP |
+| Autenticación y contexto de acceso Web | Supabase Auth con contraseña/Google, confirmación y recuperación; valida sesión, correo, vínculo de usuario y membresía activa |
 
 ## Problema y propuesta de valor
 
@@ -210,15 +210,18 @@ Las rutas no contienen cálculos financieros, SQL, acceso directo a Supabase ni 
 
 ## Variables de entorno
 
-`.env.example` contiene la lista completa de nombres esperados. Las variables sensibles deben permanecer únicamente en el servidor.
+`.env.example` contiene los nombres esperados. Las claves secretas deben permanecer en el servidor. `SUPABASE_URL` y `SUPABASE_ANON_KEY` se usan server-side; `NEXT_PUBLIC_SUPABASE_URL` y `NEXT_PUBLIC_SUPABASE_ANON_KEY` configuran el cliente Web. La clave anon es pública y no reemplaza la validación de sesión y membresía.
 
 | Variable | Uso |
 | --- | --- |
-| `SUPABASE_URL` | URL del proyecto Supabase |
+| `SUPABASE_URL` | URL del proyecto Supabase, usada por el servidor |
+| `SUPABASE_ANON_KEY` | Clave anon server-side para verificar sesiones con Supabase Auth; no sustituye la service role |
+| `NEXT_PUBLIC_SUPABASE_URL` | URL pública del proyecto Supabase para el cliente Web |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave anon/publishable pública del cliente Web; nunca usar una clave secreta |
 | `SUPABASE_SERVICE_ROLE_KEY` | Cliente administrativo server-only para persistencia; nunca exponer al navegador |
-| `HOUSEMATE_MVP_HOUSEHOLD_ID` | Hogar controlado del MVP para Web/PWA |
-| `HOUSEMATE_MVP_MEMBER_ID` | Integrante/actor controlado del MVP |
-| `HOUSEMATE_MVP_CONVERSATION_KEY` | Clave server-side de continuidad conversacional |
+| `HOUSEMATE_MVP_HOUSEHOLD_ID` | Contexto heredado de pruebas; no define la sesión financiera Web autenticada |
+| `HOUSEMATE_MVP_MEMBER_ID` | Integrante del contexto heredado de pruebas |
+| `HOUSEMATE_MVP_CONVERSATION_KEY` | Clave del contexto heredado; el agente Web deriva la conversación desde hogar e integrante autenticados |
 | `SUPABASE_RECEIPTS_BUCKET` | Bucket de Storage para imágenes de facturas |
 | `OPENAI_API_KEY` | Interpretación textual y análisis OCR |
 | `WHATSAPP_ACCESS_TOKEN` | Token de WhatsApp Cloud API |
@@ -227,7 +230,7 @@ Las rutas no contienen cálculos financieros, SQL, acceso directo a Supabase ni 
 | `WHATSAPP_PHONE_NUMBER_ID` | Número de WhatsApp desde el que se responden mensajes |
 | `DATABASE_URL` | Conexión PostgreSQL utilizada principalmente por pruebas SQL y administración |
 
-Durante el MVP, el contexto Web/PWA se resuelve desde configuración server-side. El cliente no puede elegir el hogar, el actor o la conversación enviando esos valores en el body, query string, cookies o headers arbitrarios.
+La Web/PWA valida sesión con Supabase Auth. Las rutas financieras y del agente que usan contexto autenticado requieren correo confirmado, usuario vinculado y membresía activa; si hay varios hogares, el servidor valida la selección. El cliente no puede establecer el contexto con IDs arbitrarios.
 
 ## Base de datos
 
@@ -280,7 +283,7 @@ La especificación canónica de request, response, filtros y códigos de error e
 | Método | Ruta | Propósito |
 | --- | --- | --- |
 | `GET` | `/api/categories` | Obtener el catálogo global de categorías |
-| `GET` | `/api/household-members` | Obtener integrantes legibles del hogar controlado |
+| `GET` | `/api/household-members` | Obtener integrantes legibles del hogar autenticado |
 | `GET` | `/api/sharing-rules` | Obtener reglas de reparto del hogar |
 | `GET` | `/api/dashboard/summary` | Obtener agregados del dashboard; acepta `from` y `to` |
 | `GET` | `/api/balance` | Obtener balance de compensación |
@@ -360,21 +363,22 @@ Nunca incluyas `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, tokens de WhatsApp
 
 ## Seguridad y límites del MVP
 
-- El cliente no controla el hogar ni el actor; el backend resuelve el contexto desde variables server-side.
+- Las rutas Web migradas derivan hogar e integrante desde la sesión autenticada y validan la membresía; el cliente no puede elegir el contexto con IDs arbitrarios.
 - Los repositories aplican filtros obligatorios por hogar y validan pertenencia de recursos.
 - Las Route Handlers traducen errores internos a respuestas públicas sanitizadas.
 - El agente no tiene acceso a SQL arbitrario, credenciales ni repositories.
 - El LLM no es la fuente de verdad ni realiza los cálculos financieros definitivos.
 - El service role de Supabase se utiliza únicamente en código de servidor.
-- El MVP no incluye autenticación formal, roles, invitaciones ni administración completa de hogares.
-- La configuración actual representa un hogar y actor controlados para el flujo inicial de demostración.
-- La conversación Web utiliza una `HOUSEMATE_MVP_CONVERSATION_KEY` configurada server-side; todavía no existe una sesión Web independiente por usuario.
+- Supabase Auth ofrece registro e inicio de sesión con contraseña o Google, confirmación de correo y recuperación de cuenta.
+- Las rutas financieras requieren sesión válida, correo confirmado, vínculo con la cuenta de aplicación y membresía activa; si hay varias membresías, el usuario debe seleccionar un hogar autorizado.
+- El agente Web deriva la clave de conversación del hogar e integrante autenticados; todavía no ofrece historial privado por sesión del navegador.
 
 ## Fuera del alcance actual y próximos pasos
 
 Estas capacidades pertenecen a evoluciones posteriores o a incrementos pendientes:
 
-- Autenticación, sesiones Web independientes y gestión multiusuario/multi-hogar.
+- Historial conversacional privado y sesiones independientes del agente por navegador.
+- Administración visual completa de hogares y membresías.
 - CRUD visual para categorías y reglas de reparto.
 - Edición de ingresos desde la interfaz Web actual.
 - Pantalla Web completa para cargar y confirmar facturas.
