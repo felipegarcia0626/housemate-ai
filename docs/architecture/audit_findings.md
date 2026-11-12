@@ -90,13 +90,27 @@
   `whatsapp-event-http-sql.cjs` y `npm run test:sql`. Esta evidencia no valida una
   base remota ni el transporte JWT firmado por Next.js/PostgREST. La aplicación
   remota y la compatibilidad con el runtime desplegado siguen sin verificarse.
-- **Límite:** el último commit publicado en Git conocido contiene 0054; el
-  despliegue activo y la aplicación remota no están verificados. 0055 todavía no
-  está publicada ni aplicada. Las funciones
-  genéricas conservan EXECUTE para `service_role` por compatibilidad con
-  WhatsApp/consumidores antiguos, así que sigue pendiente retirar esa vía después
-  de verificar el runtime y ACL efectivos. También falta probar el transporte
-  JWT de las operaciones Web por PostgREST y verificar los callers desplegados.
+- **Corte de escritura de propuestas (0061, local):** la migración de este
+  incremento conserva `SELECT` de `service_role`, revoca INSERT/UPDATE/DELETE y
+  TRUNCATE directos sobre `tb_pending_proposals`, y retira EXECUTE directo de
+  `fn_reject_pending_proposal` y los delegates WhatsApp de creación, corrección
+  y rechazo. Los wrappers Web/WhatsApp permanecen como entradas y ejecutan los
+  delegates desde sus funciones `SECURITY DEFINER` propiedad de `postgres`.
+  No cambia permisos de las funciones financieras elegibles. El 2026-11-12,
+  `npm run test:sql` terminó con PASS (exit code 0): el runner aplicó
+  0001–0061 al PostgreSQL embebido aislado; las pruebas verificaron ACL
+  efectivas, denegación de escrituras/delegates directos y flujos Web/WhatsApp
+  mediante los wrappers. `npm run test` no está definido en `package.json`, por
+  lo que ese comando no fue validado. La suite local no equivale a verificar
+  ACL remotas ni callers desplegados.
+- **Límite:** el HEAD de referencia publicado en Git para este corte incluye
+  0055–0060; el runtime activo y la aplicación remota de esas migraciones no
+  están verificados. `restorePendingProposal` y
+  `restorePendingIncomeProposal` siguen exportadas sin callers encontrados en
+  el checkout y dependen de INSERT directo, por lo que fallarían cerradas si se
+  invocaran después de aplicar 0061. Los consumidores externos no están
+  verificados. También falta probar el transporte JWT Web por PostgREST y
+  comprobar los callers desplegados.
 - **Cierre:** aplicar los cambios autorizados mediante un corte planificado;
   verificar SHA activo, JWT/`auth.uid()` por PostgREST, privilegios efectivos y
   ausencia de consumidores antiguos. No restaurar grants amplios para recuperar

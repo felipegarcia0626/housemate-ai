@@ -103,9 +103,17 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
       "SELECT public.fn_transition_whatsapp_household_context($1,'test-emitter',$1,$2,'SET_SELECTION',$3,$1)",
       [uid(n), admission.epoch, household],
     );
-    const proposal = await queryResult(
-      operation,
-      "SELECT to_jsonb(public.fn_create_whatsapp_pending_proposal($1,$2,$3,$4,$5,$6,$4,$4,$7)) AS result",
+    // The admin observer inserts the proposal fixture directly. This setup
+    // does not exercise creation authorization or its lease guard. This
+    // harness tests the eligible confirmation RPCs under service_role.
+    // The event-receipts SQL tests and recovery-concurrency harness exercise
+    // the authorized event wrappers for proposal creation, update and rejection.
+    const proposal = await observer.query(
+      `INSERT INTO public.tb_pending_proposals(
+         id,household_id,conversation_key,actor_member_id,source,
+         operation_type,payload
+       ) VALUES($1,$2,$3,$4,'WHATSAPP',$5::public.pending_operation_type,$6::jsonb)
+       RETURNING id,updated_at::text AS updated_at,version`,
       [
         uid(200 + n),
         household,
@@ -113,10 +121,9 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
         uid(n),
         kind,
         JSON.stringify({ actorMemberId: uid(n), source: "WHATSAPP" }),
-        admission.epoch,
       ],
     );
-    return { admission, proposal };
+    return { admission, proposal: proposal.rows[0] };
   }
   function confirm(client, n, prepared, kind) {
     const args = [

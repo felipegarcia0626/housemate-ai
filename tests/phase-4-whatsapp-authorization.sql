@@ -61,13 +61,13 @@ BEGIN
   EXCEPTION WHEN serialization_failure THEN
     IF SQLERRM <> 'WhatsApp context lease is no longer current' THEN RAISE; END IF;
   END;
+  -- Draft/context entries still execute their lease guard. Proposal mutation
+  -- delegates are no longer callable directly by service_role; their event
+  -- wrappers are covered by the recovery and lifecycle harnesses.
   FOREACH stmt IN ARRAY ARRAY[
     format('SELECT public.fn_create_whatsapp_agent_draft(%1$L,%2$L,%1$L,%3$L,''CREATE_INCOME'',''{}'',''AWAITING_DETAILS'',%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e),
     format('SELECT public.fn_update_whatsapp_agent_draft(%1$L,%2$L,%1$L,%3$L,''CREATE_INCOME'',''{}'',''AWAITING_DETAILS'',NULL,%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e),
     format('SELECT public.fn_delete_whatsapp_agent_draft(%1$L,%2$L,%1$L,%3$L,now(),%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e),
-    format('SELECT public.fn_create_whatsapp_pending_proposal(%1$L,%2$L,%3$L,%1$L,''CREATE_INCOME'',''{}'',%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e),
-    format('SELECT public.fn_update_whatsapp_pending_proposal(%1$L,%2$L,%3$L,%1$L,''CREATE_INCOME'',''{}'',now(),%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e),
-    format('SELECT public.fn_reject_whatsapp_pending_proposal(%1$L,%2$L,%3$L,%1$L,''CREATE_INCOME'',%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e),
     format('SELECT public.fn_transition_whatsapp_household_context(%1$L,''test-emitter'',%1$L,%2$s,''CLEAR_SELECTION'')',v,e)
   ] LOOP
     BEGIN
@@ -75,6 +75,19 @@ BEGIN
       RAISE EXCEPTION 'Revoked write entry accepted';
     EXCEPTION WHEN serialization_failure THEN
       IF SQLERRM <> 'WhatsApp context lease is no longer current' THEN RAISE; END IF;
+    END;
+  END LOOP;
+
+  FOREACH stmt IN ARRAY ARRAY[
+    format('SELECT public.fn_create_whatsapp_pending_proposal(%1$L,%2$L,%3$L,%1$L,''CREATE_INCOME'',''{}'',%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e),
+    format('SELECT public.fn_update_whatsapp_pending_proposal(%1$L,%2$L,%3$L,%1$L,''CREATE_INCOME'',''{}'',now(),%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e),
+    format('SELECT public.fn_reject_whatsapp_pending_proposal(%1$L,%2$L,%3$L,%1$L,''CREATE_INCOME'',%1$L,%1$L,%4$s)',v,'44000000-0000-4000-8000-000000000099','authorization-draft',e)
+  ] LOOP
+    BEGIN
+      EXECUTE stmt;
+      RAISE EXCEPTION 'Direct service_role proposal delegate execution accepted';
+    EXCEPTION WHEN insufficient_privilege THEN
+      IF SQLERRM NOT LIKE 'permission denied for function %' THEN RAISE; END IF;
     END;
   END LOOP;
 END;
@@ -140,7 +153,8 @@ BEGIN
   END LOOP;
   FOR f IN SELECT p.* FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname IN
     ('fn_create_whatsapp_agent_draft','fn_update_whatsapp_agent_draft','fn_delete_whatsapp_agent_draft','fn_create_whatsapp_pending_proposal','fn_update_whatsapp_pending_proposal','fn_reject_whatsapp_pending_proposal','fn_assert_whatsapp_active_context') LOOP
-    IF NOT has_function_privilege('service_role',f.oid,'EXECUTE')
+    IF has_function_privilege('service_role',f.oid,'EXECUTE') <>
+       (f.proname NOT IN ('fn_create_whatsapp_pending_proposal','fn_update_whatsapp_pending_proposal','fn_reject_whatsapp_pending_proposal'))
       OR has_function_privilege('anon',f.oid,'EXECUTE') OR has_function_privilege('authenticated',f.oid,'EXECUTE')
       OR EXISTS(SELECT 1 FROM aclexplode(coalesce(f.proacl,acldefault('f',f.proowner))) WHERE grantee=0 AND privilege_type='EXECUTE') THEN
       RAISE EXCEPTION 'Unsafe dependent RPC privileges';

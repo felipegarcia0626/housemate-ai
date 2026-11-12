@@ -297,15 +297,16 @@ BEGIN
     RAISE EXCEPTION 'Direct pending proposal column privilege remains';
   END IF;
   IF NOT has_table_privilege('service_role','public.tb_pending_proposals','SELECT')
-     OR NOT has_table_privilege('service_role','public.tb_pending_proposals','INSERT')
-     OR NOT has_table_privilege('service_role','public.tb_pending_proposals','UPDATE')
-     OR NOT has_table_privilege('service_role','public.tb_pending_proposals','DELETE')
+     OR has_table_privilege('service_role','public.tb_pending_proposals','INSERT')
+     OR has_table_privilege('service_role','public.tb_pending_proposals','UPDATE')
+     OR has_table_privilege('service_role','public.tb_pending_proposals','DELETE')
+     OR has_table_privilege('service_role','public.tb_pending_proposals','TRUNCATE')
      OR NOT has_function_privilege('service_role','public.fn_create_whatsapp_proposal_event(text,uuid,bigint,uuid,text,public.pending_operation_type,jsonb)','EXECUTE')
      OR NOT has_function_privilege('service_role','public.fn_update_whatsapp_proposal_event(text,uuid,bigint,uuid,text,public.pending_operation_type,jsonb,timestamptz)','EXECUTE')
      OR NOT has_function_privilege('service_role','public.fn_compensate_whatsapp_proposal_event(text,uuid,bigint,uuid,text,public.pending_operation_type)','EXECUTE') THEN
-    RAISE EXCEPTION 'Legacy service_role or WhatsApp compatibility grants changed';
+    RAISE EXCEPTION 'service_role proposal SELECT or WhatsApp wrapper grants changed';
   END IF;
-  RAISE NOTICE 'PASS Web proposal lifecycle ACLs are authenticated-only; table ACLs and WhatsApp grants remain scoped';
+  RAISE NOTICE 'PASS Web proposal lifecycle ACLs are authenticated-only; service_role retains proposal SELECT and WhatsApp wrapper EXECUTE';
 END;
 $acl$;
 
@@ -582,29 +583,57 @@ BEGIN
 END;
 $assert_stale_confirmation_atomicity$;
 
+SET LOCAL ROLE service_role;
+DO $service_role_cannot_write_proposal$
+DECLARE
+  denied_state TEXT;
+BEGIN
+  BEGIN
+    UPDATE public.tb_pending_proposals
+       SET version=999
+     WHERE id=current_setting('housemate.test.versioned_proposal_id')::uuid;
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS denied_state = RETURNED_SQLSTATE;
+  END;
+  IF denied_state IS DISTINCT FROM '42501' THEN
+    RAISE EXCEPTION 'service_role direct version UPDATE was not denied by ACL: %',denied_state;
+  END IF;
+
+  denied_state := NULL;
+  BEGIN
+    UPDATE public.tb_pending_proposals
+       SET status='REJECTED',resolved_at=clock_timestamp()
+     WHERE id=current_setting('housemate.test.versioned_proposal_id')::uuid;
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS denied_state = RETURNED_SQLSTATE;
+  END;
+  IF denied_state IS DISTINCT FROM '42501' THEN
+    RAISE EXCEPTION 'service_role direct rejection was not denied by ACL: %',denied_state;
+  END IF;
+END;
+$service_role_cannot_write_proposal$;
+RESET ROLE;
+DO $service_role_write_preserved_state$
+DECLARE
+  current_version BIGINT;
+  current_status TEXT;
+BEGIN
+  SELECT proposal.version,proposal.status::text
+    INTO current_version,current_status
+    FROM public.tb_pending_proposals AS proposal
+   WHERE proposal.id=current_setting('housemate.test.versioned_proposal_id')::uuid;
+  IF current_version IS DISTINCT FROM 2
+     OR current_status IS DISTINCT FROM 'AWAITING_CONFIRMATION' THEN
+    RAISE EXCEPTION 'service_role direct write changed proposal state/version: %, %',
+      current_status,current_version;
+  END IF;
+  RAISE NOTICE 'PASS service_role cannot directly update proposal version or rejection state';
+END;
+$service_role_write_preserved_state$;
+
 UPDATE public.tb_pending_proposals
    SET status='REJECTED',resolved_at=clock_timestamp()
  WHERE id=(SELECT proposal_id FROM pg_temp.test_0055_state);
--- service_role retains legacy table UPDATE for WhatsApp compatibility, but
--- even that privileged writer cannot choose the monotonic version value.
-SET LOCAL ROLE service_role;
-UPDATE public.tb_pending_proposals
-   SET version=999
- WHERE id=current_setting('housemate.test.versioned_proposal_id')::uuid;
-RESET ROLE;
-DO $service_role_cannot_choose_version$
-DECLARE
-  current_version bigint;
-BEGIN
-  SELECT proposal.version INTO current_version
-    FROM public.tb_pending_proposals AS proposal
-   WHERE proposal.id=current_setting('housemate.test.versioned_proposal_id')::uuid;
-  IF current_version IS DISTINCT FROM 4 THEN
-    RAISE EXCEPTION 'service_role chose a version instead of advancing exactly once: %',current_version;
-  END IF;
-  RAISE NOTICE 'PASS trigger overrides direct service_role version assignments';
-END;
-$service_role_cannot_choose_version$;
 
 SET LOCAL ROLE authenticated;
 DO $terminal_read_and_no_active$

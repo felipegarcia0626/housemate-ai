@@ -104,6 +104,13 @@ DECLARE
   generic_expense regprocedure := 'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::regprocedure;
   generic_income regprocedure := 'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::regprocedure;
   generic_reject regprocedure := 'public.fn_reject_pending_proposal(uuid,uuid,text,uuid,public.expense_source,public.pending_operation_type)'::regprocedure;
+  private_helpers regprocedure[] := ARRAY[
+    'public.fn_reject_pending_proposal(uuid,uuid,text,uuid,public.expense_source,public.pending_operation_type)'::regprocedure,
+    'public.fn_create_whatsapp_pending_proposal(uuid,uuid,text,uuid,public.pending_operation_type,jsonb,uuid,uuid,bigint)'::regprocedure,
+    'public.fn_update_whatsapp_pending_proposal(uuid,uuid,text,uuid,public.pending_operation_type,jsonb,timestamp with time zone,uuid,uuid,bigint)'::regprocedure,
+    'public.fn_reject_whatsapp_pending_proposal(uuid,uuid,text,uuid,public.pending_operation_type,uuid,uuid,bigint)'::regprocedure
+  ];
+  private_helper regprocedure;
   entries regprocedure[] := ARRAY[
     'public.fn_confirm_web_pending_expense(uuid,uuid,bigint)'::regprocedure,
     'public.fn_confirm_web_pending_income(uuid,uuid,bigint)'::regprocedure,
@@ -174,9 +181,28 @@ BEGIN
   END IF;
   IF NOT has_function_privilege('service_role',generic_expense,'EXECUTE')
      OR NOT has_function_privilege('service_role',generic_income,'EXECUTE')
-     OR NOT has_function_privilege('service_role',generic_reject,'EXECUTE') THEN
-    RAISE EXCEPTION 'Legacy service_role compatibility grants changed';
+     OR has_function_privilege('service_role',generic_reject,'EXECUTE') THEN
+    RAISE EXCEPTION 'Unexpected service_role eligible or proposal delegate privileges';
   END IF;
+  FOREACH private_helper IN ARRAY private_helpers LOOP
+    IF has_function_privilege('service_role',private_helper,'EXECUTE')
+       OR has_function_privilege('anon',private_helper,'EXECUTE')
+       OR has_function_privilege('authenticated',private_helper,'EXECUTE') THEN
+      RAISE EXCEPTION 'Proposal delegate remains directly executable: %',private_helper;
+    END IF;
+    IF EXISTS (
+      SELECT 1
+        FROM pg_catalog.aclexplode(
+          coalesce(
+            (SELECT routine_row.proacl FROM pg_catalog.pg_proc AS routine_row WHERE routine_row.oid=private_helper),
+            pg_catalog.acldefault('f',(SELECT routine_row.proowner FROM pg_catalog.pg_proc AS routine_row WHERE routine_row.oid=private_helper))
+          )
+        ) AS acl
+       WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE'
+    ) THEN
+      RAISE EXCEPTION 'PUBLIC retains direct execution of proposal delegate: %',private_helper;
+    END IF;
+  END LOOP;
 
   IF EXISTS (
     SELECT 1
@@ -216,13 +242,77 @@ BEGIN
     END LOOP;
   END LOOP;
   IF NOT has_table_privilege('service_role','public.tb_pending_proposals','SELECT')
-     OR NOT has_table_privilege('service_role','public.tb_pending_proposals','INSERT')
-     OR NOT has_table_privilege('service_role','public.tb_pending_proposals','UPDATE')
-     OR NOT has_table_privilege('service_role','public.tb_pending_proposals','DELETE') THEN
-    RAISE EXCEPTION 'service_role proposal repository privileges changed';
+     OR has_table_privilege('service_role','public.tb_pending_proposals','INSERT')
+     OR has_table_privilege('service_role','public.tb_pending_proposals','UPDATE')
+     OR has_table_privilege('service_role','public.tb_pending_proposals','DELETE')
+     OR has_table_privilege('service_role','public.tb_pending_proposals','TRUNCATE') THEN
+    RAISE EXCEPTION 'service_role must retain proposal SELECT only';
   END IF;
+  FOR target_column IN
+    SELECT attribute.attname
+      FROM pg_catalog.pg_attribute AS attribute
+     WHERE attribute.attrelid='public.tb_pending_proposals'::regclass
+       AND attribute.attnum > 0
+       AND NOT attribute.attisdropped
+  LOOP
+    IF NOT has_column_privilege('service_role','public.tb_pending_proposals',target_column.attname,'SELECT')
+       OR has_column_privilege('service_role','public.tb_pending_proposals',target_column.attname,'INSERT')
+       OR has_column_privilege('service_role','public.tb_pending_proposals',target_column.attname,'UPDATE') THEN
+      RAISE EXCEPTION 'Unexpected effective service_role column privileges: %',target_column.attname;
+    END IF;
+  END LOOP;
 END;
 $acl$;
+
+-- Prove the effective service_role ACL rejects direct writes and delegate
+-- calls while preserving repository reads. These are permission checks, not
+-- authorization errors returned by the delegates' function bodies.
+SET LOCAL ROLE service_role;
+DO $service_role_proposal_access$
+DECLARE
+  statement TEXT;
+  error_message TEXT;
+  proposal_count BIGINT;
+BEGIN
+  SELECT count(*) INTO proposal_count
+    FROM public.tb_pending_proposals;
+
+  FOREACH statement IN ARRAY ARRAY[
+    'INSERT INTO public.tb_pending_proposals(id,household_id,conversation_key,actor_member_id,source,operation_type,payload) VALUES (''54000000-0054-4000-8000-000000000199'',''54000000-0054-4000-8000-000000000010'',''web:service-role-acl-probe'',''54000000-0054-4000-8000-000000000031'',''WEB'',''CREATE_INCOME'',''{}''::jsonb)',
+    'UPDATE public.tb_pending_proposals SET status=''REJECTED'',resolved_at=clock_timestamp() WHERE id=''54000000-0054-4000-8000-000000000101''',
+    'DELETE FROM public.tb_pending_proposals WHERE id=''54000000-0054-4000-8000-000000000101''',
+    'TRUNCATE TABLE public.tb_pending_proposals'
+  ] LOOP
+    BEGIN
+      EXECUTE statement;
+      RAISE EXCEPTION 'service_role direct proposal write unexpectedly succeeded: %',statement;
+    EXCEPTION WHEN insufficient_privilege THEN
+      GET STACKED DIAGNOSTICS error_message = MESSAGE_TEXT;
+      IF position('permission denied for table tb_pending_proposals' IN error_message)=0 THEN
+        RAISE;
+      END IF;
+    END;
+  END LOOP;
+
+  FOREACH statement IN ARRAY ARRAY[
+    'SELECT public.fn_reject_pending_proposal(NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.expense_source,NULL::public.pending_operation_type)',
+    'SELECT public.fn_create_whatsapp_pending_proposal(NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.pending_operation_type,NULL::jsonb,NULL::uuid,NULL::uuid,NULL::bigint)',
+    'SELECT public.fn_update_whatsapp_pending_proposal(NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.pending_operation_type,NULL::jsonb,NULL::timestamptz,NULL::uuid,NULL::uuid,NULL::bigint)',
+    'SELECT public.fn_reject_whatsapp_pending_proposal(NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.pending_operation_type,NULL::uuid,NULL::uuid,NULL::bigint)'
+  ] LOOP
+    BEGIN
+      EXECUTE statement;
+      RAISE EXCEPTION 'service_role directly executed a private proposal delegate: %',statement;
+    EXCEPTION WHEN insufficient_privilege THEN
+      GET STACKED DIAGNOSTICS error_message = MESSAGE_TEXT;
+      IF position('permission denied for function' IN error_message)=0 THEN
+        RAISE;
+      END IF;
+    END;
+  END LOOP;
+END;
+$service_role_proposal_access$;
+RESET ROLE;
 
 -- The active proposal can be found only under the household and conversation
 -- derived for the authenticated actor. The stored snapshot is the only source
