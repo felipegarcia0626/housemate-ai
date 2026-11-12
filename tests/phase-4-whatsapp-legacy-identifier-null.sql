@@ -153,7 +153,8 @@ BEGIN
     END IF;
   END;
 
-  -- Existing non-null resolution remains legacy and 0043 refuses promotion.
+  -- Legacy resolution remains available, but a different Auth-mapped account
+  -- cannot promote a sender owned by this internal user.
   UPDATE public.tb_users SET external_identifier = v_sender WHERE id = v_mvp;
   SELECT public.fn_resolve_whatsapp_sender(v_sender) INTO v_identity;
   IF v_identity->>'status' IS DISTINCT FROM 'RESOLVED'
@@ -169,7 +170,7 @@ BEGIN
        SELECT 1 FROM public.tb_whatsapp_link_challenges c
        WHERE c.id = v_challenge OR c.user_id = v_target
      ) THEN
-    RAISE EXCEPTION '0043 did not refuse the existing legacy sender';
+    RAISE EXCEPTION 'A foreign legacy owner was not rejected';
   END IF;
 
   -- The compatibility change only removes the lookup value from this row.
@@ -297,5 +298,5 @@ BEGIN
 END;
 $redelivery_state$;
 
-SELECT 'PASS nullable legacy identifier, preserved UNIQUE behavior, 0043 refusal, verified linking and replay' AS result;
+SELECT 'PASS nullable legacy identifier, preserved UNIQUE behavior, foreign legacy owner refusal, verified linking and replay' AS result;
 ROLLBACK;

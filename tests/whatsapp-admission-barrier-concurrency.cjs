@@ -528,6 +528,11 @@ module.exports = async function whatsappAdmissionBarrier(postgres) {
       await inspect.query("DELETE FROM public.tb_whatsapp_links WHERE user_id=$1", [linkTargetId]);
       await inspect.query("DELETE FROM public.tb_whatsapp_links WHERE id=$1", [linkId]);
       await inspect.query("DELETE FROM public.tb_household_members WHERE household_id=$1", [householdId]);
+      // The permanent LEGACY-retirement marker has an ON DELETE RESTRICT FK;
+      // this privileged cleanup is limited to disposable harness fixtures.
+      await inspect.query("DELETE FROM public.tb_whatsapp_legacy_identity_retirements WHERE user_id=ANY($1::uuid[])", [
+        [userId, legacyUserId, linkTargetId],
+      ]);
       await inspect.query("DELETE FROM public.tb_users WHERE id=ANY($1::uuid[])", [
         [userId, legacyUserId, linkTargetId],
       ]);

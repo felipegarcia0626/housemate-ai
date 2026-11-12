@@ -23,10 +23,25 @@ module.exports = async function whatsappLinkingConcurrency(postgres) {
       )
       .then(({ rows }) => rows[0].result);
   const hash = (value) => createHash("sha256").update(value).digest("hex");
+  const completeEvent = (client, challenge, sender, event) =>
+    client
+      .query(
+        "SELECT public.fn_complete_whatsapp_link_event($1,$2,'123456',$3,$4,$5) AS result",
+        [event, sender, hash(`link-message:${event}`), id(challenge), digest(challenge)],
+      )
+      .then(({ rows }) => rows[0].result);
+  const claim = (client, event, sender, eventToken) =>
+    client
+      .query(
+        "SELECT public.fn_claim_whatsapp_event($1,$2,'123456',$3,$4) AS result",
+        [event, sender, "a".repeat(64), eventToken],
+      )
+      .then(({ rows }) => rows[0].result);
   async function state() {
     const snapshot = {};
     for (const [key, table, order] of [
       ["links", "tb_whatsapp_links", "id"],
+      ["retirements", "tb_whatsapp_legacy_identity_retirements", "user_id"],
       ["challenges", "tb_whatsapp_link_challenges", "id"],
       ["buckets", "tb_whatsapp_link_attempt_buckets", "sender_digest"],
       ["events", "tb_whatsapp_link_events", "external_event_id"],
@@ -166,7 +181,7 @@ module.exports = async function whatsappLinkingConcurrency(postgres) {
     await observer.query(`CREATE SCHEMA IF NOT EXISTS auth;
       CREATE TABLE IF NOT EXISTS auth.users(id uuid PRIMARY KEY,email text);
       ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS email_confirmed_at timestamptz`);
-    for (let n = 1; n <= 8; n += 1) {
+    for (let n = 1; n <= 10; n += 1) {
       await observer.query(
         "INSERT INTO auth.users(id,email,email_confirmed_at) VALUES($1,'link-race@example.test',now())",
         [id(n)],
@@ -500,8 +515,181 @@ module.exports = async function whatsappLinkingConcurrency(postgres) {
       "distributions",
     ])
       assert.deepEqual(afterActivation[key], beforeActivation[key]);
+
+    // A claim that linearizes before verification records LEGACY, but the lease
+    // must fail its next SQL authorization check after P is permanently retired.
+    const legacyP9 = "19990000109";
+    const verifiedQ9 = "19990000119";
+    const beforeLegacyClaim = await state();
+    await observer.query(
+      "UPDATE public.tb_users SET external_identifier=$2 WHERE id=$1",
+      [id(9), legacyP9],
+    );
+    assert.equal((await start(first, 9, 91, verifiedQ9)).status, "PENDING");
+    const preTransitionEvent = "legacy-transition-claim-before-link";
+    const preTransitionToken = id(901);
+    await first.query("BEGIN");
+    const legacyClaim = await claim(
+      first,
+      preTransitionEvent,
+      legacyP9,
+      preTransitionToken,
+    );
+    assert.equal(legacyClaim.status, "CLAIMED");
+    assert.equal(legacyClaim.userId, id(9));
+    const linkingAfterClaim = completeEvent(
+      second,
+      91,
+      verifiedQ9,
+      "legacy-transition-link-after-claim",
+    );
+    await waitSecond();
+    await first.query("COMMIT");
+    assert.equal((await linkingAfterClaim).status, "READY");
+    const claimedReceipt = (
+      await observer.query(
+        "SELECT identity_snapshot, processing_state FROM public.tb_whatsapp_event_receipts WHERE external_event_id=$1",
+        [preTransitionEvent],
+      )
+    ).rows[0];
+    assert.equal(claimedReceipt.identity_snapshot.origin, "LEGACY");
+    assert.equal(claimedReceipt.processing_state, "RESERVED");
+    assert.equal(
+      (
+        await observer.query(
+          "SELECT public.fn_resolve_whatsapp_sender($1) AS result",
+          [legacyP9],
+        )
+      ).rows[0].result.status,
+      "UNAVAILABLE",
+    );
+    await assert.rejects(
+      first.query(
+        "SELECT public.fn_assert_whatsapp_event($1,$2,$3)",
+        [preTransitionEvent, preTransitionToken, legacyClaim.epoch],
+      ),
+      (error) => error.code === "40001",
+    );
+    assert.equal(
+      (
+        await observer.query(
+          "SELECT count(*) AS n FROM public.tb_whatsapp_legacy_identity_retirements WHERE user_id=$1",
+          [id(9)],
+        )
+      ).rows[0].n,
+      "1",
+    );
+    const linkReplay = await completeEvent(
+      second,
+      91,
+      verifiedQ9,
+      "legacy-transition-link-after-claim",
+    );
+    assert.equal(linkReplay.status, "READY");
+    assert.equal(
+      (
+        await observer.query(
+          "SELECT count(*) AS n FROM public.tb_whatsapp_links WHERE user_id=$1 AND sender=$2",
+          [id(9), verifiedQ9],
+        )
+      ).rows[0].n,
+      "1",
+      "Link-event redelivery must not create a second verified link",
+    );
+    assert.notDeepEqual(
+      await state(),
+      beforeLegacyClaim,
+      "The successful claim/link transition should persist its receipt, link and retirement marker",
+    );
+
+    // If finalization obtains the gate first, a waiting claim on P sees the
+    // committed retirement marker rather than admitting a fresh LEGACY lease.
+    const legacyP10 = "19990000110";
+    const verifiedQ10 = "19990000120";
+    await observer.query(
+      "UPDATE public.tb_users SET external_identifier=$2 WHERE id=$1",
+      [id(10), legacyP10],
+    );
+    assert.equal((await start(first, 10, 92, verifiedQ10)).status, "PENDING");
+    await first.query("BEGIN");
+    assert.equal(
+      (
+        await completeEvent(
+          first,
+          92,
+          verifiedQ10,
+          "legacy-transition-link-before-claim",
+        )
+      ).status,
+      "READY",
+    );
+    const waitingLegacyClaim = claim(
+      second,
+      "legacy-transition-claim-after-link",
+      legacyP10,
+      id(902),
+    );
+    await waitSecond();
+    await first.query("COMMIT");
+    assert.equal((await waitingLegacyClaim).status, "UNAVAILABLE");
+    assert.equal(
+      Number(
+        (
+          await observer.query(
+            "SELECT count(*) AS n FROM public.tb_whatsapp_event_receipts WHERE external_event_id='legacy-transition-claim-after-link'",
+          )
+        ).rows[0].n,
+      ),
+      0,
+      "A blocked claim must not reserve a receipt after retirement commits",
+    );
+
+    // Revocation and claim use the same transaction gate. A claim waiting on Q
+    // must observe revocation; P remains retired independently of Q's status.
+    const q9State = await first.query(
+      "SELECT public.fn_get_whatsapp_link_state($1) AS result",
+      [id(9)],
+    );
+    const q9LinkId = q9State.rows[0].result.link.id;
+    await first.query("BEGIN");
+    assert.equal(
+      (
+        await first.query(
+          "SELECT public.fn_revoke_whatsapp_link($1,$2,1) AS result",
+          [id(9), q9LinkId],
+        )
+      ).rows[0].result.status,
+      "REVOKED",
+    );
+    const waitingRevokedClaim = claim(
+      second,
+      "legacy-transition-claim-after-revoke",
+      verifiedQ9,
+      id(903),
+    );
+    await waitSecond();
+    await first.query("COMMIT");
+    assert.equal((await waitingRevokedClaim).status, "UNAVAILABLE");
+    assert.equal(
+      (
+        await observer.query(
+          "SELECT public.fn_resolve_whatsapp_sender($1) AS result",
+          [legacyP9],
+        )
+      ).rows[0].result.status,
+      "UNAVAILABLE",
+    );
+    assert.equal(
+      (
+        await observer.query(
+          "SELECT public.fn_resolve_whatsapp_sender($1) AS result",
+          [verifiedQ9],
+        )
+      ).rows[0].result.status,
+      "UNAVAILABLE",
+    );
     console.log(
-      "PASS WhatsApp linking real-session races, event replay, rollback and database retry",
+      "PASS WhatsApp linking real-session races, legacy retirement, event replay, rollback and database retry",
     );
   } finally {
     await Promise.allSettled(clients.map((client) => client.query("ROLLBACK")));

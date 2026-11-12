@@ -154,6 +154,9 @@ async function main() {
       const isForensicEvidenceMigration =
         path.basename(migrationPath) ===
         "0059_whatsapp_ambiguous_receipt_evidence.sql";
+      const isLegacyIdentityRetirementMigration =
+        path.basename(migrationPath) ===
+        "0060_whatsapp_legacy_identity_retirement.sql";
       if (path.basename(migrationPath) === "0030_household_membership_lifecycle.sql") {
         const fixturePath = path.join(fixtureDirectory, "0030_household_legacy_fixture.sql");
         const fixtureClient = postgres.getPgClient("housemate_test");
@@ -217,6 +220,82 @@ async function main() {
               await maintenanceClient.query(
                 `DROP DATABASE ${forensicDatabase}`,
               );
+            } finally {
+              await maintenanceClient.end();
+            }
+          }
+        }
+      }
+
+      if (isLegacyIdentityRetirementMigration) {
+        // Exercise the migration backfill against a pre-0060 database clone so
+        // its historical rows never leak into the shared regression database.
+        const legacyDatabase = "housemate_legacy_0060_test";
+        const legacyFixturePath = path.join(
+          fixtureDirectory,
+          "0060_whatsapp_verified_link_history.sql",
+        );
+        const legacyBackfillTestPath = path.join(
+          testDirectory,
+          "phase-4-whatsapp-legacy-retirement-backfill.sql",
+        );
+        let legacyClient;
+        let legacyDatabaseCreated = false;
+        try {
+          const maintenanceClient = postgres.getPgClient("postgres");
+          await maintenanceClient.connect();
+          try {
+            await maintenanceClient.query(
+              `CREATE DATABASE ${legacyDatabase} TEMPLATE housemate_test`,
+            );
+            legacyDatabaseCreated = true;
+          } finally {
+            await maintenanceClient.end();
+          }
+
+          legacyClient = postgres.getPgClient(legacyDatabase);
+          await legacyClient.connect();
+          await runSqlFile(
+            legacyClient,
+            legacyFixturePath,
+            "migration fixture 0060_whatsapp_verified_link_history.sql",
+          );
+          const legacyFixtureCheck = await legacyClient.query(`
+            SELECT
+              (SELECT count(*)::int FROM public.tb_users
+               WHERE id = '00600000-0060-4000-8000-000000000001'
+                 AND external_identifier = '19996600001') AS user_count,
+              (SELECT count(*)::int FROM public.tb_whatsapp_links
+               WHERE id = '00600000-0060-4000-8000-000000000002'
+                 AND user_id = '00600000-0060-4000-8000-000000000001'
+                 AND status = 'REVOKED'
+                 AND verified_at = '2024-01-01 12:00:00+00') AS link_count
+          `);
+          if (
+            legacyFixtureCheck.rows[0].user_count !== 1 ||
+            legacyFixtureCheck.rows[0].link_count !== 1
+          ) {
+            throw new Error(
+              `0060 historical fixture did not persist before migration: ${JSON.stringify(legacyFixtureCheck.rows[0])}`,
+            );
+          }
+          await runSqlFile(
+            legacyClient,
+            migrationPath,
+            `migration ${path.basename(migrationPath)} with historical fixtures`,
+          );
+          await runSqlFile(
+            legacyClient,
+            legacyBackfillTestPath,
+            "SQL test phase-4-whatsapp-legacy-retirement-backfill.sql with historical fixtures",
+          );
+        } finally {
+          if (legacyClient) await legacyClient.end();
+          if (legacyDatabaseCreated) {
+            const maintenanceClient = postgres.getPgClient("postgres");
+            await maintenanceClient.connect();
+            try {
+              await maintenanceClient.query(`DROP DATABASE ${legacyDatabase}`);
             } finally {
               await maintenanceClient.end();
             }
@@ -473,8 +552,10 @@ async function main() {
 
     for (const testPath of await sqlFiles(testDirectory)) {
       if (
-        path.basename(testPath) ===
-        "phase-4-whatsapp-receipt-forensic-retention.sql"
+        [
+          "phase-4-whatsapp-receipt-forensic-retention.sql",
+          "phase-4-whatsapp-legacy-retirement-backfill.sql",
+        ].includes(path.basename(testPath))
       ) {
         continue;
       }

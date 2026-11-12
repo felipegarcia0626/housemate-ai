@@ -210,13 +210,45 @@ códigos desconocidos. Identificadores de desafío desconocidos no revelan cuent
 La revalidación Auth fallida aborta la transacción y permite reintento posterior
 sin reserva parcial. No se aplican reintentos automáticos.
 
-No hay backfill, revocación expuesta, sustitución, recuperación de números heredados
-ni modificación del flujo financiero. Versionar el vínculo no activa todavía
-fencing en el canal. Antes de integrar se deben implementar admisión y revocación
-coordinadas, resolver pendientes, probar carreras reales con operaciones financieras
-y evitar que una revocación pueda eludirse por fallback a `external_identifier`.
-El número ya reasignado manualmente permanece heredado, no verificado por 0043.
-FINDING-012 y FINDING-013 siguen abiertos y no se resuelven por esta migración.
+0043 no hizo backfill ni retiró el fallback LEGACY; esos límites históricos se
+corrigen parcialmente con 0060, descrita abajo. La verificación de vínculo por sí
+sola no activa un canal ni demuestra la integración real con Meta. FINDING-012 y
+FINDING-013 mantienen sus alcances independientes.
+
+## Retiro permanente de identidad LEGACY — 0060
+
+0060 añade `tb_whatsapp_legacy_identity_retirements`, con una fila por `tb_users`
+que haya completado alguna vinculación VERIFIED y `first_verified_at` tomado del
+primer `verified_at` real. El backfill incluye historial ACTIVE y REVOKED. No
+reescribe el `external_identifier`, que sigue siendo un identificador externo
+genérico, ni modifica Auth, hogares, membresías, miembro actor o selección de
+WhatsApp.
+
+La tabla es propiedad de `postgres`, tiene RLS habilitado y revoca todos los
+privilegios directos a PUBLIC, anon, authenticated y service_role. No hay RPC de
+lectura, actualización o borrado de la marca para roles de aplicación. El resolver
+conserva primero la precedencia VERIFIED y el rechazo de conflictos; antes de
+devolver LEGACY comprueba que el usuario no tenga la marca. Así, verificar Q
+retira de forma permanente P como identidad LEGACY, incluso si luego se revoca Q.
+Un usuario puede volver a usar P solo tras un desafío explícito de posesión que
+cree un vínculo VERIFIED nuevo.
+
+El inicio admite una coincidencia `external_identifier` solo cuando pertenece a
+la misma fila interna resuelta desde Auth; otro propietario sigue dando
+`UNAVAILABLE`. La finalización revalida Auth, correo confirmado y pertenencia de
+ese identificador al usuario del desafío después de obtener el gate. Inserción del
+vínculo, marca, consumo del desafío y checkpoint del evento ocurren en la misma
+transacción; si falla la marca, se revierte toda la finalización. La marca y el
+resolver comparten el advisory lock `(18443,43)` con claims y revocaciones. Un
+claim anterior deja de pasar la validación SQL de su lease tras la transición, y
+uno que espera el gate resuelve la identidad después de la transición. Las
+regresiones locales incluyen ambas ordenaciones, P→Q→revocación de Q y replay.
+
+La cuenta sin mapeo `auth_user_id` no puede iniciar el desafío y no se adopta por
+coincidencia telefónica; el comportamiento LEGACY existente de esa fila no se
+reescribe en este incremento. La verificación de esquema, ACL y runtime remoto,
+así como el transporte real de JWT y el webhook firmado de Meta, requieren
+validación externa y no se afirman aquí.
 
 ## Elegibilidad financiera Web y transición de privilegios — 0042/0048/0053
 

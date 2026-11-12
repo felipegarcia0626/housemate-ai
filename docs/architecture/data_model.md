@@ -93,9 +93,12 @@ siendo internos del backend. Resolver no autoriza una operación posterior por s
 solo: la admisión resuelve de nuevo y adquiere el lease en la misma transacción.
 Si legacy y un vínculo activo apuntan al mismo usuario gana VERIFIED; si discrepan
 se devuelve UNAVAILABLE. Sin vínculo activo, cualquier historial revocado para el
-remitente impide fallback a legacy. Una re-verificación legítima mediante 0043 puede
-crear un nuevo vínculo activo: se utiliza su nueva identidad/version, nunca se
-convierte un lease antiguo. No hay recuperación administrativa ni transferencia.
+remitente impide fallback a legacy. Desde 0060, además, una cuenta con cualquier
+historial VERIFIED tiene una marca permanente de retiro y ninguno de sus
+`external_identifier` puede autorizar LEGACY, incluso después de revocar el
+vínculo. Una re-verificación requiere un desafío nuevo y produce una identidad
+VERIFIED/versionada; nunca convierte un lease antiguo. No hay recuperación
+administrativa ni transferencia.
 
 La entrada histórica por `p_user_id` se conserva solo para el backend legacy:
 deriva y revalida el identificador actual de esa fila y no admite usuarios que
@@ -147,16 +150,20 @@ ninguna migración remota como parte de las pruebas locales.
 
 ## Vinculación WhatsApp: base aditiva 0043
 
-Persistencia y contratos SQL únicamente; sin endpoints, UI, webhook ni backfill.
-No cambia `tb_users.external_identifier`, Auth, memberships ni datos financieros.
-No demuestra vinculación del número actualmente utilizado por el canal heredado.
+Históricamente, la migración 0043 añadió persistencia y contratos SQL, sin endpoints,
+interfaz Web, integración con el webhook ni backfill. Esa descripción corresponde al
+alcance de 0043 por sí sola; no describe el comportamiento actual del repositorio.
+La implementación posterior expone un contrato HTTP, pero no se afirma que exista
+una interfaz Web de usuario. La vinculación no cambia la identidad interna, Auth,
+memberships ni datos financieros.
 
 - `tb_whatsapp_links`: propietario `user_id`, remitente canónico (8–15 dígitos,
   sin `+`, primer dígito distinto de cero), estado `ACTIVE`/`REVOKED`, versión
   positiva y fechas de creación/verificación/revocación. Índices únicos parciales
   por usuario y remitente activo. El historial revocado se conserva en la misma
-  tabla; `(user_id, authorization_version)` es único. No hay RPC de revocación o
-  sustitución en este incremento; una fila revocada no aparece como vínculo activo.
+  tabla; `(user_id, authorization_version)` es único. 0043 por sí sola no añadió
+  una RPC de revocación o sustitución; `fn_revoke_whatsapp_link` se incorporó
+  después. Una fila revocada no aparece como vínculo activo.
 - `tb_whatsapp_link_challenges`: UUID, propietario, remitente esperado, digest
   SHA-256 hexadecimal, clave de idempotencia por usuario, estado, hasta cinco
   intentos, creación/expiración/resolución. Expira exactamente diez minutos después
@@ -174,10 +181,48 @@ No demuestra vinculación del número actualmente utilizado por el canal heredad
   idéntica devuelve el resultado guardado; un evento con otros argumentos o ya
   reservado por otro flujo devuelve `EVENT_CONFLICT` sin completar el vínculo.
   Un replay `LINKED` describe el resultado histórico del evento, no una autorización
-  vigente; el canal futuro siempre deberá consultar el vínculo activo y su versión.
+  vigente; las operaciones ordinarias posteriores resuelven el vínculo activo y su
+  versión antes de adquirir autorización.
 
-Los contratos TypeScript están en `modules/whatsapp/whatsapp-linking.types.ts`;
-no se expone todavía ningún contrato HTTP:
+## Retiro permanente de identidad LEGACY — 0060
+
+`tb_whatsapp_legacy_identity_retirements` registra una fila por usuario interno
+que completó alguna verificación, con FK `RESTRICT` a `tb_users` y el timestamp
+real de la primera verificación. La migración toma el menor `verified_at` del
+historial existente (`ACTIVE` o `REVOKED`); no modifica `external_identifier`,
+Auth, hogares, membresías, actores ni selección persistente. La tabla tiene RLS
+sin políticas y no concede DML a roles de aplicación.
+
+El inicio y la finalización del desafío permiten coincidir con un
+`external_identifier` únicamente si esa misma fila pertenece al usuario derivado
+del Auth verificado. La finalización repite la comprobación bajo el gate y solo
+retira LEGACY cuando inserta el vínculo. Vínculo, marca, consumo del desafío y
+resultado de evento son atómicos. La marca no se elimina al revocar; por eso la
+resolución anterior de P→Q no puede reaparecer como LEGACY después de revocar Q.
+Una cuenta sin mapeo Auth no puede iniciar ni completar el desafío y nunca se
+adopta por coincidencia telefónica.
+
+Los contratos TypeScript están en `modules/whatsapp/whatsapp-linking.types.ts`. La
+ruta actual `app/api/auth/whatsapp/link/route.ts` expone `GET`, `POST` y `DELETE`
+para una sesión Web autenticada:
+
+- `GET` consulta el estado del vínculo y del desafío de la cuenta autenticada.
+- `POST` inicia un desafío con `phoneNumber` e `idempotencyKey`; el servidor obtiene
+  la identidad desde la sesión autenticada y exige email confirmado. La respuesta
+  `PENDING` entrega una sola vez el comando de verificación. No se afirma que haya
+  una interfaz Web construida sobre este contrato.
+- `DELETE` cancela el desafío pendiente identificado por `challengeId`. No revoca
+  un vínculo VERIFIED activo. No se encontró un endpoint HTTP para revocar ese
+  vínculo; la revocación existente es la operación SQL `fn_revoke_whatsapp_link`.
+
+El servidor genera el secreto con 32 bytes de CSPRNG codificados en base64url y
+persiste únicamente su digest SHA-256. La respuesta de inicio muestra el secreto
+una vez como `VINCULAR <uuid> <secreto>`; el cliente no puede recuperarlo al repetir
+la solicitud. El parser del webhook acepta ese formato y calcula el digest antes
+de completar el desafío. Si se pierde el secreto, debe iniciarse otro desafío
+cuando los límites de creación lo permitan.
+
+Las RPC siguientes describen el contrato interno de PostgreSQL, no endpoints HTTP:
 
 | RPC | Argumentos PostgreSQL | Resultado JSONB |
 | --- | --- | --- |
@@ -187,14 +232,14 @@ no se expone todavía ningún contrato HTTP:
 | `fn_complete_whatsapp_link_challenge` | desafío UUID, remitente TEXT, digest TEXT, evento TEXT | `LINKED`/`linkId`, `INVALID`, `UNAVAILABLE`, `RATE_LIMITED` o `EVENT_CONFLICT` |
 
 Iniciar admite como máximo tres desafíos nuevos en quince minutos y exige un
-minuto entre creaciones. Cancelar no reinicia esos límites. Repetir exactamente
-la clave y argumentos recupera el desafío existente, sin recuperar el código ni
-extender su vida; cambiar argumentos devuelve `IDEMPOTENCY_CONFLICT`. El backend
-futuro debe generar UUID, clave y código con CSPRNG (recomendación: 32 bytes,
-256 bits), calcular SHA-256 y mostrar el código una sola vez. El mensaje futuro
-deberá identificar desafío y secreto: `VINCULAR <uuid> <secreto>`. Si se pierde el
-secreto se inicia otra solicitud, respetando los límites; nunca se almacena texto
-plano para recuperarlo. Esta generación no está implementada en 0043.
+minuto entre creaciones. Cancelar no reinicia esos límites. La RPC es idempotente
+para la misma clave y argumentos y devuelve el desafío existente, pero el servicio
+HTTP no vuelve a entregar el secreto: si detecta que esa solicitud ya inició el
+desafío, responde `RESTART_REQUIRED`. Cambiar argumentos para la misma clave
+produce `IDEMPOTENCY_CONFLICT`. El servidor actual genera el secreto con CSPRNG
+(32 bytes), calcula SHA-256 y lo muestra una sola vez en
+`VINCULAR <uuid> <secreto>`; solo se almacena el digest. Si se pierde el secreto,
+debe iniciarse otra solicitud respetando los límites.
 
 El índice global único de digest evita reutilizar el mismo secreto en desafíos
 distintos. Un código incorrecto desde el remitente esperado incrementa el contador
@@ -205,15 +250,29 @@ contadores están compartidos por todas las instancias PostgreSQL.
 
 ### Transición y rollback
 
-Todo remitente que ya exista en `external_identifier`, incluso en la misma cuenta,
-produce `UNAVAILABLE`: no se promueve ni transfiere silenciosamente. También se
-revalida al completar. El canal heredado permanece intacto. La integración futura
-debe interceptar el prefijo reservado después de HMAC/extracción y antes de buscar
-el usuario, adquirir el lease ordinario o reservar el evento. No puede reservarlo
-antes de llamar a la finalización, ni mandar códigos inválidos al agente.
+En la implementación histórica de 0043, cualquier coincidencia de remitente en
+`external_identifier` producía `UNAVAILABLE`, incluso si pertenecía a la misma
+cuenta. Desde 0060, el propietario exacto de esa fila puede promover su propio
+identificador LEGACY después de demostrar posesión mediante el desafío. Una
+coincidencia que pertenece a otra cuenta continúa produciendo `UNAVAILABLE`; no
+se permite transferir una identidad por posesión del teléfono. La finalización
+vuelve a comprobar la propiedad bajo el gate transaccional antes de crear el
+vínculo.
 
-No hay limpieza automática. Antes de exponer el flujo deben fijarse retención,
-limpieza y presupuesto operativo del ledger/contadores, sin borrar correlaciones
+La primera verificación completada crea una marca permanente de retirada LEGACY
+para la cuenta interna. La marca no se elimina al revocar posteriormente el vínculo
+VERIFIED. Por tanto, tanto promover P como verificar un número libre Q retira de
+forma permanente el fallback LEGACY de esa cuenta; revocar Q no reactiva P ni
+ningún otro `external_identifier` suyo.
+
+Cancelar un desafío pendiente solo cambia el estado de ese desafío. Revocar un
+vínculo VERIFIED es una operación distinta y no deshace la marca de retirada.
+El canal intercepta el prefijo reservado `VINCULAR` después de validar el webhook
+y antes de resolver la identidad ordinaria o ejecutar el agente; códigos inválidos
+no se envían al agente.
+
+No hay limpieza automática. La operación sostenida del flujo requiere definir
+retención, limpieza y presupuesto del ledger/contadores, sin borrar correlaciones
 durante la ventana de redelivery. Una limpieza de desafíos tampoco podrá permitir
 eludir límites de creación. Nunca se deben registrar códigos, digests, remitentes
 completos ni cuerpos de mensajes en logs.
