@@ -96,62 +96,69 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
       throw new Error("Expected real authorization lock wait");
     };
   }
-  async function prepare(n, kind = "CREATE_INCOME") {
-    const admission = await admit(operation, n);
-    assert.equal(admission.status, "ADMITTED");
-    await operation.query(
-      "SELECT public.fn_transition_whatsapp_household_context($1,'test-emitter',$1,$2,'SET_SELECTION',$3,$1)",
-      [uid(n), admission.epoch, household],
+  async function prepare(n, kind) {
+    const event = `authorization-confirm:${n}`;
+    const token = uid(400 + n);
+    const conversation = `whatsapp:123456:${sender(n)}`;
+    const claim = await queryResult(
+      operation,
+      "SELECT public.fn_claim_whatsapp_event($1,$2,'123456',$3,$4) AS result",
+      [event, sender(n), "a".repeat(64), token],
     );
-    // The admin observer inserts the proposal fixture directly. This setup
-    // does not exercise creation authorization or its lease guard. This
-    // harness tests the eligible confirmation RPCs under service_role.
-    // The event-receipts SQL tests and recovery-concurrency harness exercise
-    // the authorized event wrappers for proposal creation, update and rejection.
-    const proposal = await observer.query(
-      `INSERT INTO public.tb_pending_proposals(
-         id,household_id,conversation_key,actor_member_id,source,
-         operation_type,payload
-       ) VALUES($1,$2,$3,$4,'WHATSAPP',$5::public.pending_operation_type,$6::jsonb)
-       RETURNING id,updated_at::text AS updated_at,version`,
+    assert.equal(claim.status, "CLAIMED");
+    const started = await queryResult(
+      operation,
+      "SELECT public.fn_begin_whatsapp_event($1,$2,1) AS result",
+      [event, token],
+    );
+    assert.equal(started.status, "STARTED");
+    await operation.query(
+      "SELECT public.fn_transition_whatsapp_household_context($1,'123456',$2,$3,'SET_SELECTION',$4,$1)",
+      [uid(n), claim.leaseId, claim.contextEpoch, household],
+    );
+    await operation.query("SELECT public.fn_bind_whatsapp_event_context($1,$2,1)", [
+      event,
+      token,
+    ]);
+    const proposal = await queryResult(
+      operation,
+      "SELECT to_jsonb(public.fn_create_whatsapp_proposal_event($1,$2,1,$3,$4,$5,$6)) AS result",
       [
+        event,
+        token,
         uid(200 + n),
-        household,
-        `authorization:${n}`,
-        uid(n),
+        conversation,
         kind,
         JSON.stringify({ actorMemberId: uid(n), source: "WHATSAPP" }),
       ],
     );
-    return { admission, proposal: proposal.rows[0] };
+    return { event, token, conversation, proposal, claim };
   }
-  function confirm(client, n, prepared, kind) {
+  function confirm(client, n, prepared, kind, { epoch = 1, amount = 9 } = {}) {
     const args = [
-      uid(n),
+      prepared.event,
+      prepared.token,
       prepared.proposal.id,
-      household,
-      `authorization:${n}`,
+      prepared.conversation,
       prepared.proposal.updated_at,
-      prepared.admission.epoch,
+      uid(n),
+      epoch,
+      amount,
     ];
     if (kind === "CREATE_INCOME")
       return queryResult(
         client,
-        `SELECT public.fn_confirm_pending_income_eligible(
-      p_auth_user_id=>$1,p_proposal_id=>$2,p_household_id=>$3,p_conversation_key=>$4,
-      p_actor_member_id=>$1,p_context_source=>'WHATSAPP',p_expected_updated_at=>$5,
-      p_created_by=>$1,p_member_id=>$1,p_amount=>9,p_income_date=>current_date,p_description=>'Authorization race',
-      p_whatsapp_user_id=>$1,p_whatsapp_lease_id=>$1,p_whatsapp_lease_epoch=>$6) AS result`,
+        `SELECT public.fn_confirm_whatsapp_income_event(
+          $1,$2,$7,$3,$4,$5,$6,$8,current_date,'Authorization race',NULL
+        ) AS result`,
         args,
       );
     return queryResult(
       client,
-      `SELECT public.fn_confirm_pending_expense_eligible(
-      p_auth_user_id=>$1,p_proposal_id=>$2,p_household_id=>$3,p_conversation_key=>$4,
-      p_actor_member_id=>$1,p_context_source=>'WHATSAPP',p_expected_updated_at=>$5,
-      p_created_by=>$1,p_paid_by=>$1,p_total_amount=>9,p_expense_date=>current_date,
-      p_source=>'WHATSAPP',p_items=>'[]',p_distributions=>jsonb_build_array(jsonb_build_object('householdMemberId',$1::uuid,'amount',9,'percentage',100)),
-      p_whatsapp_user_id=>$1,p_whatsapp_lease_id=>$1,p_whatsapp_lease_epoch=>$6) AS result`,
+      `SELECT public.fn_confirm_whatsapp_expense_event(
+        $1,$2,$7,$3,$4,$5,$6,NULL,NULL,NULL,$8::numeric,current_date,NULL,'[]',
+        jsonb_build_array(jsonb_build_object('householdMemberId',$6::uuid,'amount',$8::numeric,'percentage',100))
+      ) AS result`,
       args,
     );
   }
@@ -201,6 +208,7 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
     if (isIncome) assert.deepEqual(after.distributions, before.distributions);
     else {
       assert.equal(movement.status, "CONFIRMED");
+      assert.equal(movement.source, "WHATSAPP");
       assert.equal(after.distributions.length, 1);
       assert.equal(after.distributions[0].expense_id, movement.id);
       assert.equal(after.distributions[0].household_member_id, uid(n));
@@ -395,15 +403,42 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
         const prepared = await prepare(n, kind);
         const before = await state(n);
         if (operationFirst) {
+          for (const invalid of [
+            { event: "missing-confirmation-event" },
+            { token: uid(999) },
+          ]) {
+            await assert.rejects(confirm(operation, n, { ...prepared, ...invalid }, kind), {
+              code: "40001",
+              message: "WhatsApp event is no longer current",
+            });
+          }
+          await assert.rejects(confirm(operation, n, prepared, kind, { epoch: 2 }), {
+            code: "40001",
+            message: "WhatsApp event is no longer current",
+          });
+          assert.deepEqual(await state(n), before);
           await operation.query("BEGIN");
           const result = await confirm(operation, n, prepared, kind);
           assert.equal(result.status, "CREATED");
+          assert.deepEqual(await confirm(operation, n, prepared, kind), result);
+          await operation.query("SAVEPOINT changed_confirmation_digest");
+          await assert.rejects(confirm(operation, n, prepared, kind, { amount: 10 }), {
+            code: "40001",
+            message: "Event operation changed",
+          });
+          await operation.query("ROLLBACK TO SAVEPOINT changed_confirmation_digest");
           pending = capture(revoke(change, n));
           await waitChange();
           await operation.query("COMMIT");
           assert.equal((await pending).result.status, "REVOKED");
           const after = await state(n);
           financialState(before, after, n, kind, result);
+          const checkpoint = await queryResult(
+            observer,
+            "SELECT business_result AS result FROM public.tb_whatsapp_event_receipts WHERE external_event_id=$1",
+            [prepared.event],
+          );
+          assert.deepEqual(checkpoint, result);
           revokedOnly(
             {
               ...before,
@@ -424,7 +459,7 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
           assert.equal(failed.error?.code, "40001");
           assert.equal(
             failed.error?.message,
-            "WhatsApp context lease is no longer current",
+            "WhatsApp event authorization is unavailable",
           );
           revokedOnly(before, await state(n));
         }
@@ -435,7 +470,7 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
     }
 
     // Two operations with one lease/proposal: one movement and terminal replay.
-    const prepared = await prepare(7);
+    const prepared = await prepare(7, "CREATE_INCOME");
     const beforeDuplicate = await state(7);
     await operation.query("BEGIN");
     const result = await confirm(operation, 7, prepared, "CREATE_INCOME");
@@ -443,14 +478,14 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
     await waitChange();
     await operation.query("COMMIT");
     const replay = (await pending).result;
-    assert.equal(replay.status, "ALREADY_COMPLETED");
+    assert.deepEqual(replay, result);
     assert.equal(replay.income_id, result.income_id);
     const afterDuplicate = await state(7);
     financialState(beforeDuplicate, afterDuplicate, 7, "CREATE_INCOME", result);
     assert.deepEqual(afterDuplicate.links, beforeDuplicate.links);
 
     // A new verified binding never upgrades an old lease's identity/version.
-    const old = await prepare(8);
+    const { claim: old } = await prepare(8, "CREATE_INCOME");
     await revoke(change, 8);
     await operation.query(
       "SELECT public.fn_start_whatsapp_link_challenge($1,$2,$3,$4,$2)",
@@ -465,25 +500,25 @@ module.exports = async function whatsappAuthorizationConcurrency(postgres) {
     assert.equal(
       await queryResult(
         operation,
-        "SELECT public.fn_assert_whatsapp_context_lease($1,$1,$2) AS result",
-        [uid(8), old.admission.epoch],
+        "SELECT public.fn_assert_whatsapp_context_lease($1,$2,$3) AS result",
+        [uid(8), old.leaseId, old.contextEpoch],
       ),
       false,
     );
     await operation.query(
-      "SELECT public.fn_release_whatsapp_context_lease($1,$1,$2)",
-      [uid(8), old.admission.epoch],
+      "SELECT public.fn_release_whatsapp_context_lease($1,$2,$3)",
+      [uid(8), old.leaseId, old.contextEpoch],
     );
     const fresh = await admit(operation, 8);
     assert.equal(fresh.origin, "VERIFIED");
     assert.equal(fresh.authorizationVersion, 3);
     assert.equal(fresh.linkId, linked.linkId);
-    assert.ok(fresh.epoch > old.admission.epoch);
+    assert.ok(fresh.epoch > old.contextEpoch);
     assert.equal(
       await queryResult(
         operation,
-        "SELECT public.fn_assert_whatsapp_context_lease($1,$1,$2) AS result",
-        [uid(8), old.admission.epoch],
+        "SELECT public.fn_assert_whatsapp_context_lease($1,$2,$3) AS result",
+        [uid(8), old.leaseId, old.contextEpoch],
       ),
       false,
     );

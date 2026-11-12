@@ -259,56 +259,52 @@ module.exports = async function eligibilityRaces(postgres) {
       for (const first of [true, false]) {
         await reset();
         const id = randomUUID();
-        const conversation = "eligibility-race-" + id;
-        await inspect.query(
-          "INSERT INTO public.tb_pending_proposals(id,household_id,conversation_key,operation_type,payload,status) VALUES($1,$2,$5,$3,$4,'AWAITING_CONFIRMATION')",
+        const expense = movement === "expense";
+        const date = new Date().toISOString().slice(0, 10);
+        const presented = expense
+          ? {
+              paidByMemberId: member,
+              totalAmount: 42,
+              expenseDate: date,
+              items: [],
+              splits: [{ householdMemberId: member, percentage: 100 }],
+            }
+          : { memberId: member, amount: 42, incomeDate: date, description: "Eligibility race" };
+        const persistence = expense
+          ? {
+              householdId: household,
+              createdBy: member,
+              paidByMemberId: member,
+              totalAmount: 42,
+              expenseDate: date,
+              source: "WEB",
+              items: [],
+              distributions: [{ householdMemberId: member, amount: 42, percentage: 100 }],
+            }
+          : { ...presented, householdId: household, createdBy: member };
+        const { rows: [{ version }] } = await inspect.query(
+          `INSERT INTO public.tb_pending_proposals(
+            id,household_id,conversation_key,actor_member_id,source,operation_type,payload,status
+          ) VALUES($1,$2,$3,$4,'WEB',$5,$6,'AWAITING_CONFIRMATION')
+          RETURNING version::text`,
           [
-            id,
-            household,
+            id, household, `web:${household}:${member}`, member,
             "CREATE_" + movement.toUpperCase(),
-            JSON.stringify({ actorMemberId: member, source: "WEB" }),
-            conversation,
+            JSON.stringify({
+              actorMemberId: member,
+              source: "WEB",
+              [movement]: presented,
+              _web_confirmation: { presented, persistence },
+            }),
           ],
         );
-        // Preserve timestamp microseconds rather than round-tripping through Date.
-        const version = (
-          await inspect.query(
-            "SELECT updated_at::text AS version FROM public.tb_pending_proposals WHERE id=$1",
-            [id],
-          )
-        ).rows[0].version;
-        const args =
-          movement === "income"
-            ? "p_member_id=>'" +
-              member +
-              "',p_amount=>42,p_income_date=>current_date,p_description=>'Eligibility race'"
-            : "p_paid_by=>'" +
-              member +
-              "',p_total_amount=>42,p_expense_date=>current_date,p_source=>'WEB',p_items=>'[]',p_distributions=>'" +
-              JSON.stringify([
-                { householdMemberId: member, amount: 42, percentage: 100 },
-              ]) +
-              "'";
-        const confirm =
-          "SELECT public.fn_confirm_pending_" +
-          movement +
-          "_eligible(p_auth_user_id=>'" +
-          auth +
-          "',p_proposal_id=>'" +
-          id +
-          "',p_household_id=>'" +
-          household +
-          "',p_conversation_key=>'" +
-          conversation +
-          "',p_actor_member_id=>'" +
-          member +
-          "',p_context_source=>'WEB',p_expected_updated_at=>$1,p_created_by=>'" +
-          member +
-          "'," +
-          args +
-          ") AS result";
+        const confirm = expense
+          ? "SELECT public.fn_confirm_web_pending_expense($1,$2,$3) AS result"
+          : "SELECT public.fn_confirm_web_pending_income($1,$2,$3) AS result";
+        const confirmArgs = [id, household, version];
         const initial = await count(movement);
-        await financial.query("BEGIN; SET LOCAL ROLE service_role");
+        await financial.query("BEGIN");
+        await setWebIdentity(financial);
         await change.query("BEGIN");
         const revoke =
           "UPDATE auth.users SET email_confirmed_at=NULL WHERE id='" +
@@ -316,7 +312,7 @@ module.exports = async function eligibilityRaces(postgres) {
           "'";
         if (first) {
           assert.equal(
-            (await financial.query(confirm, [version])).rows[0].result.status,
+            (await financial.query(confirm, confirmArgs)).rows[0].result.status,
             "CREATED",
           );
           const pending = capture(change.query(revoke));
@@ -326,7 +322,7 @@ module.exports = async function eligibilityRaces(postgres) {
           await change.query("COMMIT");
         } else {
           await change.query(revoke);
-          const pending = capture(financial.query(confirm, [version]));
+          const pending = capture(financial.query(confirm, confirmArgs));
           await blocked(fp);
           await change.query("COMMIT");
           denied((await pending).error);
@@ -344,6 +340,7 @@ module.exports = async function eligibilityRaces(postgres) {
         );
         assert.equal(proposal[movement + "_id"] !== null, first);
         assert.equal((await count(movement)) - initial, first ? 1 : 0);
+        await inspect.query("DELETE FROM public.tb_pending_proposals WHERE id=$1", [id]);
         console.log(
           "PASS " +
             movement +

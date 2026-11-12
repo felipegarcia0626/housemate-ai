@@ -171,11 +171,11 @@ BEGIN
     END LOOP;
   END LOOP;
 
-  IF NOT has_function_privilege(
+  IF has_function_privilege(
       'service_role',
       'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::regprocedure,
       'EXECUTE'
-    ) OR NOT has_function_privilege(
+    ) OR has_function_privilege(
       'service_role',
       'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::regprocedure,
       'EXECUTE'

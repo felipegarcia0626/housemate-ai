@@ -149,7 +149,7 @@ BEGIN
     IF pg_get_userbyid(f.proowner)<>'postgres' OR NOT f.prosecdef OR f.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog'] THEN RAISE EXCEPTION 'Unsafe authorization function'; END IF;
     IF has_function_privilege('anon',f.oid,'EXECUTE') OR has_function_privilege('authenticated',f.oid,'EXECUTE')
       OR EXISTS(SELECT 1 FROM aclexplode(coalesce(f.proacl,acldefault('f',f.proowner))) WHERE grantee=0 AND privilege_type='EXECUTE') THEN RAISE EXCEPTION 'Public authorization access'; END IF;
-    IF has_function_privilege('service_role',f.oid,'EXECUTE') <> (f.proname NOT IN ('fn_resolve_whatsapp_identity_locked','fn_admit_whatsapp_identity_locked','fn_whatsapp_lease_authorized','fn_whatsapp_link_account','fn_confirm_pending_expense_consistent','fn_confirm_pending_income_consistent')) THEN RAISE EXCEPTION 'Wrong helper privileges'; END IF;
+    IF has_function_privilege('service_role',f.oid,'EXECUTE') <> (f.proname NOT IN ('fn_resolve_whatsapp_identity_locked','fn_admit_whatsapp_identity_locked','fn_whatsapp_lease_authorized','fn_whatsapp_link_account','fn_confirm_pending_expense_consistent','fn_confirm_pending_income_consistent','fn_confirm_pending_expense_eligible','fn_confirm_pending_income_eligible')) THEN RAISE EXCEPTION 'Wrong helper privileges'; END IF;
   END LOOP;
   FOR f IN SELECT p.* FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname IN
     ('fn_create_whatsapp_agent_draft','fn_update_whatsapp_agent_draft','fn_delete_whatsapp_agent_draft','fn_create_whatsapp_pending_proposal','fn_update_whatsapp_pending_proposal','fn_reject_whatsapp_pending_proposal','fn_assert_whatsapp_active_context') LOOP

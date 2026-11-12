@@ -279,14 +279,15 @@ antes de la RPC existente, que sigue validando lease/selección dentro de la mis
 transacción. Un usuario demo sin Auth no puede confirmar mediante esta entrada.
 Esto NO constituye vinculación verificada de WhatsApp.
 
-0052 retiró DML financiero directo y RPC base históricas. 0053 retiró
-`service_role` de las seis RPC genéricas CRUD y conserva permisos de confirmación
-de propuestas para el runtime actual. El repositorio versiona 0051–0053, pero la
-aplicación remota y las ACL efectivas del entorno desplegado no están verificadas.
-La frontera privilegiada de WhatsApp y las confirmaciones siguen pendientes; no
-se declara aislado el canal por compartir el perímetro `service_role`.
+**Alcance histórico de 0052–0053:** 0052 retiró DML financiero directo y RPC base
+históricas. 0053 retiró `service_role` de las seis RPC genéricas CRUD y conservó
+permisos de confirmación de propuestas para el runtime de ese corte. La afirmación
+de que la frontera privilegiada de WhatsApp y las confirmaciones seguían pendientes
+describe ese estado histórico, anterior a los cortes locales 0061–0062 descritos
+más abajo. La aplicación remota y las ACL efectivas desplegadas no se verifican
+por el versionamiento de esas migraciones.
 
-El cambio remoto de privilegios requiere:
+La aplicación remota del corte CRUD descrito por 0052–0053 requiere:
 
 1. Verificar destino, esquema Auth, firmas, propietarios y ACL efectivos remotos.
 2. Desplegar el runtime 0053 y comprobar que el SHA activo usa JWT para estos seis
@@ -296,11 +297,13 @@ El cambio remoto de privilegios requiere:
    ownership y permisos por columna. Los cuerpos CRUD genéricos quedan invocables
    internamente por sus wrappers `SECURITY DEFINER` propiedad de `postgres`.
 
-No aplicar el corte antes de actualizar la versión desplegada. Una reversión a
-código antiguo después del corte fallará cerrada y requiere un plan específico.
-No se declara protección obligatoria de toda la base hasta completar ese corte.
+No aplicar remotamente 0061–0062 antes de actualizar la versión desplegada que
+usa sus wrappers. Una reversión a código antiguo después del corte fallará
+cerrada y requiere un plan específico. Este requisito operativo no altera el
+estado de las migraciones locales descrito más abajo.
 
-Mapa de sustitución para el corte (solo después de verificar el despliegue):
+Mapa histórico de sustitución de CRUD para 0052–0053 (el estado local posterior
+de confirmaciones y permisos se describe en 0061–0062 más abajo):
 
 | Repositorio | Entradas nuevas | Vías históricas que deben quedar privadas |
 | --- | --- | --- |
@@ -310,7 +313,8 @@ Mapa de sustitución para el corte (solo después de verificar el despliegue):
 
 El corte local 0061 para `tb_pending_proposals` conserva `SELECT` de
 `service_role`, elimina INSERT/UPDATE/DELETE/TRUNCATE directos y revoca EXECUTE
-directo de los delegates genéricos y WhatsApp de creación, corrección y rechazo.
+directo de `fn_reject_pending_proposal`, `fn_create_whatsapp_pending_proposal`,
+`fn_update_whatsapp_pending_proposal` y `fn_reject_whatsapp_pending_proposal`.
 Los wrappers Web y de evento WhatsApp mantienen sus grants y ejecutan esos
 delegates bajo el propietario `postgres` de sus funciones `SECURITY DEFINER`;
 no se cambia el modo de seguridad ni el propietario de los delegates. El corte
@@ -324,6 +328,26 @@ ACL efectivas y los harnesses Web/WhatsApp que entran por sus wrappers. El
 repositorio no define un script `test`, por lo que `npm run test` no se pudo
 ejecutar ni se presenta como validación. No hay evidencia de ACL remotas,
 aplicación en Supabase ni runtime desplegado.
+
+### Confirmaciones financieras internas — 0062 (estado local)
+
+0062 revoca EXECUTE directo sobre `fn_confirm_pending_expense_eligible` y
+`fn_confirm_pending_income_eligible` a `PUBLIC` y a los roles de aplicación
+`anon`, `authenticated` y `service_role`; `postgres` conserva la ejecución
+interna necesaria. Los wrappers Web autenticados y los wrappers de evento
+WhatsApp conservan sus contratos y permisos. La confirmación WhatsApp continúa
+entrando por el wrapper de evento, que valida su contexto autorizado y persiste
+el efecto financiero junto con su checkpoint en la misma transacción.
+
+Según la validación local registrada, `npm run test:sql` aplicó 0001–0062 y
+terminó en PASS sobre PostgreSQL embebido aislado. En el delegate de gasto, 0062
+rechaza antes de llamar al mutador el caso en que
+`p_source` no es NULL y difiere de `p_context_source`; la función de ingreso no
+recibe ese par de parámetros y no fue modificada por esta regla. La evidencia
+registrada para 0062 corresponde a pruebas locales en PostgreSQL aislado; no
+demuestra ACL efectivas en Supabase remoto, el runtime desplegado ni la ausencia
+de consumidores externos. FINDING-013 permanece OPEN y FINDING-012 permanece
+IN_PROGRESS.
 
 ## Recuperación de rechazo y compensación de propuestas WhatsApp — FINDING-012 / 0057–0058
 

@@ -80,6 +80,53 @@ BEGIN
 END;
 $fixtures$;
 
+-- Exercise the internal source invariant as the fixture owner. Application
+-- access is tested separately under SET ROLE below.
+DO $source_coherence$
+DECLARE
+  proposal_id constant uuid := '54000000-0054-4000-8000-000000000198';
+  home_id constant uuid := '54000000-0054-4000-8000-000000000010';
+  member_id constant uuid := '54000000-0054-4000-8000-000000000031';
+  proposal_before public.tb_pending_proposals;
+  counts_before bigint[];
+BEGIN
+  INSERT INTO public.tb_pending_proposals(
+    id, household_id, conversation_key, actor_member_id, source, operation_type, payload
+  ) VALUES (
+    proposal_id, home_id, 'web:source-coherence', member_id, 'WEB', 'CREATE_EXPENSE',
+    jsonb_build_object('source','WEB','actorMemberId',member_id)
+  ) RETURNING * INTO proposal_before;
+  counts_before := ARRAY[
+    (SELECT count(*) FROM public.tb_expenses),
+    (SELECT count(*) FROM public.tb_expense_items),
+    (SELECT count(*) FROM public.tb_expense_distributions)
+  ];
+  BEGIN
+    PERFORM public.fn_confirm_pending_expense_eligible(
+      '54000000-0054-4000-8000-000000000001', proposal_id, home_id,
+      proposal_before.conversation_key, member_id, 'WEB', proposal_before.updated_at,
+      p_created_by => member_id, p_paid_by => member_id, p_total_amount => 9,
+      p_expense_date => current_date, p_source => 'WHATSAPP',
+      p_items => '[]', p_distributions => jsonb_build_array(
+        jsonb_build_object('householdMemberId',member_id,'amount',9,'percentage',100)
+      )
+    );
+    RAISE EXCEPTION 'Contradictory expense source passed the internal delegate';
+  EXCEPTION WHEN invalid_parameter_value THEN
+    IF SQLERRM <> 'Expense source does not match confirmation context' THEN RAISE; END IF;
+  END;
+  IF counts_before IS DISTINCT FROM ARRAY[
+       (SELECT count(*) FROM public.tb_expenses),
+       (SELECT count(*) FROM public.tb_expense_items),
+       (SELECT count(*) FROM public.tb_expense_distributions)
+     ] OR (SELECT p FROM public.tb_pending_proposals AS p WHERE p.id=proposal_id)
+          IS DISTINCT FROM proposal_before THEN
+    RAISE EXCEPTION 'Source mismatch changed financial data or proposal state';
+  END IF;
+  DELETE FROM public.tb_pending_proposals AS p WHERE p.id=proposal_id;
+END;
+$source_coherence$;
+
 CREATE FUNCTION public.test_0054_reject_income_insert()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -101,10 +148,9 @@ DECLARE
   target_column record;
   helper regprocedure := 'public.fn_require_web_financial_actor(uuid)'::regprocedure;
   split_helper regprocedure := 'public.fn_assert_web_expense_distribution_snapshot(jsonb,jsonb,jsonb,jsonb)'::regprocedure;
-  generic_expense regprocedure := 'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::regprocedure;
-  generic_income regprocedure := 'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::regprocedure;
-  generic_reject regprocedure := 'public.fn_reject_pending_proposal(uuid,uuid,text,uuid,public.expense_source,public.pending_operation_type)'::regprocedure;
   private_helpers regprocedure[] := ARRAY[
+    'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::regprocedure,
+    'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::regprocedure,
     'public.fn_reject_pending_proposal(uuid,uuid,text,uuid,public.expense_source,public.pending_operation_type)'::regprocedure,
     'public.fn_create_whatsapp_pending_proposal(uuid,uuid,text,uuid,public.pending_operation_type,jsonb,uuid,uuid,bigint)'::regprocedure,
     'public.fn_update_whatsapp_pending_proposal(uuid,uuid,text,uuid,public.pending_operation_type,jsonb,timestamp with time zone,uuid,uuid,bigint)'::regprocedure,
@@ -178,11 +224,6 @@ BEGIN
        ) acl WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE'
      ) THEN
     RAISE EXCEPTION 'Expense distribution snapshot helper is not private and invoker-only';
-  END IF;
-  IF NOT has_function_privilege('service_role',generic_expense,'EXECUTE')
-     OR NOT has_function_privilege('service_role',generic_income,'EXECUTE')
-     OR has_function_privilege('service_role',generic_reject,'EXECUTE') THEN
-    RAISE EXCEPTION 'Unexpected service_role eligible or proposal delegate privileges';
   END IF;
   FOREACH private_helper IN ARRAY private_helpers LOOP
     IF has_function_privilege('service_role',private_helper,'EXECUTE')
@@ -295,6 +336,8 @@ BEGIN
   END LOOP;
 
   FOREACH statement IN ARRAY ARRAY[
+    'SELECT public.fn_confirm_pending_expense_eligible(NULL::uuid,NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.expense_source,NULL::timestamptz)',
+    'SELECT public.fn_confirm_pending_income_eligible(NULL::uuid,NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.expense_source,NULL::timestamptz)',
     'SELECT public.fn_reject_pending_proposal(NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.expense_source,NULL::public.pending_operation_type)',
     'SELECT public.fn_create_whatsapp_pending_proposal(NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.pending_operation_type,NULL::jsonb,NULL::uuid,NULL::uuid,NULL::bigint)',
     'SELECT public.fn_update_whatsapp_pending_proposal(NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,NULL::public.pending_operation_type,NULL::jsonb,NULL::timestamptz,NULL::uuid,NULL::uuid,NULL::bigint)',

@@ -83,11 +83,11 @@ BEGIN
     'service_role',
     'public.fn_confirm_pending_income_consistent(uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::REGPROCEDURE,
     'EXECUTE'
-  ) OR NOT has_function_privilege(
+  ) OR has_function_privilege(
     'service_role',
     'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::REGPROCEDURE,
     'EXECUTE'
-  ) OR NOT has_function_privilege(
+  ) OR has_function_privilege(
     'service_role',
     'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamptz,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::REGPROCEDURE,
     'EXECUTE'
@@ -250,19 +250,30 @@ BEGIN
     RAISE EXCEPTION 'FAIL valid service_role draft write did not pass the active-context helper';
   END IF;
 
+  -- Seed a scoped event against the existing test lease as the fixture owner.
+  RESET ROLE;
+  INSERT INTO public.tb_processed_whatsapp_events(external_event_id)
+  VALUES ('membership-lock-expense'), ('membership-lock-income');
+  INSERT INTO public.tb_whatsapp_event_receipts(
+    external_event_id, request_digest, event_kind, processing_state, user_id,
+    context_lease_id, context_epoch, household_id, actor_member_id, event_token,
+    event_expires_at, admission_generation
+  )
+  SELECT event_id, repeat('a',64), 'MESSAGE', 'RUNNING', v_user_id,
+         v_lease_id, v_epoch, v_household_two, v_member_two, v_lease_id,
+         clock_timestamp() + interval '120 seconds', generation
+  FROM public.tb_whatsapp_admission_gate
+  CROSS JOIN (VALUES ('membership-lock-expense'), ('membership-lock-income')) AS fixture(event_id)
+  WHERE singleton;
+  SET LOCAL ROLE service_role;
+
   v_rejected := FALSE;
   BEGIN
-    PERFORM public.fn_confirm_pending_expense_eligible(
-      p_auth_user_id => '61000000-0000-4000-8000-000000000099',
-      p_proposal_id => '61000000-0000-4000-8000-000000000031',
-      p_household_id => v_household_two,
-      p_conversation_key => 'whatsapp:lock-expense',
-      p_actor_member_id => v_member_two,
-      p_context_source => 'WHATSAPP'::public.expense_source,
-      p_expected_updated_at => '2000-01-01 00:00:00+00'::TIMESTAMPTZ,
-      p_whatsapp_user_id => v_user_id,
-      p_whatsapp_lease_id => v_lease_id,
-      p_whatsapp_lease_epoch => v_epoch
+    PERFORM public.fn_confirm_whatsapp_expense_event(
+      'membership-lock-expense', v_lease_id, 1,
+      '61000000-0000-4000-8000-000000000031', 'whatsapp:lock-expense',
+      '2000-01-01 00:00:00+00'::timestamptz,
+      v_member_two, NULL, NULL, NULL, 9, current_date, NULL, '[]', '[]'
     );
   EXCEPTION WHEN SQLSTATE '40001' THEN
     IF SQLERRM <> 'Pending proposal changed before confirmation' THEN
@@ -276,17 +287,11 @@ BEGIN
 
   v_rejected := FALSE;
   BEGIN
-    PERFORM public.fn_confirm_pending_income_eligible(
-      p_auth_user_id => '61000000-0000-4000-8000-000000000099',
-      p_proposal_id => '61000000-0000-4000-8000-000000000032',
-      p_household_id => v_household_two,
-      p_conversation_key => 'whatsapp:lock-income',
-      p_actor_member_id => v_member_two,
-      p_context_source => 'WHATSAPP'::public.expense_source,
-      p_expected_updated_at => '2000-01-01 00:00:00+00'::TIMESTAMPTZ,
-      p_whatsapp_user_id => v_user_id,
-      p_whatsapp_lease_id => v_lease_id,
-      p_whatsapp_lease_epoch => v_epoch
+    PERFORM public.fn_confirm_whatsapp_income_event(
+      'membership-lock-income', v_lease_id, 1,
+      '61000000-0000-4000-8000-000000000032', 'whatsapp:lock-income',
+      '2000-01-01 00:00:00+00'::timestamptz,
+      v_member_two, 9, current_date, NULL, NULL
     );
   EXCEPTION WHEN SQLSTATE '40001' THEN
     IF SQLERRM <> 'Pending proposal changed before confirmation' THEN
@@ -374,19 +379,14 @@ BEGIN
 
   v_rejected := FALSE;
   BEGIN
-    PERFORM public.fn_confirm_pending_expense_eligible(
-      p_auth_user_id => '61000000-0000-4000-8000-000000000099',
-      p_proposal_id => '61000000-0000-4000-8000-000000000031',
-      p_household_id => v_household_two,
-      p_conversation_key => 'whatsapp:lock-expense',
-      p_actor_member_id => v_member_two,
-      p_context_source => 'WHATSAPP'::public.expense_source,
-      p_whatsapp_user_id => v_user_id,
-      p_whatsapp_lease_id => v_lease_id,
-      p_whatsapp_lease_epoch => v_epoch
+    PERFORM public.fn_confirm_whatsapp_expense_event(
+      'membership-lock-expense', v_lease_id, 1,
+      '61000000-0000-4000-8000-000000000031', 'whatsapp:lock-expense',
+      '2000-01-01 00:00:00+00'::timestamptz,
+      v_member_two, NULL, NULL, NULL, 9, current_date, NULL, '[]', '[]'
     );
   EXCEPTION WHEN SQLSTATE '42501' THEN
-    IF SQLERRM <> 'Financial access is unavailable' THEN RAISE; END IF;
+    IF SQLERRM <> 'Active household membership is unavailable' THEN RAISE; END IF;
     v_rejected := TRUE;
   END;
   IF NOT v_rejected THEN
@@ -395,19 +395,14 @@ BEGIN
 
   v_rejected := FALSE;
   BEGIN
-    PERFORM public.fn_confirm_pending_income_eligible(
-      p_auth_user_id => '61000000-0000-4000-8000-000000000099',
-      p_proposal_id => '61000000-0000-4000-8000-000000000032',
-      p_household_id => v_household_two,
-      p_conversation_key => 'whatsapp:lock-income',
-      p_actor_member_id => v_member_two,
-      p_context_source => 'WHATSAPP'::public.expense_source,
-      p_whatsapp_user_id => v_user_id,
-      p_whatsapp_lease_id => v_lease_id,
-      p_whatsapp_lease_epoch => v_epoch
+    PERFORM public.fn_confirm_whatsapp_income_event(
+      'membership-lock-income', v_lease_id, 1,
+      '61000000-0000-4000-8000-000000000032', 'whatsapp:lock-income',
+      '2000-01-01 00:00:00+00'::timestamptz,
+      v_member_two, 9, current_date, NULL, NULL
     );
   EXCEPTION WHEN SQLSTATE '42501' THEN
-    IF SQLERRM <> 'Financial access is unavailable' THEN RAISE; END IF;
+    IF SQLERRM <> 'Active household membership is unavailable' THEN RAISE; END IF;
     v_rejected := TRUE;
   END;
   IF NOT v_rejected THEN

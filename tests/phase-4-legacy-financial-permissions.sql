@@ -55,7 +55,9 @@ DECLARE
     'public.fn_confirm_whatsapp_expense_event(text,uuid,bigint,uuid,text,timestamp with time zone,uuid,uuid,uuid,text,numeric,date,text,jsonb,jsonb)'::REGPROCEDURE::OID,
     'public.fn_confirm_whatsapp_income_event(text,uuid,bigint,uuid,text,timestamp with time zone,uuid,numeric,date,text,uuid)'::REGPROCEDURE::OID
   ];
-  ordinary_crud_functions OID[] := ARRAY[
+  internal_eligible_functions OID[] := ARRAY[
+    'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::REGPROCEDURE::OID,
+    'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::REGPROCEDURE::OID,
     'public.fn_create_expense_eligible(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb)'::REGPROCEDURE::OID,
     'public.fn_update_expense_eligible(uuid,uuid,uuid,uuid,boolean,text,boolean,text,numeric,date,uuid,boolean,uuid,jsonb,jsonb)'::REGPROCEDURE::OID,
     'public.fn_delete_expense_eligible(uuid,uuid,uuid,uuid)'::REGPROCEDURE::OID,
@@ -122,7 +124,7 @@ BEGIN
       IF has_function_privilege(role_name, function_oid, 'EXECUTE')
          IS DISTINCT FROM (
            role_name = 'service_role'
-           AND NOT (function_oid = ANY (ordinary_crud_functions))
+           AND NOT (function_oid = ANY (internal_eligible_functions))
          ) THEN
         RAISE EXCEPTION 'FAIL unexpected approved-entry EXECUTE for % on %',
           role_name, function_oid::REGPROCEDURE;
@@ -355,18 +357,18 @@ RESET ROLE;
 
 DO $$
 BEGIN
-  IF NOT has_function_privilege(
+  IF has_function_privilege(
     'service_role',
     'public.fn_confirm_pending_expense_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,uuid,uuid,text,numeric,date,text,public.expense_source,jsonb,jsonb,uuid,uuid,bigint)'::REGPROCEDURE,
     'EXECUTE'
-  ) OR NOT has_function_privilege(
+  ) OR has_function_privilege(
     'service_role',
     'public.fn_confirm_pending_income_eligible(uuid,uuid,uuid,text,uuid,public.expense_source,timestamp with time zone,uuid,uuid,numeric,date,text,uuid,uuid,uuid,bigint)'::REGPROCEDURE,
     'EXECUTE'
   ) THEN
     RAISE EXCEPTION 'FAIL proposal confirmation permissions were changed';
   END IF;
-  RAISE NOTICE 'PASS service_role cannot directly execute the six ordinary CRUD entries; proposal confirmation remains authorized';
+  RAISE NOTICE 'PASS service_role cannot directly execute the six ordinary CRUD entries; confirmation delegates are private';
 END;
 $$;
 

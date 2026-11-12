@@ -103,6 +103,18 @@
   mediante los wrappers. `npm run test` no está definido en `package.json`, por
   lo que ese comando no fue validado. La suite local no equivale a verificar
   ACL remotas ni callers desplegados.
+- **Confirmaciones internas (0062, local):** tras 0061, las dos confirmaciones
+  elegibles todavía podían ejecutarse como `service_role` sin validar el evento
+  WhatsApp ni guardar su checkpoint. En gasto, el contexto autorizado y el
+  origen persistido podían diferir. 0062 retira el acceso directo de los roles
+  de aplicación a ambas elegibles, conserva su uso por los wrappers autorizados
+  y rechaza un origen de gasto incompatible antes de llamar al mutador.
+  Las regresiones cubren ACL efectivas, llamadas directas denegadas, orígenes
+  contradictorios, confirmación Web y confirmación de evento con revocación
+  concurrente y replay. `npm run test:sql` aplicó 0001–0062 y pasó con código 0
+  en PostgreSQL embebido aislado. El harness Web simula claims de PostgREST.
+  Quedan pendientes la auditoría independiente, las ACL efectivas remotas y
+  la identificación de consumidores externos o desplegados.
 - **Límite:** el HEAD de referencia publicado en Git para este corte incluye
   0055–0060; el runtime activo y la aplicación remota de esas migraciones no
   están verificados. `restorePendingProposal` y

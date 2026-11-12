@@ -133,8 +133,9 @@ BEGIN
       CASE movement WHEN 'income' THEN $args$p_member_id=>'00000000-0000-4000-8000-000000000021',
         p_amount=>42,p_income_date=>current_date,p_description=>'Eligibility confirmation'$args$
       ELSE $args$p_paid_by=>'00000000-0000-4000-8000-000000000021',p_total_amount=>42,
-        p_expense_date=>current_date,p_source=>'WEB',p_items=>'[]',
-        p_distributions=>'[{"householdMemberId":"00000000-0000-4000-8000-000000000021","amount":42,"percentage":100}]'$args$ END
+        p_expense_date=>current_date,p_items=>'[]',
+        p_distributions=>'[{"householdMemberId":"00000000-0000-4000-8000-000000000021","amount":42,"percentage":100}]'$args$
+        || format(',p_source=>%L',channel) END
         || CASE WHEN channel='WHATSAPP' THEN format(',p_whatsapp_user_id=>%L,p_whatsapp_lease_id=>%L,p_whatsapp_lease_epoch=>%L',
           '00000000-0000-4000-8000-000000000011',lease,epoch) ELSE '' END);
     UPDATE auth.users SET email_confirmed_at=NULL WHERE id='42000000-0042-4000-8000-000000000001';
@@ -143,7 +144,16 @@ BEGIN
       RAISE EXCEPTION 'Denied confirmation changed proposal';
     END IF;
     UPDATE auth.users SET email_confirmed_at=now() WHERE id='42000000-0042-4000-8000-000000000001';
-    SET LOCAL ROLE service_role;
+    -- Exercise the internal eligibility contract as owner. Application-role
+    -- confirmation and checkpoint replay are tested through the public wrappers.
+    IF channel='WHATSAPP' AND movement='expense' THEN
+      BEGIN
+        EXECUTE replace(call_sql, 'p_source=>''WHATSAPP''', 'p_source=>''WEB''');
+        RAISE EXCEPTION 'WhatsApp context accepted Web expense source';
+      EXCEPTION WHEN invalid_parameter_value THEN
+        IF SQLERRM <> 'Expense source does not match confirmation context' THEN RAISE; END IF;
+      END;
+    END IF;
     EXECUTE call_sql INTO result;
     IF result->>'status' <> 'CREATED' THEN RAISE EXCEPTION 'Eligible confirmation failed'; END IF;
     SELECT count(*) INTO row_count_before FROM public.tb_incomes;
@@ -153,7 +163,6 @@ BEGIN
        OR expense_count_before <> (SELECT count(*) FROM public.tb_expenses) THEN
       RAISE EXCEPTION 'Confirmation retry was not idempotent';
     END IF;
-    RESET ROLE;
   END LOOP;
   END LOOP;
 END;
@@ -170,8 +179,7 @@ BEGIN
     END IF;
     IF EXISTS(SELECT 1 FROM aclexplode(COALESCE((SELECT proacl FROM pg_proc WHERE oid=f.oid),acldefault('f',f.proowner))) a
       WHERE a.grantee=0 AND a.privilege_type='EXECUTE') THEN RAISE EXCEPTION 'PUBLIC financial access'; END IF;
-    IF has_function_privilege('service_role',f.oid,'EXECUTE') IS DISTINCT FROM
-       (f.proname IN ('fn_confirm_pending_expense_eligible','fn_confirm_pending_income_eligible')) THEN
+    IF has_function_privilege('service_role',f.oid,'EXECUTE') THEN
       RAISE EXCEPTION 'Wrong service_role financial access';
     END IF;
   END LOOP;
